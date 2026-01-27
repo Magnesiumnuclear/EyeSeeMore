@@ -8,7 +8,6 @@ from tqdm import tqdm
 # --- 設定區 ---
 IMAGE_FOLDER = r"D:\software\Gemini\rag-image\data" 
 INDEX_FILE = "image_embeddings_laion.pkl"
-# 使用強大的 LAION-2B 模型
 MODEL_NAME = 'laion/CLIP-ViT-B-32-laion2B-s34B-b79K'
 BATCH_SIZE = 64
 # ----------------
@@ -18,7 +17,6 @@ def main():
     print(f"🚀 啟動索引引擎 (Device: {device.upper()})")
     print(f"📥 正在載入模型: {MODEL_NAME}...")
 
-    # 改用原生 Transformers 載入
     try:
         model = CLIPModel.from_pretrained(MODEL_NAME).to(device)
         processor = CLIPProcessor.from_pretrained(MODEL_NAME)
@@ -72,11 +70,20 @@ def main():
         
         if batch_images:
             with torch.no_grad():
-                # 使用 processor 處理圖片，然後丟入 model.get_image_features
                 inputs = processor(images=batch_images, return_tensors="pt", padding=True).to(device)
-                image_features = model.get_image_features(**inputs)
                 
-                # 正規化向量 (這是 CLIP 計算相似度的關鍵)
+                # --- 🔥 修正重點：手動執行 Vision Model + Projection ---
+                # 1. 取得視覺模型的原始輸出
+                vision_outputs = model.vision_model(**inputs)
+                
+                # 2. 提取 pooled_output (通常是 cls token)
+                # 注意：這裡就是報錯的地方，我們手動取值，避開 Wrapper
+                pooled_output = vision_outputs.pooler_output  # shape: [batch, 768]
+                
+                # 3. 投影到 CLIP 向量空間 (Project to 512 dim)
+                image_features = model.visual_projection(pooled_output) # shape: [batch, 512]
+
+                # 4. 正規化 (Normalization)
                 image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
                 
                 new_embeddings.append(image_features.cpu())
