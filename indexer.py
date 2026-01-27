@@ -6,79 +6,80 @@ from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
 # --- 設定區 ---
-IMAGE_FOLDER = r"C:\Your\Image\Directory"  # <--- 請修改為你的圖片資料夾路徑
-INDEX_FILE = "image_embeddings.pkl"        # 索引存檔名稱
-MODEL_NAME = 'clip-ViT-B-32-multilingual-v1'
-BATCH_SIZE = 32  # RTX 4080 VRAM 很大，可以設為 32, 64 甚至 128
+IMAGE_FOLDER = r"D:\software\Gemini\rag-image\data" # 使用你的 Junction 路徑
+INDEX_FILE = "image_embeddings.pkl"
+MODEL_NAME = 'clip-ViT-B-32'
+BATCH_SIZE = 64 # RTX 4080 建議直接開到 64 以上
 # ----------------
 
 def main():
-    # 1. 檢查 GPU
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"🚀 正在使用裝置: {device.upper()}")
-    if device == "cuda":
-        print(f"   GPU 型號: {torch.cuda.get_device_name(0)}")
-
-    # 2. 載入模型
-    print(f"📥 正在載入 CLIP 模型: {MODEL_NAME}...")
+    print(f"🚀 啟動索引引擎 (Device: {device.upper()})")
+    
     model = SentenceTransformer(MODEL_NAME, device=device)
 
-    # 3. 掃描圖片路徑
-    print(f"📂 正在掃描資料夾: {IMAGE_FOLDER}")
-    image_paths = []
-    valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
+    # 1. 載入現有索引 (如果存在)
+    existing_data = {'paths': [], 'embeddings': None}
+    if os.path.exists(INDEX_FILE):
+        print(f"載入現有索引: {INDEX_FILE}")
+        with open(INDEX_FILE, 'rb') as f:
+            existing_data = pickle.load(f)
+    
+    indexed_set = set(existing_data['paths'])
 
-    for root, dirs, files in os.walk(IMAGE_FOLDER):
+    # 2. 掃描資料夾
+    all_files = []
+    valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
+    for root, _, files in os.walk(IMAGE_FOLDER):
         for file in files:
             if os.path.splitext(file)[1].lower() in valid_extensions:
-                image_paths.append(os.path.join(root, file))
+                full_path = os.path.join(root, file)
+                if full_path not in indexed_set: # 只加入尚未索引的檔案
+                    all_files.append(full_path)
 
-    print(f"📊 找到 {len(image_paths)} 張圖片，準備建立索引...")
+    if not all_files:
+        print("✨ 沒有偵測到新圖片，索引已是最新狀態。")
+        return
 
-    # 4. 批次處理圖片並計算向量
-    all_embeddings = []
-    valid_paths = [] # 儲存成功讀取的路徑
+    print(f"🆕 發現 {len(all_files)} 張新圖片，開始掃描...")
 
-    # 使用 tqdm 顯示進度條
-    for i in tqdm(range(0, len(image_paths), BATCH_SIZE), desc="Processing"):
-        batch_paths = image_paths[i : i + BATCH_SIZE]
+    # 3. 批次處理
+    new_paths = []
+    new_embeddings = []
+
+    for i in tqdm(range(0, len(all_files), BATCH_SIZE), desc="Embedding"):
+        batch_paths = all_files[i : i + BATCH_SIZE]
         batch_images = []
-        current_batch_valid_paths = []
+        current_valid_paths = []
 
         for path in batch_paths:
             try:
-                # 這裡只做開啟與轉換，確保圖片沒壞
                 img = Image.open(path).convert('RGB')
                 batch_images.append(img)
-                current_batch_valid_paths.append(path)
-            except (UnidentifiedImageError, OSError):
-                # 忽略損壞的圖片
+                current_valid_paths.append(path)
+            except:
                 continue
         
         if batch_images:
-            # 使用模型進行編碼 (這是最吃 GPU 的步驟)
-            embeddings = model.encode(batch_images, convert_to_tensor=True, show_progress_bar=False)
-            # 轉回 CPU 並轉為 numpy 格式以便儲存，節省之後搜尋的 VRAM
-            all_embeddings.append(embeddings.cpu())
-            valid_paths.extend(current_batch_valid_paths)
+            with torch.no_grad(): # 關閉梯度計算，節省記憶體
+                embeddings = model.encode(batch_images, convert_to_tensor=True, show_progress_bar=False)
+                new_embeddings.append(embeddings.cpu())
+                new_paths.extend(current_valid_paths)
 
-    # 5. 合併與存檔
-    if all_embeddings:
-        final_embeddings = torch.cat(all_embeddings, dim=0)
-        
-        data = {
-            'paths': valid_paths,
-            'embeddings': final_embeddings
-        }
+    # 4. 合併新舊數據並儲存
+    final_paths = existing_data['paths'] + new_paths
+    
+    if new_embeddings:
+        new_embs_tensor = torch.cat(new_embeddings, dim=0)
+        if existing_data['embeddings'] is not None:
+            final_embs = torch.cat([existing_data['embeddings'], new_embs_tensor], dim=0)
+        else:
+            final_embs = new_embs_tensor
 
         with open(INDEX_FILE, 'wb') as f:
-            pickle.dump(data, f)
-
-        print(f"\n✅ 索引建立完成！")
-        print(f"   - 總共索引: {len(valid_paths)} 張圖片")
-        print(f"   - 檔案儲存為: {INDEX_FILE}")
-    else:
-        print("❌ 未處理任何圖片，請檢查路徑或檔案格式。")
+            pickle.dump({'paths': final_paths, 'embeddings': final_embs}, f)
+        
+        print(f"✅ 索引更新完成！目前總計: {len(final_paths)} 張圖片")
 
 if __name__ == "__main__":
     main()
