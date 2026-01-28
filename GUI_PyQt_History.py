@@ -3,7 +3,7 @@ import os
 import time
 import pickle
 import threading
-import json  # 新增：用於存檔
+import json
 from PIL import Image
 import torch
 from transformers import CLIPProcessor, CLIPModel
@@ -11,127 +11,50 @@ from transformers import CLIPProcessor, CLIPModel
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLayout, QLineEdit, QPushButton, 
                              QLabel, QScrollArea, QComboBox, QProgressBar, QFrame,
-                             QMenu) # 新增 QMenu 用於右鍵選單
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize
-from PyQt6.QtGui import QPixmap, QImage, QCursor, QAction
+                             QListWidget, QListWidgetItem, QSizePolicy)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent
+from PyQt6.QtGui import QPixmap, QImage, QCursor
 
 # --- 設定區 ---
 INDEX_FILE = "image_embeddings_laion.pkl"
-HISTORY_FILE = "search_history.json" # 歷史紀錄存檔
+HISTORY_FILE = "search_history.json"
 MODEL_NAME = 'laion/CLIP-ViT-B-32-laion2B-s34B-b79K'
 THUMBNAIL_SIZE = (220, 220)
 CARD_SIZE = (230, 270)
 MIN_SPACING = 20
-WINDOW_TITLE = "Local AI Search (History Edition)"
+WINDOW_TITLE = "Local AI Search (History Actions Edition)"
 # ----------------
 
 DARK_STYLESHEET = """
 QMainWindow { background-color: #202020; }
 QWidget { color: #e0e0e0; font-family: "Segoe UI", Arial; font-size: 14px; }
 QLineEdit { background-color: #2d2d2d; border: 1px solid #3e3e3e; border-radius: 6px; padding: 8px; color: white; }
-/* QComboBox 樣式優化 */
-QComboBox { 
-    background-color: #2d2d2d; border: 1px solid #3e3e3e; border-radius: 6px; padding: 5px; color: white; font-size: 16px;
-}
-QComboBox::drop-down { border: none; width: 20px; }
-QComboBox::down-arrow { image: none; border-left: 2px solid #555; width: 0; height: 0; }
-QComboBox QAbstractItemView {
-    background-color: #2d2d2d; color: white; selection-background-color: #0078d7;
-}
 QPushButton { background-color: #0078d7; color: white; border-radius: 6px; padding: 8px; border: none; }
 QPushButton:hover { background-color: #1e8feb; }
 QPushButton:disabled { background-color: #333; color: #777; }
+QComboBox { background-color: #2d2d2d; border: 1px solid #3e3e3e; border-radius: 6px; padding: 5px; }
 QScrollArea { border: none; background-color: #202020; }
 QProgressBar { border: none; background-color: #2d2d2d; height: 4px; }
 QProgressBar::chunk { background-color: #00e676; }
+
+/* 歷史紀錄清單容器樣式 */
+QListWidget {
+    background-color: #2d2d2d;
+    border: 1px solid #3e3e3e;
+    border-radius: 6px;
+    outline: 0;
+}
+QListWidget::item {
+    /* 因為我們用了 setItemWidget，這裡的樣式主要影響選取狀態，簡單設定即可 */
+    border-bottom: 1px solid #333;
+}
+QListWidget::item:hover {
+    background-color: transparent; /* 讓自訂 Widget 處理 hover */
+}
 """
 
 # ==========================================
-#  🔥 新增：具備歷史紀錄功能的 ComboBox
-# ==========================================
-class HistoryComboBox(QComboBox):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setEditable(True) # 允許輸入文字
-        self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert) # 手動管理插入，避免重複
-        self.setMaxCount(50) # 最多紀錄 50 筆
-        
-        # 載入歷史
-        self.load_history()
-
-        # 啟用右鍵選單 (個別刪除功能)
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.customContextMenuRequested.connect(self.show_context_menu)
-
-    def load_history(self):
-        """ 從 JSON 載入紀錄 """
-        if os.path.exists(HISTORY_FILE):
-            try:
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
-                    self.addItems(history)
-                    self.setCurrentIndex(-1) # 預設不選中任何項目
-            except Exception as e:
-                print(f"Error loading history: {e}")
-
-    def save_history(self):
-        """ 儲存紀錄到 JSON """
-        history = [self.itemText(i) for i in range(self.count())]
-        try:
-            with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-                json.dump(history, f, ensure_ascii=False)
-        except Exception as e:
-            print(f"Error saving history: {e}")
-
-    def add_current_text(self):
-        """ 將當前輸入的文字加入歷史 (自動去重、移到最前) """
-        text = self.currentText().strip()
-        if not text: return
-
-        # 如果已經存在，先移除舊的 (為了移到最上面)
-        index = self.findText(text)
-        if index != -1:
-            self.removeItem(index)
-        
-        # 插入到第一項
-        self.insertItem(0, text)
-        self.setCurrentIndex(0)
-        self.save_history()
-
-    def clear_all_history(self):
-        """ 清空所有歷史 """
-        self.clear()
-        self.save_history()
-        self.setCurrentText("") # 清空輸入框
-
-    def remove_current_item(self):
-        """ 刪除當前選中的項目 (個別清除) """
-        idx = self.currentIndex()
-        if idx != -1:
-            self.removeItem(idx)
-            self.save_history()
-            self.setCurrentText("") # 清空輸入框文字
-
-    def show_context_menu(self, pos):
-        """ 右鍵選單邏輯 """
-        menu = QMenu(self)
-        
-        # 只有在有文字或有選中項目時才顯示刪除選項
-        current_text = self.currentText()
-        
-        if current_text and self.findText(current_text) != -1:
-            action_del_one = QAction(f"🗑️ 從歷史移除 '{current_text}'", self)
-            action_del_one.triggered.connect(self.remove_current_item)
-            menu.addAction(action_del_one)
-
-        action_clear_all = QAction("💥 清空所有歷史紀錄", self)
-        action_clear_all.triggered.connect(self.clear_all_history)
-        menu.addAction(action_clear_all)
-        
-        menu.exec(self.mapToGlobal(pos))
-
-# ==========================================
-#  佈局與核心邏輯 (Adaptive Layout + Engine)
+#  自適應網格佈局 (維持原樣)
 # ==========================================
 class AdaptiveGridLayout(QLayout):
     def __init__(self, parent=None, min_spacing=20):
@@ -140,24 +63,49 @@ class AdaptiveGridLayout(QLayout):
         self._min_spacing = min_spacing
         self.setContentsMargins(min_spacing, min_spacing, min_spacing, min_spacing)
 
-    def addItem(self, item): self._items.append(item)
-    def count(self): return len(self._items)
-    def itemAt(self, index): return self._items[index] if 0 <= index < len(self._items) else None
-    def takeAt(self, index): return self._items.pop(index) if 0 <= index < len(self._items) else None
-    def expandingDirections(self): return Qt.Orientation(0)
-    def hasHeightForWidth(self): return True
-    def heightForWidth(self, width): return self._doLayout(QRect(0, 0, width, 0), True)
-    def setGeometry(self, rect): super(AdaptiveGridLayout, self).setGeometry(rect); self._doLayout(rect, False)
-    def sizeHint(self): return self.minimumSize()
-    def minimumSize(self): 
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._doLayout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):
+        super(AdaptiveGridLayout, self).setGeometry(rect)
+        self._doLayout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
         size = QSize()
-        for item in self._items: size = size.expandedTo(item.minimumSize())
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
         size += QSize(2 * self.contentsMargins().top(), 2 * self.contentsMargins().top())
         return size
 
     def _doLayout(self, rect, testOnly):
         effective_width = rect.width()
-        item_w, item_h = CARD_SIZE
+        item_w = CARD_SIZE[0]
+        item_h = CARD_SIZE[1]
         
         if self._items:
             n_cols = 1
@@ -174,14 +122,16 @@ class AdaptiveGridLayout(QLayout):
         total_item_w = n_cols * item_w
         remaining_space = effective_width - total_item_w
         dynamic_spacing = remaining_space / (n_cols + 1)
-        if dynamic_spacing < self._min_spacing: dynamic_spacing = self._min_spacing
+        if dynamic_spacing < self._min_spacing:
+            dynamic_spacing = self._min_spacing
 
         x = rect.x() + dynamic_spacing
         y = rect.y() + self._min_spacing
         current_col = 0
         
         for item in self._items:
-            if not testOnly: item.setGeometry(QRect(QPoint(int(x), int(y)), QSize(item_w, item_h)))
+            if not testOnly:
+                item.setGeometry(QRect(QPoint(int(x), int(y)), QSize(item_w, item_h)))
             current_col += 1
             if current_col >= n_cols:
                 current_col = 0
@@ -189,10 +139,13 @@ class AdaptiveGridLayout(QLayout):
                 y += item_h + self._min_spacing
             else:
                 x += item_w + dynamic_spacing
-        
+
         total_height = y + item_h + self._min_spacing if current_col > 0 else y
         return total_height - rect.y()
 
+# ==========================================
+#  引擎與 Worker (維持原樣)
+# ==========================================
 class ImageSearchEngine:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -279,7 +232,9 @@ class SearchWorker(QThread):
 
         if batch_buffer:
             self.batch_ready.emit(batch_buffer)
-        self.finished_search.emit(time.time() - start_time, count)
+
+        elapsed = time.time() - start_time
+        self.finished_search.emit(elapsed, count)
 
 class ResultCard(QFrame):
     def __init__(self, result_data, q_image):
@@ -311,6 +266,71 @@ class ResultCard(QFrame):
             try: os.startfile(self.path)
             except: pass
 
+# ==========================================
+#  🔥 新增：歷史紀錄項目 Widget (文字 + 刪除按鈕)
+# ==========================================
+class HistoryItemWidget(QWidget):
+    def __init__(self, text, search_callback, delete_callback):
+        super().__init__()
+        self.text = text
+        self.search_callback = search_callback
+        self.delete_callback = delete_callback
+        
+        # 主要 Layout
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(5, 2, 5, 2)
+        layout.setSpacing(10)
+        
+        # 文字標籤
+        self.label = QLabel(f"🕒 {text}")
+        self.label.setStyleSheet("color: #ccc; background: transparent;")
+        self.label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        
+        # 讓文字標籤能響應點擊 (觸發搜尋)
+        # 這裡我們覆寫 mousePressEvent 的方式
+        self.label.mousePressEvent = self.on_label_clicked
+        
+        layout.addWidget(self.label, stretch=1) # stretch=1 讓文字佔據剩餘空間
+
+        # 刪除按鈕
+        self.del_btn = QPushButton("✕")
+        self.del_btn.setFixedSize(24, 24)
+        self.del_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        # 按鈕樣式：平常透明灰字，滑入變紅
+        self.del_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #666;
+                font-weight: bold;
+                border-radius: 12px;
+            }
+            QPushButton:hover {
+                background-color: #442020;
+                color: #ff5252;
+            }
+        """)
+        self.del_btn.clicked.connect(self.on_delete_clicked)
+        layout.addWidget(self.del_btn)
+
+        # 整個 Widget 的 hover 效果 (透過 stylesheet 改變背景)
+        self.setStyleSheet(".HistoryItemWidget:hover { background-color: #383838; border-radius: 4px; }")
+
+    def on_label_clicked(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.search_callback(self.text)
+
+    def on_delete_clicked(self):
+        self.delete_callback(self.text)
+    
+    # 讓 hover 效果生效
+    def paintEvent(self, event):
+        from PyQt6.QtWidgets import QStyle, QStyleOption
+        from PyQt6.QtGui import QPainter
+        opt = QStyleOption()
+        opt.initFrom(self)
+        p = QPainter(self)
+        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, opt, p, self)
+
 class AdaptiveResultView(QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -322,18 +342,20 @@ class AdaptiveResultView(QScrollArea):
     def clear(self):
         while self.adaptive_layout.count():
             item = self.adaptive_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+            if item.widget():
+                item.widget().deleteLater()
 
     def add_items(self, batch_data):
         self.container.setUpdatesEnabled(False)
         try:
             for res, q_image in batch_data:
-                self.adaptive_layout.addItem(ResultCard(res, q_image)) # Direct add to layout class
+                card = ResultCard(res, q_image)
+                self.adaptive_layout.addWidget(card)
         finally:
             self.container.setUpdatesEnabled(True)
 
 # ==========================================
-#  主視窗 (Controller)
+#  4. 主視窗 (Controller)
 # ==========================================
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -342,9 +364,40 @@ class MainWindow(QMainWindow):
         self.resize(1200, 850)
         self.engine = None
         self.img_cache = {}
+        self.search_history = [] 
 
+        self.load_history()
         self.init_ui()
+        
+        QApplication.instance().installEventFilter(self)
+        
         threading.Thread(target=self.load_engine, daemon=True).start()
+
+    def load_history(self):
+        if os.path.exists(HISTORY_FILE):
+            try:
+                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                    self.search_history = json.load(f)
+            except Exception as e:
+                print(f"Error loading history: {e}")
+                self.search_history = []
+
+    def save_history_to_file(self):
+        """將目前的記憶體歷史寫入檔案"""
+        try:
+            with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.search_history, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving history: {e}")
+
+    def add_to_history(self, query):
+        if not query: return
+        if query in self.search_history:
+            self.search_history.remove(query)
+        self.search_history.insert(0, query)
+        if len(self.search_history) > 20:
+            self.search_history = self.search_history[:20]
+        self.save_history_to_file()
 
     def init_ui(self):
         central = QWidget()
@@ -353,51 +406,31 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # 頂部列
+        # Top Bar
         top_bar = QFrame()
         top_bar.setFixedHeight(80)
         top_bar.setStyleSheet("background-color: #252525; border-bottom: 1px solid #333;")
         top = QHBoxLayout(top_bar)
         
-        # 1. 數量限制
         self.combo_limit = QComboBox()
         self.combo_limit.addItems(["20", "50", "100", "全部"])
         self.combo_limit.setCurrentText("50")
         top.addWidget(QLabel("Limit:"))
         top.addWidget(self.combo_limit)
         
-        top.addSpacing(15)
-
-        # 2. 🔥 搜尋框 (換成 HistoryComboBox)
-        # 用 setSizePolicy 讓它盡量伸展
-        self.search_combo = HistoryComboBox()
-        self.search_combo.setPlaceholderText("Search...")
-        self.search_combo.setMinimumWidth(400)
-        # 捕捉 Enter 鍵：QComboBox 內部的 QLineEdit 發出 returnPressed 信號
-        self.search_combo.lineEdit().returnPressed.connect(self.start_search)
-        top.addWidget(self.search_combo, 1) # stretch=1
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Search...")
+        self.input.returnPressed.connect(self.start_search)
+        top.addWidget(self.input)
         
-        # 3. 🔥 清除歷史按鈕 (垃圾桶)
-        self.btn_clear_hist = QPushButton("🗑️")
-        self.btn_clear_hist.setToolTip("清空所有搜尋紀錄")
-        self.btn_clear_hist.setFixedWidth(40)
-        self.btn_clear_hist.clicked.connect(self.search_combo.clear_all_history)
-        self.btn_clear_hist.setStyleSheet("QPushButton { background-color: #444; } QPushButton:hover { background-color: #d32f2f; }")
-        top.addWidget(self.btn_clear_hist)
-
-        top.addSpacing(10)
-
-        # 4. 搜尋按鈕
-        self.btn_search = QPushButton("Search")
-        self.btn_search.clicked.connect(self.start_search)
-        self.btn_search.setEnabled(False)
-        top.addWidget(self.btn_search)
+        self.btn = QPushButton("Search")
+        self.btn.clicked.connect(self.start_search)
+        self.btn.setEnabled(False)
+        top.addWidget(self.btn)
         
-        # 5. 狀態
         self.status = QLabel("Init...")
         self.status.setStyleSheet("color: orange; font-weight: bold;")
         top.addWidget(self.status)
-        
         layout.addWidget(top_bar)
 
         self.progress = QProgressBar()
@@ -407,24 +440,103 @@ class MainWindow(QMainWindow):
         self.view_component = AdaptiveResultView() 
         layout.addWidget(self.view_component)
 
+        # History List
+        self.history_list = QListWidget(self)
+        self.history_list.hide()
+        self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.MouseButtonPress:
+            
+            if self.history_list.isVisible():
+                click_pos = event.globalPosition().toPoint()
+                
+                input_global_pos = self.input.mapToGlobal(QPoint(0, 0))
+                input_rect = QRect(input_global_pos, self.input.size())
+                
+                list_global_pos = self.history_list.mapToGlobal(QPoint(0, 0))
+                list_rect = QRect(list_global_pos, self.history_list.size())
+                
+                # 如果點擊位置不在輸入框且不在清單內 -> 隱藏
+                if not input_rect.contains(click_pos) and not list_rect.contains(click_pos):
+                    self.history_list.hide()
+
+            if obj == self.input:
+                self.show_history_popup()
+
+        return super().eventFilter(obj, event)
+
+    def show_history_popup(self):
+        if not self.search_history:
+            self.history_list.hide()
+            return
+
+        self.history_list.clear()
+        
+        # 🔥 替換成自訂的 HistoryItemWidget
+        for text in self.search_history:
+            item = QListWidgetItem()
+            # 必須設定 item 大小提示，否則自訂 widget 可能被壓扁
+            item.setSizeHint(QSize(0, 40)) 
+            
+            # 建立自訂 Widget，傳入搜尋與刪除的 callback
+            widget = HistoryItemWidget(
+                text, 
+                search_callback=self.trigger_history_search,
+                delete_callback=self.delete_history_item
+            )
+            
+            self.history_list.addItem(item)
+            self.history_list.setItemWidget(item, widget)
+
+        # 重新計算位置與大小
+        input_pos = self.input.mapTo(self, QPoint(0, 0))
+        input_h = self.input.height()
+        input_w = self.input.width()
+        list_height = min(300, len(self.search_history) * 40 + 10)
+        self.history_list.setGeometry(input_pos.x(), input_pos.y() + input_h + 5, input_w, list_height)
+        
+        self.history_list.show()
+        self.history_list.raise_()
+
+    def resizeEvent(self, event):
+        self.history_list.hide()
+        super().resizeEvent(event)
+
+    # --- 歷史紀錄的操作 callback ---
+
+    def delete_history_item(self, text):
+        """刪除指定的歷史紀錄"""
+        if text in self.search_history:
+            self.search_history.remove(text)
+            self.save_history_to_file()
+            # 刪除後重新繪製清單，如果空了會自動隱藏
+            self.show_history_popup()
+
+    def trigger_history_search(self, text):
+        """點擊歷史紀錄直接搜尋"""
+        self.input.setText(text)
+        self.start_search()
+
+    # -----------------------------
+
     def load_engine(self):
         try:
             self.engine = ImageSearchEngine()
             self.status.setText("✅ Ready")
             self.status.setStyleSheet("color: #00e676; font-weight: bold;")
-            self.btn_search.setEnabled(True)
+            self.btn.setEnabled(True)
         except Exception as e:
             print(e)
 
     def start_search(self):
-        # 🔥 從 ComboBox 取得文字
-        q = self.search_combo.currentText().strip()
+        q = self.input.text().strip()
         if not q or not self.engine: return
 
-        # 🔥 自動儲存關鍵字到歷史
-        self.search_combo.add_current_text()
+        self.add_to_history(q)
+        self.history_list.hide()
 
-        self.btn_search.setEnabled(False)
+        self.btn.setEnabled(False)
         self.progress.show()
         self.progress.setRange(0, 0)
         self.status.setText("Searching...")
@@ -442,7 +554,7 @@ class MainWindow(QMainWindow):
 
     def on_finished(self, elapsed, total):
         self.progress.hide()
-        self.btn_search.setEnabled(True)
+        self.btn.setEnabled(True)
         self.status.setText(f"✅ Found {total} ({elapsed:.2f}s)")
 
 if __name__ == "__main__":
