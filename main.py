@@ -11,9 +11,9 @@ from transformers import CLIPProcessor, CLIPModel
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLayout, QLineEdit, QPushButton, 
                              QLabel, QScrollArea, QComboBox, QProgressBar, QFrame,
-                             QListWidget, QListWidgetItem, QSizePolicy)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent
-from PyQt6.QtGui import QPixmap, QImage, QCursor
+                             QListWidget, QListWidgetItem, QSizePolicy, QMenu, QMessageBox)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent, QFileInfo
+from PyQt6.QtGui import QPixmap, QImage, QCursor, QAction, QGuiApplication
 
 # --- 設定區 ---
 INDEX_FILE = "image_embeddings_laion-1.pkl"
@@ -27,7 +27,7 @@ WINDOW_TITLE = "Local AI Search (History Actions Edition)"
 
 DARK_STYLESHEET = """
 QMainWindow { background-color: #202020; }
-QWidget { color: #e0e0e0; font-family: "Segoe UI", Arial; font-size: 14px; }
+QWidget { color: #e0e0e0; font-family: "Segoe UI", "Microsoft JhengHei", Arial; font-size: 14px; }
 QLineEdit { background-color: #2d2d2d; border: 1px solid #3e3e3e; border-radius: 6px; padding: 8px; color: white; }
 QPushButton { background-color: #0078d7; color: white; border-radius: 6px; padding: 8px; border: none; }
 QPushButton:hover { background-color: #1e8feb; }
@@ -45,16 +45,54 @@ QListWidget {
     outline: 0;
 }
 QListWidget::item {
-    /* 因為我們用了 setItemWidget，這裡的樣式主要影響選取狀態，簡單設定即可 */
     border-bottom: 1px solid #333;
 }
 QListWidget::item:hover {
-    background-color: transparent; /* 讓自訂 Widget 處理 hover */
+    background-color: transparent;
 }
+
+/* Windows 11 風格右鍵選單樣式 */
+QMenu {
+    background-color: #2d2d2d;
+    border: 1px solid #454545;
+    border-radius: 8px;
+    padding: 6px;
+    color: #ffffff;
+    font-family: "Segoe UI", "Microsoft JhengHei";
+    font-size: 13px;
+}
+QMenu::item {
+    background-color: transparent;
+    padding: 6px 12px;
+    border-radius: 4px;
+    margin: 2px 4px;
+    min-width: 120px;
+}
+QMenu::item:selected {
+    background-color: #3f3f3f; /* Hover 顏色 */
+}
+QMenu::separator {
+    height: 1px;
+    background-color: #454545;
+    margin: 4px 10px;
+}
+
+/* 訊息視窗樣式 */
+QMessageBox { background-color: #2d2d2d; color: white; }
+QMessageBox QLabel { color: #e0e0e0; }
+QMessageBox QPushButton {
+    background-color: #3e3e3e;
+    color: white;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px 20px;
+    min-width: 60px;
+}
+QMessageBox QPushButton:hover { background-color: #4e4e4e; }
 """
 
 # ==========================================
-#  自適應網格佈局 (維持原樣)
+#  自適應網格佈局
 # ==========================================
 class AdaptiveGridLayout(QLayout):
     def __init__(self, parent=None, min_spacing=20):
@@ -144,7 +182,7 @@ class AdaptiveGridLayout(QLayout):
         return total_height - rect.y()
 
 # ==========================================
-#  引擎與 Worker (維持原樣)
+#  引擎與 Worker
 # ==========================================
 class ImageSearchEngine:
     def __init__(self):
@@ -236,13 +274,23 @@ class SearchWorker(QThread):
         elapsed = time.time() - start_time
         self.finished_search.emit(elapsed, count)
 
+# ==========================================
+#  🔥 修改後的 ResultCard：支援右鍵選單
+# ==========================================
 class ResultCard(QFrame):
     def __init__(self, result_data, q_image):
         super().__init__()
+        self.result_data = result_data
         self.path = result_data['path']
+        self.filename = result_data['filename']
+        self.q_image_thumbnail = q_image # 保存縮圖引用
+        
         self.setFixedSize(CARD_SIZE[0], CARD_SIZE[1])
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet("QFrame { background-color: #2d2d2d; border-radius: 10px; border: 1px solid #3e3e3e; } QFrame:hover { background-color: #383838; border: 1px solid #555; }")
+        self.setStyleSheet("""
+            QFrame { background-color: #2d2d2d; border-radius: 10px; border: 1px solid #3e3e3e; } 
+            QFrame:hover { background-color: #383838; border: 1px solid #555; }
+        """)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
 
         layout = QVBoxLayout()
@@ -261,13 +309,94 @@ class ResultCard(QFrame):
         layout.addWidget(self.text_label)
         self.setLayout(layout)
 
+    # 處理左鍵點擊 (開啟檔案)
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             try: os.startfile(self.path)
             except: pass
+        # 呼叫父類以確保其他事件正常
+        super().mousePressEvent(event)
+
+    # 處理右鍵選單
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        
+        # 建立 Actions
+        # 為了美觀，這裡使用 Unicode 符號模擬圖示，或者保持純文字
+        action_copy = QAction("複製", self)
+        action_copy.triggered.connect(self.copy_image)
+        
+        action_copy_path = QAction("複製路徑", self)
+        action_copy_path.triggered.connect(self.copy_path)
+        
+        action_properties = QAction("詳細內容", self)
+        action_properties.triggered.connect(self.show_properties)
+
+        # 佈局選單
+        menu.addAction(action_copy)
+        menu.addAction(action_copy_path)
+        menu.addSeparator() # 分隔線
+        menu.addAction(action_properties)
+
+        # 顯示選單
+        menu.exec(event.globalPos())
+
+    def copy_image(self):
+        """複製原始圖片到剪貼簿"""
+        try:
+            # 嘗試讀取原圖放入剪貼簿 (獲得最高畫質)
+            original_img = QImage(self.path)
+            if not original_img.isNull():
+                QApplication.clipboard().setImage(original_img)
+            else:
+                # 若讀取失敗則複製縮圖
+                QApplication.clipboard().setImage(self.q_image_thumbnail)
+        except Exception as e:
+            print(f"Copy image failed: {e}")
+
+    def copy_path(self):
+        """複製路徑到剪貼簿"""
+        QApplication.clipboard().setText(self.path)
+
+    def show_properties(self):
+        """顯示詳細內容"""
+        try:
+            info = QFileInfo(self.path)
+            size_mb = info.size() / (1024 * 1024)
+            created = info.birthTime().toString("yyyy/MM/dd HH:mm")
+            modified = info.lastModified().toString("yyyy/MM/dd HH:mm")
+            
+            # 讀取圖片尺寸
+            img = QImage(self.path)
+            width, height = img.width(), img.height()
+            
+            msg_content = f"""
+            <h3 style='color: white; margin-bottom: 5px;'>{self.filename}</h3>
+            <hr>
+            <table cellspacing='5' cellpadding='2'>
+            <tr><td style='color:#aaaaaa;'>類型:</td><td style='color:white;'>{info.suffix().upper()} 檔案</td></tr>
+            <tr><td style='color:#aaaaaa;'>路徑:</td><td style='color:white;'>{self.path}</td></tr>
+            <tr><td style='color:#aaaaaa;'>大小:</td><td style='color:white;'>{size_mb:.2f} MB</td></tr>
+            <tr><td style='color:#aaaaaa;'>尺寸:</td><td style='color:white;'>{width} x {height}</td></tr>
+            <tr><td colspan='2'><hr></td></tr>
+            <tr><td style='color:#aaaaaa;'>建立:</td><td style='color:white;'>{created}</td></tr>
+            <tr><td style='color:#aaaaaa;'>修改:</td><td style='color:white;'>{modified}</td></tr>
+            </table>
+            """
+            
+            box = QMessageBox(self)
+            box.setWindowTitle("詳細內容")
+            box.setTextFormat(Qt.TextFormat.RichText)
+            box.setText(msg_content)
+            # 設定 QMessageBox 按鈕文字 (通常是 OK)
+            ok_btn = box.addButton("確定", QMessageBox.ButtonRole.AcceptRole)
+            box.exec()
+            
+        except Exception as e:
+            print(f"Show properties failed: {e}")
 
 # ==========================================
-#  🔥 新增：歷史紀錄項目 Widget (文字 + 刪除按鈕)
+#  歷史紀錄 Widget
 # ==========================================
 class HistoryItemWidget(QWidget):
     def __init__(self, text, search_callback, delete_callback):
@@ -276,27 +405,20 @@ class HistoryItemWidget(QWidget):
         self.search_callback = search_callback
         self.delete_callback = delete_callback
         
-        # 主要 Layout
         layout = QHBoxLayout(self)
         layout.setContentsMargins(5, 2, 5, 2)
         layout.setSpacing(10)
         
-        # 文字標籤
         self.label = QLabel(f"🕒 {text}")
         self.label.setStyleSheet("color: #ccc; background: transparent;")
         self.label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        
-        # 讓文字標籤能響應點擊 (觸發搜尋)
-        # 這裡我們覆寫 mousePressEvent 的方式
         self.label.mousePressEvent = self.on_label_clicked
         
-        layout.addWidget(self.label, stretch=1) # stretch=1 讓文字佔據剩餘空間
+        layout.addWidget(self.label, stretch=1)
 
-        # 刪除按鈕
         self.del_btn = QPushButton("✕")
         self.del_btn.setFixedSize(24, 24)
         self.del_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        # 按鈕樣式：平常透明灰字，滑入變紅
         self.del_btn.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
@@ -312,7 +434,6 @@ class HistoryItemWidget(QWidget):
         self.del_btn.clicked.connect(self.on_delete_clicked)
         layout.addWidget(self.del_btn)
 
-        # 整個 Widget 的 hover 效果 (透過 stylesheet 改變背景)
         self.setStyleSheet(".HistoryItemWidget:hover { background-color: #383838; border-radius: 4px; }")
 
     def on_label_clicked(self, event):
@@ -322,7 +443,6 @@ class HistoryItemWidget(QWidget):
     def on_delete_clicked(self):
         self.delete_callback(self.text)
     
-    # 讓 hover 效果生效
     def paintEvent(self, event):
         from PyQt6.QtWidgets import QStyle, QStyleOption
         from PyQt6.QtGui import QPainter
@@ -355,7 +475,7 @@ class AdaptiveResultView(QScrollArea):
             self.container.setUpdatesEnabled(True)
 
 # ==========================================
-#  4. 主視窗 (Controller)
+#  主視窗
 # ==========================================
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -383,7 +503,6 @@ class MainWindow(QMainWindow):
                 self.search_history = []
 
     def save_history_to_file(self):
-        """將目前的記憶體歷史寫入檔案"""
         try:
             with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.search_history, f, ensure_ascii=False)
@@ -457,7 +576,6 @@ class MainWindow(QMainWindow):
                 list_global_pos = self.history_list.mapToGlobal(QPoint(0, 0))
                 list_rect = QRect(list_global_pos, self.history_list.size())
                 
-                # 如果點擊位置不在輸入框且不在清單內 -> 隱藏
                 if not input_rect.contains(click_pos) and not list_rect.contains(click_pos):
                     self.history_list.hide()
 
@@ -473,13 +591,10 @@ class MainWindow(QMainWindow):
 
         self.history_list.clear()
         
-        # 🔥 替換成自訂的 HistoryItemWidget
         for text in self.search_history:
             item = QListWidgetItem()
-            # 必須設定 item 大小提示，否則自訂 widget 可能被壓扁
             item.setSizeHint(QSize(0, 40)) 
             
-            # 建立自訂 Widget，傳入搜尋與刪除的 callback
             widget = HistoryItemWidget(
                 text, 
                 search_callback=self.trigger_history_search,
@@ -489,7 +604,6 @@ class MainWindow(QMainWindow):
             self.history_list.addItem(item)
             self.history_list.setItemWidget(item, widget)
 
-        # 重新計算位置與大小
         input_pos = self.input.mapTo(self, QPoint(0, 0))
         input_h = self.input.height()
         input_w = self.input.width()
@@ -503,22 +617,15 @@ class MainWindow(QMainWindow):
         self.history_list.hide()
         super().resizeEvent(event)
 
-    # --- 歷史紀錄的操作 callback ---
-
     def delete_history_item(self, text):
-        """刪除指定的歷史紀錄"""
         if text in self.search_history:
             self.search_history.remove(text)
             self.save_history_to_file()
-            # 刪除後重新繪製清單，如果空了會自動隱藏
             self.show_history_popup()
 
     def trigger_history_search(self, text):
-        """點擊歷史紀錄直接搜尋"""
         self.input.setText(text)
         self.start_search()
-
-    # -----------------------------
 
     def load_engine(self):
         try:
