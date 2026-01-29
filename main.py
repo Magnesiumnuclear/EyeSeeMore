@@ -16,7 +16,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent
 from PyQt6.QtGui import QPixmap, QImage, QCursor
 
 # --- 設定區 ---
-INDEX_FILE = "image_embeddings_laion.pkl"
+INDEX_FILE = "image_embeddings_laion-1.pkl"
 HISTORY_FILE = "search_history.json"
 MODEL_NAME = 'laion/CLIP-ViT-B-32-laion2B-s34B-b79K'
 THUMBNAIL_SIZE = (220, 220)
