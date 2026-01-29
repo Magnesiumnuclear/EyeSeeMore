@@ -11,84 +11,179 @@ from transformers import CLIPProcessor, CLIPModel
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLayout, QLineEdit, QPushButton, 
                              QLabel, QScrollArea, QComboBox, QProgressBar, QFrame,
-                             QListWidget, QListWidgetItem, QSizePolicy, QMenu, QMessageBox)
+                             QListWidget, QListWidgetItem, QSizePolicy, QMenu, QMessageBox,
+                             QGraphicsDropShadowEffect)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent, QFileInfo
-from PyQt6.QtGui import QPixmap, QImage, QCursor, QAction, QGuiApplication
+from PyQt6.QtGui import QPixmap, QImage, QCursor, QAction, QColor, QFont
 
 # --- 設定區 ---
 INDEX_FILE = "image_embeddings_laion-1.pkl"
 HISTORY_FILE = "search_history.json"
 MODEL_NAME = 'laion/CLIP-ViT-B-32-laion2B-s34B-b79K'
 THUMBNAIL_SIZE = (220, 220)
-CARD_SIZE = (230, 270)
-MIN_SPACING = 20
-WINDOW_TITLE = "Local AI Search (History Actions Edition)"
-# ----------------
+CARD_SIZE = (240, 280) 
+MIN_SPACING = 24       
+WINDOW_TITLE = "Local AI Search"
 
-DARK_STYLESHEET = """
-QMainWindow { background-color: #202020; }
-QWidget { color: #e0e0e0; font-family: "Segoe UI", "Microsoft JhengHei", Arial; font-size: 14px; }
-QLineEdit { background-color: #2d2d2d; border: 1px solid #3e3e3e; border-radius: 6px; padding: 8px; color: white; }
-QPushButton { background-color: #0078d7; color: white; border-radius: 6px; padding: 8px; border: none; }
-QPushButton:hover { background-color: #1e8feb; }
-QPushButton:disabled { background-color: #333; color: #777; }
-QComboBox { background-color: #2d2d2d; border: 1px solid #3e3e3e; border-radius: 6px; padding: 5px; }
-QScrollArea { border: none; background-color: #202020; }
-QProgressBar { border: none; background-color: #2d2d2d; height: 4px; }
-QProgressBar::chunk { background-color: #00e676; }
+# --- Windows 11 風格樣式表 (已修改右鍵選單透明化) ---
+WIN11_STYLESHEET = """
+QMainWindow { 
+    background-color: #1e1e1e; 
+}
+QWidget { 
+    color: #ffffff; 
+    font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; 
+    font-size: 14px; 
+}
 
-/* 歷史紀錄清單容器樣式 */
+/* 輸入框設計 */
+QLineEdit { 
+    background-color: #2d2d2d; 
+    border: 1px solid #3e3e3e; 
+    border-bottom: 1px solid #505050;
+    border-radius: 4px; 
+    padding: 10px 12px; 
+    color: #ffffff; 
+    font-size: 15px;
+    selection-background-color: #005fb8;
+}
+QLineEdit:focus { 
+    border-bottom: 2px solid #60cdff; 
+    background-color: #323232;
+}
+
+/* 下拉選單 */
+QComboBox { 
+    background-color: #2d2d2d; 
+    border: 1px solid #3e3e3e; 
+    border-radius: 4px; 
+    padding: 6px 10px; 
+    min-width: 80px;
+}
+QComboBox:hover {
+    background-color: #383838;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 20px;
+}
+
+/* 主按鈕 */
+QPushButton#PrimaryButton { 
+    background-color: #60cdff; 
+    color: #000000; 
+    font-weight: 600;
+    border-radius: 4px; 
+    padding: 8px 20px; 
+    border: none; 
+}
+QPushButton#PrimaryButton:hover { 
+    background-color: #7ce0ff; 
+}
+QPushButton#PrimaryButton:pressed { 
+    background-color: #50b0db; 
+}
+QPushButton#PrimaryButton:disabled { 
+    background-color: #333333; 
+    color: #777777; 
+}
+
+/* 次要/功能按鈕 */
+QPushButton#GhostButton {
+    background-color: transparent;
+    color: #cccccc;
+    border-radius: 4px;
+    padding: 4px;
+}
+QPushButton#GhostButton:hover {
+    background-color: #383838;
+    color: #ffffff;
+}
+
+/* 捲動區域 */
+QScrollArea { 
+    border: none; 
+    background-color: transparent;
+}
+
+/* 進度條 */
+QProgressBar { 
+    border: none; 
+    background-color: #1e1e1e; 
+    height: 3px; 
+}
+QProgressBar::chunk { 
+    background-color: #60cdff; 
+}
+
+/* 歷史紀錄清單 */
 QListWidget {
-    background-color: #2d2d2d;
-    border: 1px solid #3e3e3e;
-    border-radius: 6px;
+    background-color: #2b2b2b;
+    border: 1px solid #3b3b3b;
+    border-radius: 8px;
     outline: 0;
+    padding: 4px;
 }
 QListWidget::item {
-    border-bottom: 1px solid #333;
+    background-color: transparent;
+    border-radius: 4px;
+    padding: 8px;
+    margin-bottom: 2px;
 }
 QListWidget::item:hover {
-    background-color: transparent;
+    background-color: #383838;
+}
+QListWidget::item:selected {
+    background-color: #383838;
+    border-left: 3px solid #60cdff;
 }
 
-/* Windows 11 風格右鍵選單樣式 */
+/* =========================================
+   右鍵選單 (透明化修改)
+   ========================================= */
 QMenu {
-    background-color: #2d2d2d;
-    border: 1px solid #454545;
-    border-radius: 8px;
-    padding: 6px;
-    color: #ffffff;
-    font-family: "Segoe UI", "Microsoft JhengHei";
-    font-size: 13px;
+    /* 使用 rgba 設定半透明背景 (最後一個數字 230 代表不透明度 0-255) */
+    background-color: rgba(30, 30, 30, 230); 
+    border: 1px solid #555555; 
+    padding: 5px; 
+    border-radius: 8px; /* 恢復圓角 */
 }
+
 QMenu::item {
-    background-color: transparent;
-    padding: 6px 12px;
-    border-radius: 4px;
+    background-color: rgba(30, 30, 30, 230); /* 選項預設透明 */
+    color: #eeeeee;
+    padding: 8px 20px;
     margin: 2px 4px;
-    min-width: 120px;
+    border-radius: 4px;
+    border: none; /* 移除之前的黑色邊框 hack */
 }
+
 QMenu::item:selected {
-    background-color: #3f3f3f; /* Hover 顏色 */
+    background-color: rgba(255, 255, 255, 30); /* Hover 時稍微變亮 */
+    color: #ffffff;
 }
+
+QMenu::item:pressed {
+    background-color: rgba(255, 255, 255, 50);
+}
+
 QMenu::separator {
     height: 1px;
-    background-color: #454545;
+    background-color: #555555;
     margin: 4px 10px;
 }
 
-/* 訊息視窗樣式 */
-QMessageBox { background-color: #2d2d2d; color: white; }
+/* 訊息視窗 */
+QMessageBox { background-color: #2b2b2b; border: 1px solid #454545; }
 QMessageBox QLabel { color: #e0e0e0; }
 QMessageBox QPushButton {
-    background-color: #3e3e3e;
+    background-color: #383838;
     color: white;
-    border: 1px solid #555;
+    border: 1px solid #454545;
     border-radius: 4px;
-    padding: 6px 20px;
-    min-width: 60px;
+    padding: 6px 24px;
 }
-QMessageBox QPushButton:hover { background-color: #4e4e4e; }
+QMessageBox QPushButton:hover { background-color: #454545; border-color: #555; }
 """
 
 # ==========================================
@@ -188,7 +283,7 @@ class ImageSearchEngine:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.is_ready = False
-        print(f"🚀 [Engine] Initializing on {self.device.upper()}...")
+        print(f"[Engine] Initializing on {self.device.upper()}...")
         try:
             self.model = CLIPModel.from_pretrained(MODEL_NAME).to(self.device)
             self.processor = CLIPProcessor.from_pretrained(MODEL_NAME)
@@ -199,11 +294,11 @@ class ImageSearchEngine:
                 self.stored_embeddings = data['embeddings'].to(self.device)
                 self.stored_paths = data['paths']
                 self.is_ready = True
-                print(f"✅ [Engine] Loaded {len(self.stored_paths)} images.")
+                print(f"[Engine] Loaded {len(self.stored_paths)} images.")
             else:
-                print(f"❌ Index not found.")
+                print(f"[Error] Index file not found.")
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f"[Error] {e}")
 
     def search(self, query, top_k=20):
         if not self.is_ready: return []
@@ -275,7 +370,7 @@ class SearchWorker(QThread):
         self.finished_search.emit(elapsed, count)
 
 # ==========================================
-#  🔥 修改後的 ResultCard：支援右鍵選單
+#  UI 元件：結果卡片
 # ==========================================
 class ResultCard(QFrame):
     def __init__(self, result_data, q_image):
@@ -283,120 +378,138 @@ class ResultCard(QFrame):
         self.result_data = result_data
         self.path = result_data['path']
         self.filename = result_data['filename']
-        self.q_image_thumbnail = q_image # 保存縮圖引用
+        self.q_image_thumbnail = q_image
         
         self.setFixedSize(CARD_SIZE[0], CARD_SIZE[1])
-        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setObjectName("ResultCard")
+        # 卡片樣式：深色背景、圓角
         self.setStyleSheet("""
-            QFrame { background-color: #2d2d2d; border-radius: 10px; border: 1px solid #3e3e3e; } 
-            QFrame:hover { background-color: #383838; border: 1px solid #555; }
+            QFrame#ResultCard { 
+                background-color: #2b2b2b; 
+                border-radius: 8px; 
+                border: 1px solid #3b3b3b; 
+            } 
+            QFrame#ResultCard:hover { 
+                background-color: #323232; 
+                border: 1px solid #505050; 
+            }
         """)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        # 圖片區域
         self.img_label = QLabel()
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.img_label.setStyleSheet("border: none; background: transparent;")
+        self.img_label.setStyleSheet("background: transparent; border: none;")
         self.img_label.setPixmap(QPixmap.fromImage(q_image))
         layout.addWidget(self.img_label)
 
-        score_color = "#00e676" if result_data['score'] > 0.3 else "#aaaaaa"
+        # 文字資訊區域
+        text_container = QWidget()
+        text_container.setStyleSheet("background: transparent; border: none;")
+        text_layout = QVBoxLayout(text_container)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(2)
+
+        # 檔名 (截斷)
         name = result_data['filename']
-        if len(name) > 20: name = name[:18] + "..."
-        self.text_label = QLabel(f"<span style='color:{score_color}; font-weight:bold;'>{result_data['score']:.4f}</span><br><span style='color:#ddd; font-size:11px;'>{name}</span>")
-        self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.text_label.setStyleSheet("border: none; background: transparent;")
-        layout.addWidget(self.text_label)
+        if len(name) > 22: name = name[:20] + "..."
+        name_label = QLabel(name)
+        name_label.setStyleSheet("color: #ffffff; font-weight: 500; font-size: 13px;")
+        name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # 分數 (專業呈現)
+        score_val = result_data['score']
+        score_color = "#60cdff" if score_val > 0.3 else "#999999"
+        score_label = QLabel(f"{score_val:.4f}")
+        score_label.setStyleSheet(f"color: {score_color}; font-size: 12px; font-family: Consolas, Monospace;")
+        score_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        text_layout.addWidget(name_label)
+        text_layout.addWidget(score_label)
+        layout.addWidget(text_container)
+
         self.setLayout(layout)
 
-    # 處理左鍵點擊 (開啟檔案)
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             try: os.startfile(self.path)
             except: pass
-        # 呼叫父類以確保其他事件正常
         super().mousePressEvent(event)
 
-    # 處理右鍵選單
     def contextMenuEvent(self, event):
         menu = QMenu(self)
         
-        # 建立 Actions
-        # 為了美觀，這裡使用 Unicode 符號模擬圖示，或者保持純文字
-        action_copy = QAction("複製", self)
+        # 🔥 關鍵：設定選單為透明背景屬性
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        menu.setWindowFlags(menu.windowFlags() | Qt.WindowType.FramelessWindowHint)
+        
+        action_copy = QAction("Copy Image", self)
         action_copy.triggered.connect(self.copy_image)
         
-        action_copy_path = QAction("複製路徑", self)
+        action_copy_path = QAction("Copy Path", self)
         action_copy_path.triggered.connect(self.copy_path)
         
-        action_properties = QAction("詳細內容", self)
+        action_properties = QAction("Properties", self)
         action_properties.triggered.connect(self.show_properties)
 
-        # 佈局選單
         menu.addAction(action_copy)
         menu.addAction(action_copy_path)
-        menu.addSeparator() # 分隔線
+        menu.addSeparator()
         menu.addAction(action_properties)
 
-        # 顯示選單
         menu.exec(event.globalPos())
 
     def copy_image(self):
-        """複製原始圖片到剪貼簿"""
         try:
-            # 嘗試讀取原圖放入剪貼簿 (獲得最高畫質)
             original_img = QImage(self.path)
             if not original_img.isNull():
                 QApplication.clipboard().setImage(original_img)
             else:
-                # 若讀取失敗則複製縮圖
                 QApplication.clipboard().setImage(self.q_image_thumbnail)
         except Exception as e:
-            print(f"Copy image failed: {e}")
+            print(f"Copy failed: {e}")
 
     def copy_path(self):
-        """複製路徑到剪貼簿"""
         QApplication.clipboard().setText(self.path)
 
     def show_properties(self):
-        """顯示詳細內容"""
         try:
             info = QFileInfo(self.path)
             size_mb = info.size() / (1024 * 1024)
-            created = info.birthTime().toString("yyyy/MM/dd HH:mm")
-            modified = info.lastModified().toString("yyyy/MM/dd HH:mm")
+            created = info.birthTime().toString("yyyy-MM-dd HH:mm")
             
-            # 讀取圖片尺寸
             img = QImage(self.path)
             width, height = img.width(), img.height()
             
             msg_content = f"""
-            <h3 style='color: white; margin-bottom: 5px;'>{self.filename}</h3>
-            <hr>
-            <table cellspacing='5' cellpadding='2'>
-            <tr><td style='color:#aaaaaa;'>類型:</td><td style='color:white;'>{info.suffix().upper()} 檔案</td></tr>
-            <tr><td style='color:#aaaaaa;'>路徑:</td><td style='color:white;'>{self.path}</td></tr>
-            <tr><td style='color:#aaaaaa;'>大小:</td><td style='color:white;'>{size_mb:.2f} MB</td></tr>
-            <tr><td style='color:#aaaaaa;'>尺寸:</td><td style='color:white;'>{width} x {height}</td></tr>
-            <tr><td colspan='2'><hr></td></tr>
-            <tr><td style='color:#aaaaaa;'>建立:</td><td style='color:white;'>{created}</td></tr>
-            <tr><td style='color:#aaaaaa;'>修改:</td><td style='color:white;'>{modified}</td></tr>
+            <h3 style='color: white; font-family: Segoe UI; margin: 0;'>{self.filename}</h3>
+            <div style='margin-top: 10px; margin-bottom: 10px; height: 1px; background-color: #555555;'></div>
+            <table cellspacing='5' cellpadding='2' style='font-size: 13px;'>
+            <tr><td style='color:#aaaaaa;'>Type</td><td style='color:white;'>{info.suffix().upper()}</td></tr>
+            <tr><td style='color:#aaaaaa;'>Size</td><td style='color:white;'>{size_mb:.2f} MB</td></tr>
+            <tr><td style='color:#aaaaaa;'>Dimensions</td><td style='color:white;'>{width} x {height}</td></tr>
+            <tr><td style='color:#aaaaaa;'>Created</td><td style='color:white;'>{created}</td></tr>
+            <tr><td style='color:#aaaaaa;'>Path</td><td style='color:#dddddd;'>{self.path}</td></tr>
             </table>
             """
             
             box = QMessageBox(self)
-            box.setWindowTitle("詳細內容")
+            box.setWindowTitle("Properties")
             box.setTextFormat(Qt.TextFormat.RichText)
             box.setText(msg_content)
-            # 設定 QMessageBox 按鈕文字 (通常是 OK)
-            ok_btn = box.addButton("確定", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("Close", QMessageBox.ButtonRole.AcceptRole)
             box.exec()
             
         except Exception as e:
-            print(f"Show properties failed: {e}")
+            print(f"Properties failed: {e}")
 
 # ==========================================
-#  歷史紀錄 Widget
+#  歷史紀錄項目 Widget (極簡風格)
 # ==========================================
 class HistoryItemWidget(QWidget):
     def __init__(self, text, search_callback, delete_callback):
@@ -406,35 +519,25 @@ class HistoryItemWidget(QWidget):
         self.delete_callback = delete_callback
         
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 2, 5, 2)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 0, 5, 0)
         
-        self.label = QLabel(f"🕒 {text}")
-        self.label.setStyleSheet("color: #ccc; background: transparent;")
+        self.label = QLabel(text)
+        self.label.setStyleSheet("color: #eeeeee; background: transparent;")
         self.label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.label.mousePressEvent = self.on_label_clicked
         
         layout.addWidget(self.label, stretch=1)
 
-        self.del_btn = QPushButton("✕")
-        self.del_btn.setFixedSize(24, 24)
+        self.del_btn = QPushButton("×") 
+        self.del_btn.setObjectName("GhostButton")
+        self.del_btn.setFixedSize(28, 28)
         self.del_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.del_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: #666;
-                font-weight: bold;
-                border-radius: 12px;
-            }
-            QPushButton:hover {
-                background-color: #442020;
-                color: #ff5252;
-            }
+            QPushButton { font-size: 18px; padding-bottom: 4px; }
+            QPushButton:hover { color: #ff6b6b; background-color: #3e3e3e; }
         """)
         self.del_btn.clicked.connect(self.on_delete_clicked)
         layout.addWidget(self.del_btn)
-
-        self.setStyleSheet(".HistoryItemWidget:hover { background-color: #383838; border-radius: 4px; }")
 
     def on_label_clicked(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -442,20 +545,13 @@ class HistoryItemWidget(QWidget):
 
     def on_delete_clicked(self):
         self.delete_callback(self.text)
-    
-    def paintEvent(self, event):
-        from PyQt6.QtWidgets import QStyle, QStyleOption
-        from PyQt6.QtGui import QPainter
-        opt = QStyleOption()
-        opt.initFrom(self)
-        p = QPainter(self)
-        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, opt, p, self)
 
 class AdaptiveResultView(QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.container = QWidget()
+        self.container.setStyleSheet("background-color: #1e1e1e;")
         self.adaptive_layout = AdaptiveGridLayout(self.container, min_spacing=MIN_SPACING)
         self.setWidget(self.container)
 
@@ -481,7 +577,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(WINDOW_TITLE)
-        self.resize(1200, 850)
+        self.resize(1280, 900)
         self.engine = None
         self.img_cache = {}
         self.search_history = [] 
@@ -490,7 +586,6 @@ class MainWindow(QMainWindow):
         self.init_ui()
         
         QApplication.instance().installEventFilter(self)
-        
         threading.Thread(target=self.load_engine, daemon=True).start()
 
     def load_history(self):
@@ -499,7 +594,7 @@ class MainWindow(QMainWindow):
                 with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
                     self.search_history = json.load(f)
             except Exception as e:
-                print(f"Error loading history: {e}")
+                print(f"History error: {e}")
                 self.search_history = []
 
     def save_history_to_file(self):
@@ -507,15 +602,15 @@ class MainWindow(QMainWindow):
             with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.search_history, f, ensure_ascii=False)
         except Exception as e:
-            print(f"Error saving history: {e}")
+            print(f"Save error: {e}")
 
     def add_to_history(self, query):
         if not query: return
         if query in self.search_history:
             self.search_history.remove(query)
         self.search_history.insert(0, query)
-        if len(self.search_history) > 20:
-            self.search_history = self.search_history[:20]
+        if len(self.search_history) > 10: 
+            self.search_history = self.search_history[:10]
         self.save_history_to_file()
 
     def init_ui(self):
@@ -525,48 +620,79 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Top Bar
+        # --- Top Header Area ---
         top_bar = QFrame()
-        top_bar.setFixedHeight(80)
-        top_bar.setStyleSheet("background-color: #252525; border-bottom: 1px solid #333;")
-        top = QHBoxLayout(top_bar)
+        top_bar.setFixedHeight(90)
+        top_bar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #333;")
+        
+        header_layout = QHBoxLayout(top_bar)
+        header_layout.setContentsMargins(30, 0, 30, 0)
+        header_layout.setSpacing(15)
+
+        # 左側標題
+        title_label = QLabel("AI Search")
+        title_label.setStyleSheet("color: #e0e0e0; font-size: 18px; font-weight: 600; letter-spacing: 0.5px;")
+        header_layout.addWidget(title_label)
+
+        header_layout.addStretch(1)
+
+        # 中間搜尋區塊
+        search_container = QWidget()
+        search_container.setFixedWidth(600)
+        search_layout = QHBoxLayout(search_container)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(10)
+
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Type to search...")
+        self.input.returnPressed.connect(self.start_search)
         
         self.combo_limit = QComboBox()
-        self.combo_limit.addItems(["20", "50", "100", "全部"])
+        self.combo_limit.addItems(["20", "50", "100", "All"])
         self.combo_limit.setCurrentText("50")
-        top.addWidget(QLabel("Limit:"))
-        top.addWidget(self.combo_limit)
-        
-        self.input = QLineEdit()
-        self.input.setPlaceholderText("Search...")
-        self.input.returnPressed.connect(self.start_search)
-        top.addWidget(self.input)
         
         self.btn = QPushButton("Search")
+        self.btn.setObjectName("PrimaryButton")
+        self.btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn.clicked.connect(self.start_search)
-        self.btn.setEnabled(False)
-        top.addWidget(self.btn)
+        self.btn.setEnabled(False) 
+
+        search_layout.addWidget(self.input, stretch=1)
+        search_layout.addWidget(self.combo_limit)
+        search_layout.addWidget(self.btn)
+
+        header_layout.addWidget(search_container)
         
-        self.status = QLabel("Init...")
-        self.status.setStyleSheet("color: orange; font-weight: bold;")
-        top.addWidget(self.status)
+        header_layout.addStretch(1) 
+
+        # 右側狀態
+        self.status = QLabel("Initializing...")
+        self.status.setStyleSheet("color: #888888; font-size: 12px;")
+        header_layout.addWidget(self.status)
+
         layout.addWidget(top_bar)
 
+        # --- Progress Bar ---
         self.progress = QProgressBar()
         self.progress.hide()
         layout.addWidget(self.progress)
 
+        # --- Main Content ---
         self.view_component = AdaptiveResultView() 
         layout.addWidget(self.view_component)
 
-        # History List
+        # --- History Dropdown List ---
         self.history_list = QListWidget(self)
         self.history_list.hide()
         self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(20)
+        shadow.setColor(QColor(0, 0, 0, 100))
+        shadow.setOffset(0, 4)
+        self.history_list.setGraphicsEffect(shadow)
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.MouseButtonPress:
-            
             if self.history_list.isVisible():
                 click_pos = event.globalPosition().toPoint()
                 
@@ -591,9 +717,18 @@ class MainWindow(QMainWindow):
 
         self.history_list.clear()
         
+        # 標題項目
+        title_item = QListWidgetItem()
+        title_widget = QLabel(" Recent Searches")
+        title_widget.setStyleSheet("color: #888888; font-size: 12px; padding: 4px;")
+        title_item.setFlags(Qt.ItemFlag.NoItemFlags) 
+        title_item.setSizeHint(QSize(0, 30))
+        self.history_list.addItem(title_item)
+        self.history_list.setItemWidget(title_item, title_widget)
+
         for text in self.search_history:
             item = QListWidgetItem()
-            item.setSizeHint(QSize(0, 40)) 
+            item.setSizeHint(QSize(0, 44)) 
             
             widget = HistoryItemWidget(
                 text, 
@@ -607,9 +742,9 @@ class MainWindow(QMainWindow):
         input_pos = self.input.mapTo(self, QPoint(0, 0))
         input_h = self.input.height()
         input_w = self.input.width()
-        list_height = min(300, len(self.search_history) * 40 + 10)
-        self.history_list.setGeometry(input_pos.x(), input_pos.y() + input_h + 5, input_w, list_height)
+        list_height = min(320, self.history_list.sizeHintForRow(0) * (len(self.search_history) + 1) + 20)
         
+        self.history_list.setGeometry(input_pos.x(), input_pos.y() + input_h + 8, input_w, list_height)
         self.history_list.show()
         self.history_list.raise_()
 
@@ -630,8 +765,8 @@ class MainWindow(QMainWindow):
     def load_engine(self):
         try:
             self.engine = ImageSearchEngine()
-            self.status.setText("✅ Ready")
-            self.status.setStyleSheet("color: #00e676; font-weight: bold;")
+            QApplication.processEvents()
+            self.status.setText("System Ready")
             self.btn.setEnabled(True)
         except Exception as e:
             print(e)
@@ -649,7 +784,7 @@ class MainWindow(QMainWindow):
         self.status.setText("Searching...")
         
         limit = self.combo_limit.currentText()
-        k = 100000 if limit == "全部" else int(limit)
+        k = 100000 if limit == "All" else int(limit)
 
         self.view_component.clear()
 
@@ -662,13 +797,13 @@ class MainWindow(QMainWindow):
     def on_finished(self, elapsed, total):
         self.progress.hide()
         self.btn.setEnabled(True)
-        self.status.setText(f"✅ Found {total} ({elapsed:.2f}s)")
+        self.status.setText(f"Found {total} items ({elapsed:.2f}s)")
 
 if __name__ == "__main__":
     if hasattr(Qt.ApplicationAttribute, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
     app = QApplication(sys.argv)
-    app.setStyleSheet(DARK_STYLESHEET)
+    app.setStyleSheet(WIN11_STYLESHEET)
     w = MainWindow()
     w.show()
     sys.exit(app.exec())
