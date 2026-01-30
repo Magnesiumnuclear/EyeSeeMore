@@ -26,7 +26,7 @@ PRETRAINED = 'frozen_laion5b_s13b_b90k'
 THUMBNAIL_SIZE = (220, 220)
 CARD_SIZE = (240, 280) 
 MIN_SPACING = 24       
-WINDOW_TITLE = "Local AI Search (H-14 Fix)"
+WINDOW_TITLE = "Local AI Search (Image-to-Image Supported)"
 
 # --- 樣式表 ---
 WIN11_STYLESHEET = """
@@ -102,7 +102,7 @@ class AdaptiveGridLayout(QLayout):
         return y + item_h + self._min_spacing - rect.y() if current_col > 0 else y - rect.y()
 
 # ==========================================
-#  🔥 引擎 (已修正 FP16/FP32 型態衝突)
+#  🔥 引擎 (支援 文字 與 圖片 雙模搜尋)
 # ==========================================
 class ImageSearchEngine:
     def __init__(self):
@@ -111,66 +111,83 @@ class ImageSearchEngine:
         print(f"[Engine] Initializing on {self.device.upper()}...")
         try:
             print(f"[Engine] Loading OpenCLIP model: {MODEL_NAME}...")
-            # 1. 載入模型
             self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-                MODEL_NAME, 
-                pretrained=PRETRAINED, 
-                device=self.device
+                MODEL_NAME, pretrained=PRETRAINED, device=self.device
             )
             self.model.eval()
-
-            # 2. 手動載入 Tokenizer
             print(f"[Engine] Loading Tokenizer directly from HuggingFace...")
             self.tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-large')
-
-            # 3. 載入索引
             if os.path.exists(INDEX_FILE):
-                with open(INDEX_FILE, 'rb') as f:
-                    data = pickle.load(f)
+                with open(INDEX_FILE, 'rb') as f: data = pickle.load(f)
                 self.stored_embeddings = data['embeddings'].to(self.device)
                 self.stored_paths = data['paths']
                 self.is_ready = True
                 print(f"[Engine] Loaded {len(self.stored_paths)} images from {INDEX_FILE}.")
-                print(f"[Debug] Index dtype: {self.stored_embeddings.dtype}") # 確認型態
-            else:
-                print(f"[Error] Index file not found: {INDEX_FILE}")
-        except Exception as e:
-            print(f"[Error] {e}")
+            else: print(f"[Error] Index file not found: {INDEX_FILE}")
+        except Exception as e: print(f"[Error] {e}")
 
     def search(self, query, top_k=20):
+        """文字搜尋"""
         if not self.is_ready: return []
         with torch.no_grad():
-            inputs = self.tokenizer(
-                query, 
-                padding=True, 
-                truncation=True, 
-                return_tensors="pt"
-            ).to(self.device)
-            
+            inputs = self.tokenizer(query, padding=True, truncation=True, return_tensors="pt").to(self.device)
             text_features = self.model.encode_text(inputs.input_ids)
             text_features /= text_features.norm(dim=-1, keepdim=True)
-            
-            # 🔥 關鍵修正：強制將文字向量轉為與儲存向量相同的型態 (FP16)
             text_features = text_features.to(self.stored_embeddings.dtype)
             
         similarity = (text_features @ self.stored_embeddings.T).squeeze(0)
+        return self._get_results(similarity, top_k)
+
+    def search_image(self, image_path, top_k=20):
+        """🔥 圖片搜尋圖片"""
+        if not self.is_ready: return []
+        try:
+            image = Image.open(image_path).convert('RGB')
+            processed_image = self.preprocess(image).unsqueeze(0).to(self.device)
+            
+            with torch.no_grad():
+                image_features = self.model.encode_image(processed_image)
+                image_features /= image_features.norm(dim=-1, keepdim=True)
+                # 重要：確保資料型態一致 (FP16)
+                image_features = image_features.to(self.stored_embeddings.dtype)
+            
+            similarity = (image_features @ self.stored_embeddings.T).squeeze(0)
+            return self._get_results(similarity, top_k)
+        except Exception as e:
+            print(f"[Error] Image search failed: {e}")
+            return []
+
+    def _get_results(self, similarity, top_k):
         k = min(top_k, len(self.stored_paths))
         values, indices = similarity.topk(k)
         results = []
         for i in range(k):
             idx = indices[i].item()
-            results.append({
-                "score": values[i].item(),
-                "path": self.stored_paths[idx],
-                "filename": os.path.basename(self.stored_paths[idx])
-            })
+            results.append({"score": values[i].item(), "path": self.stored_paths[idx], "filename": os.path.basename(self.stored_paths[idx])})
         return results
 
 class SearchWorker(QThread):
     batch_ready = pyqtSignal(list); finished_search = pyqtSignal(float, int)
-    def __init__(self, engine, query, top_k, img_cache): super().__init__(); self.engine = engine; self.query = query; self.top_k = top_k; self.img_cache = img_cache
+    
+    # 新增 search_mode 參數
+    def __init__(self, engine, query, top_k, img_cache, search_mode="text"): 
+        super().__init__()
+        self.engine = engine
+        self.query = query
+        self.top_k = top_k
+        self.img_cache = img_cache
+        self.search_mode = search_mode
+
     def run(self):
-        start_time = time.time(); raw_results = self.engine.search(self.query, self.top_k); count = 0; batch_buffer = []; BATCH_SIZE = 5
+        start_time = time.time()
+        
+        # 根據模式選擇搜尋方式
+        if self.search_mode == "image":
+            raw_results = self.engine.search_image(self.query, self.top_k)
+        else:
+            raw_results = self.engine.search(self.query, self.top_k)
+            
+        count = 0; batch_buffer = []; BATCH_SIZE = 5
         for res in raw_results:
             path = res['path']; q_image = None
             if path in self.img_cache: q_image = self.img_cache[path]
@@ -185,7 +202,13 @@ class SearchWorker(QThread):
         if batch_buffer: self.batch_ready.emit(batch_buffer)
         self.finished_search.emit(time.time() - start_time, count)
 
+# ==========================================
+#  UI 元件
+# ==========================================
 class ResultCard(QFrame):
+    # 🔥 新增訊號：請求以該圖片進行搜尋
+    search_signal = pyqtSignal(str)
+
     def __init__(self, result_data, q_image):
         super().__init__()
         self.result_data = result_data; self.path = result_data['path']; self.filename = result_data['filename']; self.q_image_thumbnail = q_image
@@ -206,10 +229,28 @@ class ResultCard(QFrame):
         super().mousePressEvent(event)
     def contextMenuEvent(self, event):
         menu = QMenu(self); menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground); menu.setWindowFlags(menu.windowFlags() | Qt.WindowType.FramelessWindowHint)
+        
+        # 🔥 修改功能：移除表情符號，並調整順序
+        action_search_sim = QAction("Search Similar Images", self)
+        action_search_sim.triggered.connect(self.trigger_image_search)
+        
         action_copy = QAction("Copy Image", self); action_copy.triggered.connect(self.copy_image)
         action_copy_path = QAction("Copy Path", self); action_copy_path.triggered.connect(self.copy_path)
         action_properties = QAction("Properties", self); action_properties.triggered.connect(self.show_properties)
-        menu.addAction(action_copy); menu.addAction(action_copy_path); menu.addSeparator(); menu.addAction(action_properties); menu.exec(event.globalPos())
+        
+        # 順序：1. Copy Image, 2. Copy Path, 3. Search Similar Images, 4. Properties
+        menu.addAction(action_copy)
+        menu.addAction(action_copy_path)
+        menu.addAction(action_search_sim) # 第 3 順位
+        menu.addSeparator()
+        menu.addAction(action_properties)
+        
+        menu.exec(event.globalPos())
+    
+    def trigger_image_search(self):
+        # 發送訊號給父視窗
+        self.search_signal.emit(self.path)
+
     def copy_image(self):
         try:
             original_img = QImage(self.path)
@@ -238,6 +279,9 @@ class HistoryItemWidget(QWidget):
     def on_delete_clicked(self): self.delete_callback(self.text)
 
 class AdaptiveResultView(QScrollArea):
+    # 🔥 新增訊號：轉發以圖搜圖請求
+    image_search_requested = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWidgetResizable(True)
@@ -247,7 +291,6 @@ class AdaptiveResultView(QScrollArea):
         self.setWidget(self.container)
 
     def clear(self):
-        # 🔥 修正：正確縮排，避免 UnboundLocalError
         while self.adaptive_layout.count():
             item = self.adaptive_layout.takeAt(0)
             if item.widget():
@@ -258,6 +301,8 @@ class AdaptiveResultView(QScrollArea):
         try:
             for res, q_image in batch_data:
                 card = ResultCard(res, q_image)
+                # 連接卡片的搜尋訊號到 View 的訊號
+                card.search_signal.connect(self.image_search_requested.emit)
                 self.adaptive_layout.addWidget(card)
         finally:
             self.container.setUpdatesEnabled(True)
@@ -293,7 +338,12 @@ class MainWindow(QMainWindow):
         search_layout.addWidget(self.input, stretch=1); search_layout.addWidget(self.combo_limit); search_layout.addWidget(self.btn); header_layout.addWidget(search_container); header_layout.addStretch(1) 
         self.status = QLabel("Initializing..."); self.status.setStyleSheet("color: #888888; font-size: 12px;"); header_layout.addWidget(self.status); layout.addWidget(top_bar)
         self.progress = QProgressBar(); self.progress.hide(); layout.addWidget(self.progress)
-        self.view_component = AdaptiveResultView(); layout.addWidget(self.view_component)
+        
+        self.view_component = AdaptiveResultView()
+        # 🔥 連接 View 的圖片搜尋請求到 Main Window 的處理函式
+        self.view_component.image_search_requested.connect(self.start_image_search)
+        layout.addWidget(self.view_component)
+        
         self.history_list = QListWidget(self); self.history_list.hide(); self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus); shadow = QGraphicsDropShadowEffect(); shadow.setBlurRadius(20); shadow.setColor(QColor(0, 0, 0, 100)); shadow.setOffset(0, 4); self.history_list.setGraphicsEffect(shadow)
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.MouseButtonPress:
@@ -317,7 +367,24 @@ class MainWindow(QMainWindow):
     def start_search(self):
         q = self.input.text().strip(); 
         if not q or not self.engine: return
-        self.add_to_history(q); self.history_list.hide(); self.btn.setEnabled(False); self.progress.show(); self.progress.setRange(0, 0); self.status.setText("Searching..."); limit = self.combo_limit.currentText(); k = 100000 if limit == "All" else int(limit); self.view_component.clear(); self.worker = SearchWorker(self.engine, q, k, self.img_cache); self.worker.batch_ready.connect(self.view_component.add_items); self.worker.finished_search.connect(self.on_finished); self.worker.finished.connect(self.worker.deleteLater); self.worker.start()
+        self.add_to_history(q); self.history_list.hide(); self.btn.setEnabled(False); self.progress.show(); self.progress.setRange(0, 0); self.status.setText("Searching..."); limit = self.combo_limit.currentText(); k = 100000 if limit == "All" else int(limit); self.view_component.clear(); 
+        # 啟動文字搜尋 Worker
+        self.worker = SearchWorker(self.engine, q, k, self.img_cache, search_mode="text"); 
+        self.worker.batch_ready.connect(self.view_component.add_items); self.worker.finished_search.connect(self.on_finished); self.worker.finished.connect(self.worker.deleteLater); self.worker.start()
+    
+    # 🔥 新增：啟動圖片搜尋
+    def start_image_search(self, image_path):
+        if not self.engine: return
+        self.history_list.hide(); self.btn.setEnabled(False); self.progress.show(); self.progress.setRange(0, 0)
+        self.status.setText("Searching by Image..."); 
+        # 更新輸入框顯示圖片檔名，讓使用者知道現在在搜這張圖
+        self.input.setText(f"[Image] {os.path.basename(image_path)}")
+        
+        limit = self.combo_limit.currentText(); k = 100000 if limit == "All" else int(limit); self.view_component.clear(); 
+        # 啟動圖片搜尋 Worker (search_mode="image")
+        self.worker = SearchWorker(self.engine, image_path, k, self.img_cache, search_mode="image"); 
+        self.worker.batch_ready.connect(self.view_component.add_items); self.worker.finished_search.connect(self.on_finished); self.worker.finished.connect(self.worker.deleteLater); self.worker.start()
+
     def on_finished(self, elapsed, total): self.progress.hide(); self.btn.setEnabled(True); self.status.setText(f"Found {total} items ({elapsed:.2f}s)")
 
 if __name__ == "__main__":
