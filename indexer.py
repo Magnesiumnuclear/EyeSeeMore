@@ -54,22 +54,6 @@ def init_db(db_path):
     )
     ''')
     
-    # 自動遷移檢查
-    existing_columns = set()
-    try:
-        cursor.execute("PRAGMA table_info(images)")
-        for col in cursor.fetchall():
-            existing_columns.add(col[1])
-    except: pass
-
-    if 'ocr_text' not in existing_columns:
-        cursor.execute("ALTER TABLE images ADD COLUMN ocr_text TEXT")
-    if 'ocr_data' not in existing_columns:
-        cursor.execute("ALTER TABLE images ADD COLUMN ocr_data TEXT")
-
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_filename ON images (filename)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_folder_path ON images (folder_path)')
-    
     conn.commit()
     return conn
 
@@ -97,7 +81,7 @@ def clean_deleted_files(conn, disk_paths):
     cursor.execute("SELECT file_path FROM images")
     db_paths = set(row[0] for row in cursor.fetchall())
     
-    # 1. 處理刪除 (資料庫有，硬碟沒有)
+    # 1. 處理刪除
     to_delete = db_paths - disk_paths
     if to_delete:
         print(f"🗑️ 發現 {len(to_delete)} 個過期檔案，正在清理資料庫...")
@@ -109,22 +93,18 @@ def clean_deleted_files(conn, disk_paths):
             cursor.execute(f"DELETE FROM images WHERE file_path IN ({placeholders})", batch)
         conn.commit()
     
-    # 2. 找出新增 (硬碟有，資料庫沒有)
+    # 2. 找出新增
     to_add = disk_paths - db_paths
     return list(to_add)
 
 def load_ai_models(device):
-    """
-    獨立的模型載入函式
-    只有在真的需要處理圖片時才會被呼叫
-    """
+    """載入模型"""
     print(f"📥 正在載入 OpenCLIP & PaddleOCR (Device: {device})...")
     try:
         model, _, preprocess = open_clip.create_model_and_transforms(
             MODEL_NAME, pretrained=PRETRAINED, device=device
         )
         model.eval()
-        # use_angle_cls=False 速度較快
         ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False)
         return model, preprocess, ocr_engine
     except Exception as e:
@@ -142,7 +122,6 @@ def update_folder_stats(conn):
     """)
     conn.commit()
     
-    # 顯示
     print("\n" + "="*50)
     print("📊 資料庫統計報告")
     print("="*50)
@@ -152,8 +131,6 @@ def update_folder_stats(conn):
     if not rows:
         print("   (無資料)")
     else:
-        print(f"{'數量':<6} | {'更新時間':<20} | {'資料夾路徑'}")
-        print("-" * 60)
         for row in rows:
             print(f"{row[1]:<6} | {row[2]:<20} | {row[0]}")
             total += row[1]
@@ -167,19 +144,14 @@ def main():
 
     conn = init_db(DB_PATH)
     
-    # --- 步驟 1: 先掃描硬碟與比對資料庫 (輕量級操作) ---
     disk_paths_set = scan_disk_files(SOURCE_FOLDERS)
-    
-    # 這一步會直接執行刪除操作，並回傳需要新增的檔案列表
     files_to_process = clean_deleted_files(conn, disk_paths_set)
 
-    # --- 步驟 2: 判斷是否需要載入模型 ---
     if not files_to_process:
         print("✨ 資料庫已是最新狀態，跳過模型載入。")
     else:
         print(f"🆕 發現 {len(files_to_process)} 張新圖片，準備開始索引...")
         
-        # --- 步驟 3: 只有這裡才載入模型 (重量級操作) ---
         model, preprocess, ocr_engine = load_ai_models(device)
         
         if model and ocr_engine:
@@ -193,22 +165,36 @@ def main():
                 
                 for path in batch_paths:
                     try:
+                        # 1. 圖片預處理
                         img = Image.open(path).convert('RGB')
                         processed_img = preprocess(img).unsqueeze(0)
                         
-                        # OCR
+                        # 2. OCR 處理
                         ocr_result = ocr_engine.ocr(path, cls=True)
                         detected_text_list = []
                         json_data_list = []
+                        
                         if ocr_result and ocr_result[0]:
                             for line in ocr_result[0]:
-                                detected_text_list.append(line[1][0])
+                                # line 格式: [ [[x1,y1],[x2,y2]...], [text, conf] ]
+                                box = line[0]
+                                text = line[1][0]
+                                conf = line[1][1]
+                                
+                                # [重要修復] 強制轉型為標準 Python int，避免 JSON 報錯
+                                clean_box = [[int(pt[0]), int(pt[1])] for pt in box]
+                                
+                                detected_text_list.append(text)
                                 json_data_list.append({
-                                    "box": line[0],
-                                    "text": line[1][0],
-                                    "conf": round(float(line[1][1]), 4)
+                                    "box": clean_box,
+                                    "text": text,
+                                    "conf": round(float(conf), 4)
                                 })
                         
+                        # Debug: 如果有找到字，印出數量 (測試用)
+                        if detected_text_list:
+                            tqdm.write(f"   [OCR] {os.path.basename(path)} -> 找到 {len(detected_text_list)} 行文字")
+
                         batch_images.append(processed_img)
                         db_data.append({
                             "path": path,
@@ -218,7 +204,9 @@ def main():
                             "ocr_text": " ".join(detected_text_list),
                             "ocr_data": json.dumps(json_data_list, ensure_ascii=False)
                         })
-                    except Exception:
+                    except Exception as e:
+                        # [重要修復] 印出具體錯誤，而不是跳過
+                        print(f"\n❌ 處理失敗 {os.path.basename(path)}: {e}")
                         continue
                 
                 if not batch_images: continue
@@ -249,7 +237,6 @@ def main():
             
             print("✅ 索引同步完成！")
 
-    # --- 步驟 4: 無論是否有更新，都重新統計並顯示結果 ---
     update_folder_stats(conn)
     conn.close()
 

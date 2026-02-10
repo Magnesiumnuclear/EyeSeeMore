@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QListWidget, QListWidgetItem, QSizePolicy, QMenu, QMessageBox,
                              QGraphicsDropShadowEffect, QCheckBox, QInputDialog, QDialog)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent, QFileInfo, QTimer
-from PyQt6.QtGui import QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, QShortcut
+from PyQt6.QtGui import QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, QShortcut, QFontMetrics
 
 # --- 設定區 ---
 DB_FILE = "images.db"
@@ -61,6 +61,11 @@ QMessageBox QPushButton:hover { background-color: #454545; border-color: #555; }
 QCheckBox { color: #ccc; spacing: 5px; }
 QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #555; border-radius: 3px; background: #2d2d2d; }
 QCheckBox::indicator:checked { background-color: #60cdff; border: 1px solid #60cdff; }
+/* Scrollbar Styling */
+QScrollBar:vertical { border: none; background: #2b2b2b; width: 8px; margin: 0px 0px 0px 0px; border-radius: 4px; }
+QScrollBar::handle:vertical { background: #555; min-height: 20px; border-radius: 4px; }
+QScrollBar::add-line:vertical { height: 0px; subcontrol-position: bottom; subcontrol-origin: margin; }
+QScrollBar::sub-line:vertical { height: 0px; subcontrol-position: top; subcontrol-origin: margin; }
 """
 
 class AdaptiveGridLayout(QLayout):
@@ -133,25 +138,34 @@ class ImageSearchEngine:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT file_path, embedding, ocr_text FROM images")
+            # [修改] 增加讀取 ocr_data
+            cursor.execute("SELECT file_path, embedding, ocr_text, ocr_data FROM images")
             rows = cursor.fetchall()
             
             self.data_store = [] 
             embeddings_list = []
             
-            for path, blob, ocr_text in rows:
-                if not os.path.exists(path): continue # 簡易過濾不存在的檔案
+            for path, blob, ocr_text, ocr_data_json in rows:
+                if not os.path.exists(path): continue 
                 emb_array = np.frombuffer(blob, dtype=np.float32)
                 embeddings_list.append(emb_array)
                 
                 text_content = ocr_text if ocr_text else ""
                 
+                # [修改] 解析 JSON
+                ocr_boxes = []
+                if ocr_data_json:
+                    try: ocr_boxes = json.loads(ocr_data_json)
+                    except: pass
+
                 self.data_store.append({
                     "path": path,
                     "filename": os.path.basename(path),
-                    "ocr_text": text_content.lower()
+                    "ocr_text": text_content.lower(),
+                    "ocr_data": ocr_boxes # 儲存座標數據
                 })
-
+            
+            # ... (以下保持不變)
             if self.data_store:
                 emb_matrix = np.stack(embeddings_list)
                 self.stored_embeddings = torch.from_numpy(emb_matrix).to(self.device)
@@ -166,16 +180,30 @@ class ImageSearchEngine:
             if conn: conn.close()
 
     def get_folder_stats(self):
-        """統計各資料夾的圖片數量"""
+        """
+        [修改] 統計各資料夾的圖片數量
+        優先從 'folder_stats' 表讀取 (由 indexer.py 生成)
+        """
         if not os.path.exists(DB_FILE): return []
         try:
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
-            cursor.execute("SELECT folder_path, COUNT(*) FROM images GROUP BY folder_path")
+            
+            # 1. 檢查 folder_stats 表是否存在
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='folder_stats'")
+            if cursor.fetchone():
+                # 從統計表直接讀取 (速度快)
+                cursor.execute("SELECT folder_path, image_count FROM folder_stats ORDER BY folder_path ASC")
+            else:
+                # Fallback: 如果沒有統計表，使用 Group By 即時計算 (速度較慢)
+                print("[Engine] 'folder_stats' table missing. Calculating on the fly...")
+                cursor.execute("SELECT folder_path, COUNT(*) FROM images GROUP BY folder_path")
+                
             stats = cursor.fetchall()
             conn.close()
             return stats
-        except:
+        except Exception as e:
+            print(f"[Error] Failed to get stats: {e}")
             return []
 
     def rename_file(self, old_path, new_name):
@@ -208,6 +236,7 @@ class ImageSearchEngine:
             return True, new_path
         except Exception as e:
             return False, str(e)
+
 
     def search_hybrid(self, query, top_k=50, use_ocr=True):
         if not self.is_ready: return []
@@ -250,7 +279,8 @@ class ImageSearchEngine:
                     "name_bonus": name_bonus,
                     "is_ocr_match": (ocr_bonus > 0),
                     "path": item["path"],
-                    "filename": item["filename"]
+                    "filename": item["filename"],
+                    "ocr_data": item.get("ocr_data", []) # [修正] 這裡原本漏掉了！補上傳遞座標資料
                 })
         
         results.sort(key=lambda x: x["score"], reverse=True)
@@ -284,7 +314,8 @@ class ImageSearchEngine:
                     "name_bonus": 0.0,
                     "is_ocr_match": False,
                     "path": item["path"],
-                    "filename": item["filename"]
+                    "filename": item["filename"],
+                    "ocr_data": item.get("ocr_data", []) # [修正] 這裡原本也漏掉了！
                 })
             return results
         except Exception as e:
@@ -325,30 +356,78 @@ class SearchWorker(QThread):
                 if len(batch_buffer) >= BATCH_SIZE: self.batch_ready.emit(batch_buffer); batch_buffer = []; time.sleep(0.001)
         if batch_buffer: self.batch_ready.emit(batch_buffer)
         self.finished_search.emit(time.time() - start_time, count)
+from PyQt6.QtGui import QPainter, QPen, QPolygon
 
+class OCRLabel(QLabel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.ocr_data = []
+        self.show_ocr_boxes = False
+        self.original_size = QSize(0, 0) # 圖片原始尺寸
+
+    def set_ocr_data(self, data, orig_w, orig_h):
+        self.ocr_data = data
+        self.original_size = QSize(orig_w, orig_h)
+
+    def set_draw_boxes(self, show):
+        self.show_ocr_boxes = show
+        self.update() # 觸發重繪
+
+    def paintEvent(self, event):
+        super().paintEvent(event) # 先畫圖片
+        
+        if self.show_ocr_boxes and self.ocr_data and self.pixmap():
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            # 設定畫筆 (紅色框，黃色字)
+            pen = QPen(QColor(255, 0, 0, 200)) # 紅色半透明
+            pen.setWidth(2)
+            painter.setPen(pen)
+            
+            # 計算縮放比例
+            displayed_w = self.pixmap().width()
+            displayed_h = self.pixmap().height()
+            
+            # 計算圖片在 Label 中的偏移量 (因為是 Center 對齊)
+            offset_x = (self.width() - displayed_w) / 2
+            offset_y = (self.height() - displayed_h) / 2
+            
+            scale_x = displayed_w / self.original_size.width()
+            scale_y = displayed_h / self.original_size.height()
+
+            for item in self.ocr_data:
+                box = item.get("box") # [[x,y], [x,y], [x,y], [x,y]]
+                if box:
+                    # 轉換座標
+                    poly_points = []
+                    for pt in box:
+                        nx = pt[0] * scale_x + offset_x
+                        ny = pt[1] * scale_y + offset_y
+                        poly_points.append(QPoint(int(nx), int(ny)))
+                    
+                    painter.drawPolygon(QPolygon(poly_points))
 # ==========================================
 #  UI 元件
 # ==========================================
 class PreviewOverlay(QWidget):
-    """Mac 風格的空白鍵預覽圖層"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False) # 攔截滑鼠點擊以關閉
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.hide()
-        self.setStyleSheet("background-color: rgba(0, 0, 0, 200);")
+        self.setStyleSheet("background-color: rgba(0, 0, 0, 220);")
         
         self.layout = QVBoxLayout(self)
         self.layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        self.image_label = QLabel()
+        # 使用自定義的 Label
+        self.image_label = OCRLabel()
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet("background: transparent;")
         
-        # 陰影效果
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(40)
         shadow.setColor(QColor(0,0,0, 150))
-        shadow.setOffset(0, 10)
         self.image_label.setGraphicsEffect(shadow)
         
         self.layout.addWidget(self.image_label)
@@ -357,15 +436,19 @@ class PreviewOverlay(QWidget):
         self.filename_label.setStyleSheet("color: white; font-size: 18px; font-weight: bold; background: transparent; margin-top: 10px;")
         self.filename_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.layout.addWidget(self.filename_label)
+        
+        self.ocr_hint = QLabel("Hold SHIFT to view OCR text locations")
+        self.ocr_hint.setStyleSheet("color: #888; font-size: 12px; margin-top: 5px;")
+        self.layout.addWidget(self.ocr_hint, alignment=Qt.AlignmentFlag.AlignCenter)
 
-    def show_image(self, path):
+    def show_image(self, result_data):
+        path = result_data['path']
         if not os.path.exists(path): return
         
-        # 載入大圖
         img = QImage(path)
         if img.isNull(): return
         
-        # 計算縮放比例 (不超過視窗 80%)
+        # 確保視窗大小
         screen_size = self.parent().size()
         max_w = int(screen_size.width() * 0.85)
         max_h = int(screen_size.height() * 0.85)
@@ -374,19 +457,36 @@ class PreviewOverlay(QWidget):
         pixmap = pixmap.scaled(max_w, max_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         
         self.image_label.setPixmap(pixmap)
-        self.filename_label.setText(os.path.basename(path))
         
+        # 設定 OCR 數據
+        orig_w, orig_h = img.width(), img.height()
+        ocr_boxes = result_data.get('ocr_data', [])
+        
+        # 除錯用：印出有沒有座標資料
+        print(f"Loaded OCR Data for {os.path.basename(path)}: {len(ocr_boxes)} boxes") 
+        
+        self.image_label.set_ocr_data(ocr_boxes, orig_w, orig_h)
+        
+        self.filename_label.setText(os.path.basename(path))
         self.resize(self.parent().size())
         self.show()
         self.raise_()
         self.setFocus()
 
-    def mousePressEvent(self, event):
-        self.hide() # 點擊任何地方關閉
-        
+    # [新增] 給主視窗呼叫的開關
+    def set_ocr_visible(self, visible):
+        self.image_label.set_draw_boxes(visible)
+
+    # 移除內部的 KeyPressEvent，改由 MainWindow 控制
+    # def keyPressEvent(self, event): ... (已刪除)
+    
+    # 這裡只保留 Esc 和 Space 關閉功能 (Shift 交給 MainWindow)
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Escape):
             self.hide()
+
+    def mousePressEvent(self, event):
+        self.hide()
 
 class ResultCard(QFrame):
     search_signal = pyqtSignal(str)
@@ -493,11 +593,11 @@ class ResultCard(QFrame):
         action_score = QAction("Score Details", self); action_score.triggered.connect(self.show_score_details)
         action_properties = QAction("Properties", self); action_properties.triggered.connect(self.show_properties)
         
-        menu.addAction(action_rename) # 新增重命名
-        menu.addSeparator()
         menu.addAction(action_copy)
         menu.addAction(action_copy_path)
         menu.addAction(action_search_sim)
+        menu.addSeparator()
+        menu.addAction(action_rename) # 新增重命名
         menu.addSeparator()
         menu.addAction(action_score)
         menu.addAction(action_properties)
@@ -561,9 +661,14 @@ class AdaptiveResultView(QScrollArea):
         self.adaptive_layout = AdaptiveGridLayout(self.container, min_spacing=MIN_SPACING)
         self.setWidget(self.container)
         self.cards = []
+        self.current_idx = -1 # [新增] 追蹤當前索引
+
+    # ... (clear 與 add_items 保持不變) ...
+    # 注意：add_items 裡面的 card 要加上索引，或者我們用 cards list 的順序
 
     def clear(self):
         self.cards = []
+        self.current_idx = -1
         while self.adaptive_layout.count():
             item = self.adaptive_layout.takeAt(0)
             if item.widget():
@@ -575,43 +680,124 @@ class AdaptiveResultView(QScrollArea):
             for res, q_image in batch_data:
                 card = ResultCard(res, q_image)
                 card.search_signal.connect(self.image_search_requested.emit)
-                card.selected_signal.connect(self.on_card_selected)
+                card.selected_signal.connect(self.on_card_selected_by_click) # 改名區分
                 card.rename_signal.connect(self.rename_requested.emit)
                 self.adaptive_layout.addWidget(card)
                 self.cards.append(card)
         finally:
             self.container.setUpdatesEnabled(True)
 
-    def on_card_selected(self, path):
-        # 單選邏輯：取消其他卡片的選取
-        for c in self.cards:
-            if c.path != path and c.is_selected:
-                c.set_selected(False)
-            elif c.path == path:
-                c.set_selected(True)
-        self.card_selected.emit(path)
+    def on_card_selected_by_click(self, path):
+        # 找出點擊的是哪個 index
+        for i, card in enumerate(self.cards):
+            if card.path == path:
+                self.set_selection(i)
+                break
+
+    def set_selection(self, index):
+        if index < 0 or index >= len(self.cards): return
+        
+        # 取消舊的
+        if 0 <= self.current_idx < len(self.cards):
+            self.cards[self.current_idx].set_selected(False)
+            
+        # 設定新的
+        self.current_idx = index
+        card = self.cards[index]
+        card.set_selected(True)
+        self.ensureWidgetVisible(card) # 自動滾動
+        self.card_selected.emit(card.path)
+
+    def get_selected_data(self):
+        if 0 <= self.current_idx < len(self.cards):
+            return self.cards[self.current_idx].result_data
+        return None
+
+    def navigate(self, direction):
+        if not self.cards: return
+        
+        # 如果還沒選取，從 0 開始
+        if self.current_idx == -1:
+            self.set_selection(0)
+            return
+
+        # 計算當前一行有幾個 (Columns)
+        # 邏輯：容器寬度 / (卡片寬 + 間距)
+        viewport_w = self.viewport().width()
+        item_w = CARD_SIZE[0]
+        # 簡單估算列數
+        cols = max(1, (viewport_w - MIN_SPACING) // (item_w + MIN_SPACING))
+        
+        new_idx = self.current_idx
+        
+        if direction == "D":   # Right
+            new_idx += 1
+        elif direction == "A": # Left
+            new_idx -= 1
+        elif direction == "W": # Up
+            new_idx -= cols
+        elif direction == "S": # Down
+            new_idx += cols
+            
+        # 邊界檢查
+        new_idx = max(0, min(new_idx, len(self.cards) - 1))
+        
+        if new_idx != self.current_idx:
+            self.set_selection(new_idx)
 
 class StatsMenuWidget(QFrame):
-    """可收合的資料夾統計選單"""
+    """
+    [修改] 可收合的資料夾統計選單
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.hide()
-        self.setFixedWidth(300)
+        self.setFixedWidth(420) # 保持足夠寬度
+        self.setFixedHeight(500)
         self.setStyleSheet("""
             QFrame { background-color: #252525; border: 1px solid #3e3e3e; border-radius: 6px; }
-            QLabel { color: #ccc; border: none; }
+            QLabel { color: #ccc; border: none; background: transparent; }
         """)
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(15, 15, 15, 15)
-        self.layout.setSpacing(10)
         
-        title = QLabel("Source Folders")
-        title.setStyleSheet("color: white; font-weight: bold; font-size: 14px; margin-bottom: 5px;")
-        self.layout.addWidget(title)
+        # 主佈局
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(1, 1, 1, 1)
+        self.main_layout.setSpacing(0)
         
-        self.content_layout = QVBoxLayout()
-        self.layout.addLayout(self.content_layout)
-        self.layout.addStretch()
+        # 標題區
+        title_container = QWidget()
+        title_container.setStyleSheet("background-color: #2d2d2d; border-bottom: 1px solid #3e3e3e; border-top-left-radius: 6px; border-top-right-radius: 6px;")
+        title_layout = QHBoxLayout(title_container)
+        title_layout.setContentsMargins(15, 10, 15, 10)
+        title_lbl = QLabel("Indexed Folders")
+        title_lbl.setStyleSheet("color: white; font-weight: bold; font-size: 14px;")
+        title_layout.addWidget(title_lbl)
+        self.main_layout.addWidget(title_container)
+
+        # 滾動區域
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("background: transparent; border: none;")
+        
+        self.content_widget = QWidget()
+        self.content_widget.setStyleSheet("background: transparent;")
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(10, 10, 10, 10)
+        self.content_layout.setSpacing(8)
+        self.content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        self.scroll_area.setWidget(self.content_widget)
+        self.main_layout.addWidget(self.scroll_area)
+        
+        # 底部統計區
+        footer_container = QWidget()
+        footer_container.setStyleSheet("background-color: #2d2d2d; border-top: 1px solid #3e3e3e; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;")
+        footer_layout = QHBoxLayout(footer_container)
+        footer_layout.setContentsMargins(15, 8, 15, 8)
+        self.total_label = QLabel("Total: 0 images")
+        self.total_label.setStyleSheet("color: #60cdff; font-weight: bold;")
+        footer_layout.addWidget(self.total_label, alignment=Qt.AlignmentFlag.AlignRight)
+        self.main_layout.addWidget(footer_container)
 
     def update_stats(self, stats):
         # 清除舊內容
@@ -620,25 +806,47 @@ class StatsMenuWidget(QFrame):
             if item.widget(): item.widget().deleteLater()
             
         if not stats:
-            self.content_layout.addWidget(QLabel("No data indexed."))
+            self.content_layout.addWidget(QLabel("No statistics available.\nRun indexer.py first."))
+            self.total_label.setText("Total: 0 images")
             return
             
+        total_images = 0
+        
+        # 準備字型測量工具
+        # 寬度估算: 420(總寬) - 80(數字標籤與邊距的保留空間) = 約 340px 可用於顯示路徑
+        fm = QFontMetrics(QFont("Segoe UI", 13)) 
+        max_text_width = 340 
+
         for folder, count in stats:
+            total_images += count
+            
             row = QWidget()
             row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0,0,0,0)
+            row_layout.setContentsMargins(5, 5, 5, 5)
+            row_layout.setSpacing(10)
             
-            # 簡化路徑顯示
-            name = os.path.basename(folder) if os.path.basename(folder) else folder
+            # --- 修改重點 ---
+            # 直接顯示完整路徑，但如果真的太長(超出340px)，會自動在中間顯示 "..." (ElideMiddle)
+            # 這樣既能滿足完整顯示的需求，又能防止視窗被撐爆
+            display_text = fm.elidedText(folder, Qt.TextElideMode.ElideMiddle, max_text_width)
             
-            lbl_name = QLabel(name)
-            lbl_name.setToolTip(folder)
-            lbl_count = QLabel(f"{count} imgs")
-            lbl_count.setStyleSheet("color: #60cdff; font-weight: bold;")
+            lbl_name = QLabel(display_text)
+            lbl_name.setToolTip(folder) # 滑鼠懸停依然顯示完整路徑(以防萬一被切斷)
+            lbl_name.setStyleSheet("font-size: 13px; color: #dddddd;")
+            
+            lbl_count = QLabel(f"{count}")
+            lbl_count.setStyleSheet("color: #aaaaaa; font-size: 13px; background-color: #333; padding: 2px 8px; border-radius: 10px;")
+            lbl_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             
             row_layout.addWidget(lbl_name, stretch=1)
             row_layout.addWidget(lbl_count)
+            
+            # Hover effect for row
+            row.setStyleSheet(".QWidget:hover { background-color: #333333; border-radius: 4px; }")
+            
             self.content_layout.addWidget(row)
+            
+        self.total_label.setText(f"Total: {total_images:,} images")
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -727,33 +935,64 @@ class MainWindow(QMainWindow):
         self.preview_overlay = PreviewOverlay(self)
 
     def eventFilter(self, obj, event):
-        # 處理全域鍵盤事件
+        # 處理鍵盤按下 (KeyPress)
         if event.type() == QEvent.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Space:
-                # 如果沒有輸入框焦點，才觸發預覽
-                if not self.input.hasFocus():
-                    self.toggle_preview()
-                    return True
+            key = event.key()
+            
+            # [新增] 全域 Shift 偵測 (按下) -> 開啟紅框
+            if key == Qt.Key.Key_Shift:
+                if self.preview_overlay.isVisible():
+                    self.preview_overlay.set_ocr_visible(True)
+                return True # 不攔截其他行為，但標記已處理
+
+            if not self.input.hasFocus():
+                if key == Qt.Key.Key_W:
+                    self.view_component.navigate("W"); return True
+                elif key == Qt.Key.Key_S:
+                    self.view_component.navigate("S"); return True
+                elif key == Qt.Key.Key_A:
+                    self.view_component.navigate("A"); return True
+                elif key == Qt.Key.Key_D:
+                    self.view_component.navigate("D"); return True
+                elif key == Qt.Key.Key_Space:
+                    self.toggle_preview(); return True
         
-        # 處理滑鼠點擊 (關閉歷史清單或選單)
+        # [新增] 處理鍵盤放開 (KeyRelease) -> 關閉紅框
+        if event.type() == QEvent.Type.KeyRelease:
+            if event.key() == Qt.Key.Key_Shift:
+                if self.preview_overlay.isVisible():
+                    self.preview_overlay.set_ocr_visible(False)
+                return True
+
+        # 處理滑鼠點擊 (MouseButtonPress)
         if event.type() == QEvent.Type.MouseButtonPress:
             click_pos = event.globalPosition().toPoint()
             
-            # 關閉歷史清單
             if self.history_list.isVisible():
                 input_rect = QRect(self.input.mapToGlobal(QPoint(0, 0)), self.input.size())
                 list_rect = QRect(self.history_list.mapToGlobal(QPoint(0, 0)), self.history_list.size())
-                if not input_rect.contains(click_pos) and not list_rect.contains(click_pos): self.history_list.hide()
+                if not input_rect.contains(click_pos) and not list_rect.contains(click_pos): 
+                    self.history_list.hide()
             
-            # 關閉統計選單
             if self.stats_menu.isVisible():
                 btn_rect = QRect(self.btn_menu.mapToGlobal(QPoint(0, 0)), self.btn_menu.size())
                 menu_rect = QRect(self.stats_menu.mapToGlobal(QPoint(0, 0)), self.stats_menu.size())
-                if not btn_rect.contains(click_pos) and not menu_rect.contains(click_pos): self.stats_menu.hide()
+                if not btn_rect.contains(click_pos) and not menu_rect.contains(click_pos): 
+                    self.stats_menu.hide()
 
-            if obj == self.input: self.show_history_popup()
+            if obj == self.input: 
+                self.show_history_popup()
 
         return super().eventFilter(obj, event)
+
+    def toggle_preview(self):
+        if self.preview_overlay.isVisible():
+            self.preview_overlay.hide()
+        else:
+            # [修改] 改為從 view_component 獲取當前選取的完整資料 (包含 OCR)
+            data = self.view_component.get_selected_data()
+            if data:
+                self.preview_overlay.show_image(data)
 
     def toggle_menu(self):
         if self.stats_menu.isVisible():
@@ -766,15 +1005,18 @@ class MainWindow(QMainWindow):
             
             # 定位到按鈕下方
             btn_pos = self.btn_menu.mapTo(self, QPoint(0,0))
-            self.stats_menu.move(btn_pos.x(), btn_pos.y() + self.btn_menu.height() + 5)
+            # 調整 Y 位置稍微有點間距
+            menu_x = btn_pos.x()
+            menu_y = btn_pos.y() + self.btn_menu.height() + 8
+            
+            # 確保不會超出底部邊界 (簡單檢查)
+            if menu_y + self.stats_menu.height() > self.height():
+                 self.stats_menu.setFixedHeight(self.height() - menu_y - 20)
+            
+            self.stats_menu.move(menu_x, menu_y)
             self.stats_menu.show()
             self.stats_menu.raise_()
 
-    def toggle_preview(self):
-        if self.preview_overlay.isVisible():
-            self.preview_overlay.hide()
-        elif self.current_selected_path:
-            self.preview_overlay.show_image(self.current_selected_path)
 
     def on_card_selected(self, path):
         self.current_selected_path = path
