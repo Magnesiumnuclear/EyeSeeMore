@@ -14,9 +14,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLayout, QLineEdit, QPushButton, 
                              QLabel, QScrollArea, QComboBox, QProgressBar, QFrame,
                              QListWidget, QListWidgetItem, QSizePolicy, QMenu, QMessageBox,
-                             QGraphicsDropShadowEffect, QCheckBox)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent, QFileInfo
-from PyQt6.QtGui import QPixmap, QImage, QCursor, QAction, QColor, QFont
+                             QGraphicsDropShadowEffect, QCheckBox, QInputDialog, QDialog)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent, QFileInfo, QTimer
+from PyQt6.QtGui import QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, QShortcut
 
 # --- 設定區 ---
 DB_FILE = "images.db"
@@ -27,9 +27,9 @@ PRETRAINED = 'frozen_laion5b_s13b_b90k'
 THUMBNAIL_SIZE = (220, 220)
 CARD_SIZE = (240, 280) 
 MIN_SPACING = 24       
-WINDOW_TITLE = "Local AI Search (Hybrid: CLIP + OCR + Filename)"
+WINDOW_TITLE = "Local AI Search"
 
-# --- 樣式表 (保留 main-OSQ 風格) ---
+# --- 樣式表 ---
 WIN11_STYLESHEET = """
 QMainWindow { background-color: #1e1e1e; }
 QWidget { color: #ffffff; font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; font-size: 14px; }
@@ -38,10 +38,8 @@ QLineEdit:focus { border-bottom: 2px solid #60cdff; background-color: #323232; }
 QComboBox { background-color: #2d2d2d; border: 1px solid #3e3e3e; border-radius: 4px; padding: 6px 10px; min-width: 80px; }
 QComboBox:hover { background-color: #383838; }
 QComboBox::drop-down { border: none; width: 20px; }
-QPushButton#PrimaryButton { background-color: #60cdff; color: #000000; font-weight: 600; border-radius: 4px; padding: 8px 20px; border: none; }
-QPushButton#PrimaryButton:hover { background-color: #7ce0ff; }
-QPushButton#PrimaryButton:pressed { background-color: #50b0db; }
-QPushButton#PrimaryButton:disabled { background-color: #333333; color: #777777; }
+QPushButton#MenuButton { background-color: transparent; border: 1px solid #3e3e3e; border-radius: 4px; padding: 6px 12px; font-weight: bold; }
+QPushButton#MenuButton:hover { background-color: #333333; border-color: #666; }
 QPushButton#GhostButton { background-color: transparent; color: #cccccc; border-radius: 4px; padding: 4px; }
 QPushButton#GhostButton:hover { background-color: #383838; color: #ffffff; }
 QScrollArea { border: none; background-color: transparent; }
@@ -106,7 +104,7 @@ class AdaptiveGridLayout(QLayout):
         return y + item_h + self._min_spacing - rect.y() if current_col > 0 else y - rect.y()
 
 # ==========================================
-#  引擎核心 (SQLite + CLIP + OCR Read)
+#  引擎核心
 # ==========================================
 class ImageSearchEngine:
     def __init__(self):
@@ -135,8 +133,6 @@ class ImageSearchEngine:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         try:
-            # 讀取 file_path, embedding 以及 ocr_text
-            # 注意：如果資料庫是舊的(沒有 ocr_text)，這裡會報錯，需要重新建立索引
             cursor.execute("SELECT file_path, embedding, ocr_text FROM images")
             rows = cursor.fetchall()
             
@@ -144,16 +140,16 @@ class ImageSearchEngine:
             embeddings_list = []
             
             for path, blob, ocr_text in rows:
+                if not os.path.exists(path): continue # 簡易過濾不存在的檔案
                 emb_array = np.frombuffer(blob, dtype=np.float32)
                 embeddings_list.append(emb_array)
                 
-                # 處理 OCR 文字 (若是 None 則轉空字串)
                 text_content = ocr_text if ocr_text else ""
                 
                 self.data_store.append({
                     "path": path,
                     "filename": os.path.basename(path),
-                    "ocr_text": text_content.lower() # 預先轉小寫加速比對
+                    "ocr_text": text_content.lower()
                 })
 
             if self.data_store:
@@ -169,14 +165,56 @@ class ImageSearchEngine:
         finally:
             if conn: conn.close()
 
+    def get_folder_stats(self):
+        """統計各資料夾的圖片數量"""
+        if not os.path.exists(DB_FILE): return []
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT folder_path, COUNT(*) FROM images GROUP BY folder_path")
+            stats = cursor.fetchall()
+            conn.close()
+            return stats
+        except:
+            return []
+
+    def rename_file(self, old_path, new_name):
+        """重命名檔案並更新資料庫與記憶體，不重跑AI"""
+        folder = os.path.dirname(old_path)
+        new_path = os.path.join(folder, new_name)
+        
+        if os.path.exists(new_path):
+            return False, "Target filename already exists."
+
+        try:
+            # 1. 實體重命名
+            os.rename(old_path, new_path)
+            
+            # 2. 更新資料庫
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE images SET file_path = ?, filename = ? WHERE file_path = ?", 
+                           (new_path, new_name, old_path))
+            conn.commit()
+            conn.close()
+            
+            # 3. 更新記憶體中的索引 (data_store)
+            for item in self.data_store:
+                if item["path"] == old_path:
+                    item["path"] = new_path
+                    item["filename"] = new_name
+                    break
+                    
+            return True, new_path
+        except Exception as e:
+            return False, str(e)
+
     def search_hybrid(self, query, top_k=50, use_ocr=True):
-        """混合搜尋邏輯：CLIP + OCR + 檔名"""
         if not self.is_ready: return []
         
         results = []
         query_lower = query.lower()
         
-        # 1. 計算 CLIP 視覺分數
         try:
             with torch.no_grad():
                 inputs = self.tokenizer(query, padding=True, truncation=True, return_tensors="pt").to(self.device)
@@ -191,23 +229,19 @@ class ImageSearchEngine:
             print(f"CLIP Search Error: {e}")
             scores = np.zeros(len(self.data_store))
 
-        # 2. 計算加權總分
         for idx, item in enumerate(self.data_store):
             clip_score = float(scores[idx])
             ocr_bonus = 0.0
             name_bonus = 0.0
             
-            # 第一重加分：OCR 文字命中 (+0.5)
             if use_ocr and query_lower in item["ocr_text"]:
                 ocr_bonus = 0.5
             
-            # 第二重加分：檔名命中 (+0.2)
             if query_lower in item["filename"].lower():
                 name_bonus = 0.2
                 
             final_score = clip_score + ocr_bonus + name_bonus
             
-            # 過濾掉太低分的 (可調整閾值)
             if final_score > 0.15: 
                 results.append({
                     "score": final_score,
@@ -219,12 +253,10 @@ class ImageSearchEngine:
                     "filename": item["filename"]
                 })
         
-        # 3. 排序與切片
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
     def search_image(self, image_path, top_k=50):
-        """以圖搜圖 (維持原樣，但統一回傳格式)"""
         if not self.is_ready: return []
         try:
             image = Image.open(image_path).convert('RGB')
@@ -237,7 +269,6 @@ class ImageSearchEngine:
             
             similarity = (image_features @ self.stored_embeddings.T).squeeze(0)
             
-            # 取得 Top K
             k = min(top_k, len(self.data_store))
             values, indices = similarity.topk(k)
             
@@ -248,7 +279,7 @@ class ImageSearchEngine:
                 score = values[i].item()
                 results.append({
                     "score": score,
-                    "clip_score": score, # 以圖搜圖時，基礎分就是 CLIP 分
+                    "clip_score": score,
                     "ocr_bonus": 0.0,
                     "name_bonus": 0.0,
                     "is_ocr_match": False,
@@ -278,7 +309,6 @@ class SearchWorker(QThread):
         if self.search_mode == "image":
             raw_results = self.engine.search_image(self.query, self.top_k)
         else:
-            # 使用混合搜尋
             raw_results = self.engine.search_hybrid(self.query, self.top_k, self.use_ocr)
             
         count = 0; batch_buffer = []; BATCH_SIZE = 5
@@ -299,8 +329,69 @@ class SearchWorker(QThread):
 # ==========================================
 #  UI 元件
 # ==========================================
+class PreviewOverlay(QWidget):
+    """Mac 風格的空白鍵預覽圖層"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False) # 攔截滑鼠點擊以關閉
+        self.hide()
+        self.setStyleSheet("background-color: rgba(0, 0, 0, 200);")
+        
+        self.layout = QVBoxLayout(self)
+        self.layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setStyleSheet("background: transparent;")
+        
+        # 陰影效果
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(40)
+        shadow.setColor(QColor(0,0,0, 150))
+        shadow.setOffset(0, 10)
+        self.image_label.setGraphicsEffect(shadow)
+        
+        self.layout.addWidget(self.image_label)
+        
+        self.filename_label = QLabel()
+        self.filename_label.setStyleSheet("color: white; font-size: 18px; font-weight: bold; background: transparent; margin-top: 10px;")
+        self.filename_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.layout.addWidget(self.filename_label)
+
+    def show_image(self, path):
+        if not os.path.exists(path): return
+        
+        # 載入大圖
+        img = QImage(path)
+        if img.isNull(): return
+        
+        # 計算縮放比例 (不超過視窗 80%)
+        screen_size = self.parent().size()
+        max_w = int(screen_size.width() * 0.85)
+        max_h = int(screen_size.height() * 0.85)
+        
+        pixmap = QPixmap.fromImage(img)
+        pixmap = pixmap.scaled(max_w, max_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        
+        self.image_label.setPixmap(pixmap)
+        self.filename_label.setText(os.path.basename(path))
+        
+        self.resize(self.parent().size())
+        self.show()
+        self.raise_()
+        self.setFocus()
+
+    def mousePressEvent(self, event):
+        self.hide() # 點擊任何地方關閉
+        
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Escape):
+            self.hide()
+
 class ResultCard(QFrame):
     search_signal = pyqtSignal(str)
+    selected_signal = pyqtSignal(str) # 選取時發出訊號 (回傳路徑)
+    rename_signal = pyqtSignal(object) # 發出重命名請求 (回傳自己)
 
     def __init__(self, result_data, q_image):
         super().__init__()
@@ -308,20 +399,13 @@ class ResultCard(QFrame):
         self.path = result_data['path']
         self.filename = result_data['filename']
         self.q_image_thumbnail = q_image
+        self.is_selected = False
         
         self.setFixedSize(CARD_SIZE[0], CARD_SIZE[1])
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setObjectName("ResultCard")
         
-        # 根據是否為 OCR 命中改變邊框顏色
-        border_color = "#3b3b3b"
-        if result_data.get('is_ocr_match', False):
-            border_color = "#4caf50" # 綠色代表文字命中
-            
-        self.setStyleSheet(f"""
-            QFrame#ResultCard {{ background-color: #2b2b2b; border-radius: 8px; border: 1px solid {border_color}; }} 
-            QFrame#ResultCard:hover {{ background-color: #323232; border: 1px solid #505050; }}
-        """)
+        self.update_style()
         
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         layout = QVBoxLayout(); layout.setContentsMargins(10, 10, 10, 10); layout.setSpacing(8)
@@ -334,11 +418,10 @@ class ResultCard(QFrame):
         text_container = QWidget(); text_container.setStyleSheet("background: transparent; border: none;")
         text_layout = QVBoxLayout(text_container); text_layout.setContentsMargins(0, 0, 0, 0); text_layout.setSpacing(2)
         
-        name = result_data['filename']; name = name[:20] + "..." if len(name) > 22 else name
-        name_label = QLabel(name); name_label.setStyleSheet("color: #ffffff; font-weight: 500; font-size: 13px;")
-        name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.name_label = QLabel(self.truncate_name(self.filename))
+        self.name_label.setStyleSheet("color: #ffffff; font-weight: 500; font-size: 13px;")
+        self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        # 顯示總分
         score_val = result_data['score']
         score_color = "#60cdff" if score_val > 0.3 else "#999999"
         
@@ -347,49 +430,83 @@ class ResultCard(QFrame):
         score_label.setStyleSheet(f"color: {score_color}; font-size: 12px; font-family: Consolas, Monospace;")
         meta_layout.addWidget(score_label)
         
-        # 如果有 OCR 命中，顯示小標籤
         if result_data.get('is_ocr_match', False):
             ocr_tag = QLabel("TEXT"); ocr_tag.setStyleSheet("background-color: #4caf50; color: white; border-radius: 2px; padding: 1px 3px; font-size: 10px; font-weight: bold;")
             meta_layout.addWidget(ocr_tag)
         
         meta_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        text_layout.addWidget(name_label)
+        text_layout.addWidget(self.name_label)
         text_layout.addLayout(meta_layout)
         
         layout.addWidget(text_container)
         self.setLayout(layout)
 
+    def truncate_name(self, name):
+        return name[:20] + "..." if len(name) > 22 else name
+
+    def update_style(self):
+        # 根據是否被選取或 OCR 命中改變邊框
+        border_color = "#3b3b3b"
+        if self.is_selected:
+            border_color = "#60cdff" # 選取時變藍色
+            border_width = "2px"
+        elif self.result_data.get('is_ocr_match', False):
+            border_color = "#4caf50" 
+            border_width = "1px"
+        else:
+            border_width = "1px"
+            
+        self.setStyleSheet(f"""
+            QFrame#ResultCard {{ background-color: #2b2b2b; border-radius: 8px; border: {border_width} solid {border_color}; }} 
+            QFrame#ResultCard:hover {{ background-color: #323232; border: 1px solid #7ce0ff; }}
+        """)
+
+    def set_selected(self, selected):
+        self.is_selected = selected
+        self.update_style()
+
+    def update_info(self, new_path, new_filename):
+        self.path = new_path
+        self.filename = new_filename
+        self.name_label.setText(self.truncate_name(new_filename))
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton: 
+            self.selected_signal.emit(self.path)
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
             try: os.startfile(self.path) 
             except: pass
-        super().mousePressEvent(event)
+        super().mouseDoubleClickEvent(event)
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
         menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         menu.setWindowFlags(menu.windowFlags() | Qt.WindowType.FramelessWindowHint)
         
+        action_rename = QAction("Rename", self); action_rename.triggered.connect(lambda: self.rename_signal.emit(self))
         action_copy = QAction("Copy Image", self); action_copy.triggered.connect(self.copy_image)
         action_copy_path = QAction("Copy Path", self); action_copy_path.triggered.connect(self.copy_path)
         action_search_sim = QAction("Search Similar Images", self); action_search_sim.triggered.connect(self.trigger_image_search)
-        action_score = QAction("Score Details", self); action_score.triggered.connect(self.show_score_details) # 新增詳細分數
+        action_score = QAction("Score Details", self); action_score.triggered.connect(self.show_score_details)
         action_properties = QAction("Properties", self); action_properties.triggered.connect(self.show_properties)
         
+        menu.addAction(action_rename) # 新增重命名
+        menu.addSeparator()
         menu.addAction(action_copy)
         menu.addAction(action_copy_path)
         menu.addAction(action_search_sim)
         menu.addSeparator()
-        menu.addAction(action_score) # 加入選單
+        menu.addAction(action_score)
         menu.addAction(action_properties)
         
         menu.exec(event.globalPos())
     
-    def trigger_image_search(self):
-        self.search_signal.emit(self.path)
-
+    def trigger_image_search(self): self.search_signal.emit(self.path)
+    
     def show_score_details(self):
-        # 顯示詳細分數
         d = self.result_data
         msg = f"""
         <h3 style='color:white; margin:0;'>Score Breakdown</h3>
@@ -401,12 +518,7 @@ class ResultCard(QFrame):
         <tr><td>Filename Bonus:</td><td style='color:#ffb74d;'>+{d['name_bonus']:.2f}</td></tr>
         </table>
         """
-        box = QMessageBox(self)
-        box.setWindowTitle("Score Details")
-        box.setTextFormat(Qt.TextFormat.RichText)
-        box.setText(msg)
-        box.addButton("Close", QMessageBox.ButtonRole.AcceptRole)
-        box.exec()
+        box = QMessageBox(self); box.setWindowTitle("Score Details"); box.setTextFormat(Qt.TextFormat.RichText); box.setText(msg); box.addButton("Close", QMessageBox.ButtonRole.AcceptRole); box.exec()
 
     def copy_image(self):
         try:
@@ -415,6 +527,7 @@ class ResultCard(QFrame):
             else: QApplication.clipboard().setImage(self.q_image_thumbnail)
         except: pass
     def copy_path(self): QApplication.clipboard().setText(self.path)
+    
     def show_properties(self):
         try:
             info = QFileInfo(self.path); size_mb = info.size() / (1024 * 1024); created = info.birthTime().toString("yyyy-MM-dd HH:mm"); img = QImage(self.path); width, height = img.width(), img.height()
@@ -437,6 +550,8 @@ class HistoryItemWidget(QWidget):
 
 class AdaptiveResultView(QScrollArea):
     image_search_requested = pyqtSignal(str)
+    card_selected = pyqtSignal(str)
+    rename_requested = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -445,8 +560,10 @@ class AdaptiveResultView(QScrollArea):
         self.container.setStyleSheet("background-color: #1e1e1e;")
         self.adaptive_layout = AdaptiveGridLayout(self.container, min_spacing=MIN_SPACING)
         self.setWidget(self.container)
+        self.cards = []
 
     def clear(self):
+        self.cards = []
         while self.adaptive_layout.count():
             item = self.adaptive_layout.takeAt(0)
             if item.widget():
@@ -458,52 +575,133 @@ class AdaptiveResultView(QScrollArea):
             for res, q_image in batch_data:
                 card = ResultCard(res, q_image)
                 card.search_signal.connect(self.image_search_requested.emit)
+                card.selected_signal.connect(self.on_card_selected)
+                card.rename_signal.connect(self.rename_requested.emit)
                 self.adaptive_layout.addWidget(card)
+                self.cards.append(card)
         finally:
             self.container.setUpdatesEnabled(True)
 
+    def on_card_selected(self, path):
+        # 單選邏輯：取消其他卡片的選取
+        for c in self.cards:
+            if c.path != path and c.is_selected:
+                c.set_selected(False)
+            elif c.path == path:
+                c.set_selected(True)
+        self.card_selected.emit(path)
+
+class StatsMenuWidget(QFrame):
+    """可收合的資料夾統計選單"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.hide()
+        self.setFixedWidth(300)
+        self.setStyleSheet("""
+            QFrame { background-color: #252525; border: 1px solid #3e3e3e; border-radius: 6px; }
+            QLabel { color: #ccc; border: none; }
+        """)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(15, 15, 15, 15)
+        self.layout.setSpacing(10)
+        
+        title = QLabel("Source Folders")
+        title.setStyleSheet("color: white; font-weight: bold; font-size: 14px; margin-bottom: 5px;")
+        self.layout.addWidget(title)
+        
+        self.content_layout = QVBoxLayout()
+        self.layout.addLayout(self.content_layout)
+        self.layout.addStretch()
+
+    def update_stats(self, stats):
+        # 清除舊內容
+        while self.content_layout.count():
+            item = self.content_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+            
+        if not stats:
+            self.content_layout.addWidget(QLabel("No data indexed."))
+            return
+            
+        for folder, count in stats:
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0,0,0,0)
+            
+            # 簡化路徑顯示
+            name = os.path.basename(folder) if os.path.basename(folder) else folder
+            
+            lbl_name = QLabel(name)
+            lbl_name.setToolTip(folder)
+            lbl_count = QLabel(f"{count} imgs")
+            lbl_count.setStyleSheet("color: #60cdff; font-weight: bold;")
+            
+            row_layout.addWidget(lbl_name, stretch=1)
+            row_layout.addWidget(lbl_count)
+            self.content_layout.addWidget(row)
+
 class MainWindow(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle(WINDOW_TITLE); self.resize(1280, 900); self.engine = None; self.img_cache = {}; self.search_history = [] 
-        self.load_history(); self.init_ui(); QApplication.instance().installEventFilter(self); threading.Thread(target=self.load_engine, daemon=True).start()
+        super().__init__(); self.setWindowTitle(WINDOW_TITLE); self.resize(1280, 900)
+        self.engine = None; self.img_cache = {}; self.search_history = [] 
+        self.current_selected_path = None
+        
+        self.load_history(); self.init_ui()
+        
+        # 鍵盤監聽 (處理空白鍵)
+        QApplication.instance().installEventFilter(self)
+        threading.Thread(target=self.load_engine, daemon=True).start()
+
     def load_history(self):
         if os.path.exists(HISTORY_FILE):
             try:
                 with open(HISTORY_FILE, 'r', encoding='utf-8') as f: self.search_history = json.load(f)
             except: self.search_history = []
+
     def save_history_to_file(self):
         try:
             with open(HISTORY_FILE, 'w', encoding='utf-8') as f: json.dump(self.search_history, f, ensure_ascii=False)
         except: pass
+
     def add_to_history(self, query):
         if not query: return
         if query in self.search_history: self.search_history.remove(query)
         self.search_history.insert(0, query); 
         if len(self.search_history) > 10: self.search_history = self.search_history[:10]
         self.save_history_to_file()
+
     def init_ui(self):
         central = QWidget(); self.setCentralWidget(central); layout = QVBoxLayout(central); layout.setSpacing(0); layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Top Bar
         top_bar = QFrame(); top_bar.setFixedHeight(90); top_bar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #333;")
-        header_layout = QHBoxLayout(top_bar); header_layout.setContentsMargins(30, 0, 30, 0); header_layout.setSpacing(15)
+        header_layout = QHBoxLayout(top_bar); header_layout.setContentsMargins(20, 0, 30, 0); header_layout.setSpacing(15)
+        
+        # 選單按鈕
+        self.btn_menu = QPushButton("Menu"); self.btn_menu.setObjectName("MenuButton")
+        self.btn_menu.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_menu.clicked.connect(self.toggle_menu)
         
         title_label = QLabel("AI Search"); title_label.setStyleSheet("color: #e0e0e0; font-size: 18px; font-weight: 600; letter-spacing: 0.5px;")
+        
+        header_layout.addWidget(self.btn_menu)
         header_layout.addWidget(title_label)
         header_layout.addStretch(1)
         
-        search_container = QWidget(); search_container.setFixedWidth(600); search_layout = QHBoxLayout(search_container); search_layout.setContentsMargins(0, 0, 0, 0); search_layout.setSpacing(10)
-        self.input = QLineEdit(); self.input.setPlaceholderText("Type to search..."); self.input.returnPressed.connect(self.start_search)
+        # 搜尋區
+        search_container = QWidget(); search_container.setFixedWidth(600)
+        search_layout = QHBoxLayout(search_container); search_layout.setContentsMargins(0, 0, 0, 0); search_layout.setSpacing(10)
+        self.input = QLineEdit(); self.input.setPlaceholderText("Type and press Enter..."); self.input.returnPressed.connect(self.start_search)
         
-        # 新增 OCR Checkbox
         self.chk_ocr = QCheckBox("OCR"); self.chk_ocr.setChecked(True)
         self.chk_ocr.setToolTip("Enable Text Search inside images")
         
         self.combo_limit = QComboBox(); self.combo_limit.addItems(["20", "50", "100", "All"]); self.combo_limit.setCurrentText("50")
-        self.btn = QPushButton("Search"); self.btn.setObjectName("PrimaryButton"); self.btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor)); self.btn.clicked.connect(self.start_search); self.btn.setEnabled(False) 
         
         search_layout.addWidget(self.input, stretch=1)
-        search_layout.addWidget(self.chk_ocr) # 加入 Checkbox
+        search_layout.addWidget(self.chk_ocr)
         search_layout.addWidget(self.combo_limit)
-        search_layout.addWidget(self.btn)
+        # 移除 Search Button
         
         header_layout.addWidget(search_container)
         header_layout.addStretch(1) 
@@ -511,50 +709,137 @@ class MainWindow(QMainWindow):
         self.status = QLabel("Initializing..."); self.status.setStyleSheet("color: #888888; font-size: 12px;"); header_layout.addWidget(self.status); layout.addWidget(top_bar)
         self.progress = QProgressBar(); self.progress.hide(); layout.addWidget(self.progress)
         
+        # 主內容區 (使用 Stacked Layout 以便浮動層)
         self.view_component = AdaptiveResultView()
         self.view_component.image_search_requested.connect(self.start_image_search)
+        self.view_component.card_selected.connect(self.on_card_selected)
+        self.view_component.rename_requested.connect(self.handle_rename)
         layout.addWidget(self.view_component)
         
-        self.history_list = QListWidget(self); self.history_list.hide(); self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus); shadow = QGraphicsDropShadowEffect(); shadow.setBlurRadius(20); shadow.setColor(QColor(0, 0, 0, 100)); shadow.setOffset(0, 4); self.history_list.setGraphicsEffect(shadow)
-    
+        # 歷史紀錄彈窗
+        self.history_list = QListWidget(self); self.history_list.hide(); self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        shadow = QGraphicsDropShadowEffect(); shadow.setBlurRadius(20); shadow.setColor(QColor(0, 0, 0, 100)); shadow.setOffset(0, 4); self.history_list.setGraphicsEffect(shadow)
+
+        # 浮動選單 (Stats Menu)
+        self.stats_menu = StatsMenuWidget(self)
+        
+        # 預覽圖層 (Mac Style Preview)
+        self.preview_overlay = PreviewOverlay(self)
+
     def eventFilter(self, obj, event):
+        # 處理全域鍵盤事件
+        if event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Space:
+                # 如果沒有輸入框焦點，才觸發預覽
+                if not self.input.hasFocus():
+                    self.toggle_preview()
+                    return True
+        
+        # 處理滑鼠點擊 (關閉歷史清單或選單)
         if event.type() == QEvent.Type.MouseButtonPress:
+            click_pos = event.globalPosition().toPoint()
+            
+            # 關閉歷史清單
             if self.history_list.isVisible():
-                click_pos = event.globalPosition().toPoint(); input_global_pos = self.input.mapToGlobal(QPoint(0, 0)); input_rect = QRect(input_global_pos, self.input.size()); list_global_pos = self.history_list.mapToGlobal(QPoint(0, 0)); list_rect = QRect(list_global_pos, self.history_list.size())
+                input_rect = QRect(self.input.mapToGlobal(QPoint(0, 0)), self.input.size())
+                list_rect = QRect(self.history_list.mapToGlobal(QPoint(0, 0)), self.history_list.size())
                 if not input_rect.contains(click_pos) and not list_rect.contains(click_pos): self.history_list.hide()
+            
+            # 關閉統計選單
+            if self.stats_menu.isVisible():
+                btn_rect = QRect(self.btn_menu.mapToGlobal(QPoint(0, 0)), self.btn_menu.size())
+                menu_rect = QRect(self.stats_menu.mapToGlobal(QPoint(0, 0)), self.stats_menu.size())
+                if not btn_rect.contains(click_pos) and not menu_rect.contains(click_pos): self.stats_menu.hide()
+
             if obj == self.input: self.show_history_popup()
+
         return super().eventFilter(obj, event)
+
+    def toggle_menu(self):
+        if self.stats_menu.isVisible():
+            self.stats_menu.hide()
+        else:
+            # 更新數據並顯示
+            if self.engine:
+                stats = self.engine.get_folder_stats()
+                self.stats_menu.update_stats(stats)
+            
+            # 定位到按鈕下方
+            btn_pos = self.btn_menu.mapTo(self, QPoint(0,0))
+            self.stats_menu.move(btn_pos.x(), btn_pos.y() + self.btn_menu.height() + 5)
+            self.stats_menu.show()
+            self.stats_menu.raise_()
+
+    def toggle_preview(self):
+        if self.preview_overlay.isVisible():
+            self.preview_overlay.hide()
+        elif self.current_selected_path:
+            self.preview_overlay.show_image(self.current_selected_path)
+
+    def on_card_selected(self, path):
+        self.current_selected_path = path
+
+    def handle_rename(self, card_item):
+        """處理重新命名邏輯"""
+        old_name = card_item.filename
+        old_path = card_item.path
+        
+        new_name, ok = QInputDialog.getText(self, "Rename File", "New filename:", text=old_name)
+        
+        if ok and new_name and new_name != old_name:
+            success, result = self.engine.rename_file(old_path, new_name)
+            if success:
+                # 更新卡片 UI
+                new_path = result
+                card_item.update_info(new_path, new_name)
+                # 更新當前選取路徑
+                if self.current_selected_path == old_path:
+                    self.current_selected_path = new_path
+            else:
+                QMessageBox.warning(self, "Error", f"Rename failed: {result}")
+
     def show_history_popup(self):
         if not self.search_history: self.history_list.hide(); return
         self.history_list.clear(); title_item = QListWidgetItem(); title_widget = QLabel(" Recent Searches"); title_widget.setStyleSheet("color: #888888; font-size: 12px; padding: 4px;"); title_item.setFlags(Qt.ItemFlag.NoItemFlags); title_item.setSizeHint(QSize(0, 30)); self.history_list.addItem(title_item); self.history_list.setItemWidget(title_item, title_widget)
         for text in self.search_history: item = QListWidgetItem(); item.setSizeHint(QSize(0, 44)); widget = HistoryItemWidget(text, search_callback=self.trigger_history_search, delete_callback=self.delete_history_item); self.history_list.addItem(item); self.history_list.setItemWidget(item, widget)
         input_pos = self.input.mapTo(self, QPoint(0, 0)); input_h = self.input.height(); input_w = self.input.width(); list_height = min(320, self.history_list.sizeHintForRow(0) * (len(self.search_history) + 1) + 20); self.history_list.setGeometry(input_pos.x(), input_pos.y() + input_h + 8, input_w, list_height); self.history_list.show(); self.history_list.raise_()
-    def resizeEvent(self, event): self.history_list.hide(); super().resizeEvent(event)
+    
+    def resizeEvent(self, event): 
+        self.history_list.hide()
+        self.stats_menu.hide()
+        if self.preview_overlay.isVisible():
+            self.preview_overlay.resize(self.size())
+        super().resizeEvent(event)
+        
     def delete_history_item(self, text):
         if text in self.search_history: self.search_history.remove(text); self.save_history_to_file(); self.show_history_popup()
     def trigger_history_search(self, text): self.input.setText(text); self.start_search()
+    
     def load_engine(self):
-        try: self.engine = ImageSearchEngine(); QApplication.processEvents(); self.status.setText("System Ready"); self.btn.setEnabled(True)
+        try: self.engine = ImageSearchEngine(); QApplication.processEvents(); self.status.setText("System Ready")
         except Exception as e: print(e)
+        
     def start_search(self):
         q = self.input.text().strip(); 
         if not q or not self.engine: return
-        self.add_to_history(q); self.history_list.hide(); self.btn.setEnabled(False); self.progress.show(); self.progress.setRange(0, 0); self.status.setText("Searching..."); limit = self.combo_limit.currentText(); k = 100000 if limit == "All" else int(limit); self.view_component.clear(); 
-        # 傳遞 OCR Checkbox 的狀態
+        self.add_to_history(q); self.history_list.hide(); self.progress.show(); self.progress.setRange(0, 0); self.status.setText("Searching..."); limit = self.combo_limit.currentText(); k = 100000 if limit == "All" else int(limit); self.view_component.clear(); 
+        
+        self.current_selected_path = None # 重置選取
         self.worker = SearchWorker(self.engine, q, k, self.img_cache, search_mode="text", use_ocr=self.chk_ocr.isChecked()); 
         self.worker.batch_ready.connect(self.view_component.add_items); self.worker.finished_search.connect(self.on_finished); self.worker.finished.connect(self.worker.deleteLater); self.worker.start()
     
     def start_image_search(self, image_path):
         if not self.engine: return
-        self.history_list.hide(); self.btn.setEnabled(False); self.progress.show(); self.progress.setRange(0, 0)
+        self.history_list.hide(); self.progress.show(); self.progress.setRange(0, 0)
         self.status.setText("Searching by Image..."); 
         self.input.setText(f"[Image] {os.path.basename(image_path)}")
         
         limit = self.combo_limit.currentText(); k = 100000 if limit == "All" else int(limit); self.view_component.clear(); 
+        self.current_selected_path = None
         self.worker = SearchWorker(self.engine, image_path, k, self.img_cache, search_mode="image"); 
         self.worker.batch_ready.connect(self.view_component.add_items); self.worker.finished_search.connect(self.on_finished); self.worker.finished.connect(self.worker.deleteLater); self.worker.start()
 
-    def on_finished(self, elapsed, total): self.progress.hide(); self.btn.setEnabled(True); self.status.setText(f"Found {total} items ({elapsed:.2f}s)")
+    def on_finished(self, elapsed, total): self.progress.hide(); self.status.setText(f"Found {total} items ({elapsed:.2f}s)")
 
 if __name__ == "__main__":
     if hasattr(Qt.ApplicationAttribute, 'AA_EnableHighDpiScaling'):
