@@ -463,7 +463,7 @@ class PreviewOverlay(QWidget):
         ocr_boxes = result_data.get('ocr_data', [])
         
         # 除錯用：印出有沒有座標資料
-        print(f"Loaded OCR Data for {os.path.basename(path)}: {len(ocr_boxes)} boxes") 
+        # print(f"Loaded OCR Data for {os.path.basename(path)}: {len(ocr_boxes)} boxes") 
         
         self.image_label.set_ocr_data(ocr_boxes, orig_w, orig_h)
         
