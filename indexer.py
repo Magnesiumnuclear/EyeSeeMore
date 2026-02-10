@@ -6,13 +6,18 @@ import open_clip
 from tqdm import tqdm
 import numpy as np
 import logging
-import json  # 新增: 用於儲存座標資料
+import json
+import datetime
 
 # 引入 PaddleOCR
 from paddleocr import PaddleOCR
 
 # --- 設定區 ---
-IMAGE_FOLDER = r"D:\software\Gemini\rag-image\data"
+SOURCE_FOLDERS = [
+    r"D:\software\Gemini\rag-image\data",
+    # r"E:\Photos\2024",
+]
+
 DB_PATH = "images.db"
 
 # 模型設定
@@ -24,11 +29,10 @@ PRETRAINED = 'frozen_laion5b_s13b_b90k'
 logging.getLogger("ppocr").setLevel(logging.ERROR)
 
 def init_db(db_path):
-    """初始化資料庫，包含自動遷移邏輯"""
+    """初始化資料庫"""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    # 建立主表
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS images (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,11 +42,19 @@ def init_db(db_path):
         mtime REAL,
         embedding BLOB,
         ocr_text TEXT,
-        ocr_data TEXT  -- 新增: 儲存 JSON 格式的座標與詳細資訊
+        ocr_data TEXT
     )
     ''')
     
-    # --- 自動遷移: 檢查並新增欄位 ---
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS folder_stats (
+        folder_path TEXT PRIMARY KEY,
+        image_count INTEGER,
+        last_updated TEXT
+    )
+    ''')
+    
+    # 自動遷移檢查
     existing_columns = set()
     try:
         cursor.execute("PRAGMA table_info(images)")
@@ -50,47 +62,45 @@ def init_db(db_path):
             existing_columns.add(col[1])
     except: pass
 
-    # 補 ocr_text (舊版升級)
     if 'ocr_text' not in existing_columns:
-        print("⚠️ 正在升級資料庫: 新增 'ocr_text' 欄位...")
         cursor.execute("ALTER TABLE images ADD COLUMN ocr_text TEXT")
-    
-    # 補 ocr_data (本次升級)
     if 'ocr_data' not in existing_columns:
-        print("⚠️ 正在升級資料庫: 新增 'ocr_data' 欄位 (用於儲存座標)...")
         cursor.execute("ALTER TABLE images ADD COLUMN ocr_data TEXT")
 
-    # 建立索引
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_filename ON images (filename)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_folder_path ON images (folder_path)')
     
     conn.commit()
     return conn
 
-def scan_disk_files(folder):
-    """掃描硬碟中的所有圖片檔案，回傳完整路徑的 Set"""
+def scan_disk_files(folders):
+    """掃描多個來源資料夾"""
     valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
     disk_paths = set()
-    print(f"📂 正在掃描硬碟: {folder} ...")
-    for root, _, files in os.walk(folder):
-        for file in files:
-            if os.path.splitext(file)[1].lower() in valid_extensions:
-                full_path = os.path.abspath(os.path.join(root, file))
-                disk_paths.add(full_path)
+    
+    print(f"🔍 開始掃描 {len(folders)} 個來源路徑...")
+    for folder in folders:
+        if not os.path.exists(folder):
+            print(f"⚠️ 路徑不存在，跳過: {folder}")
+            continue   
+        print(f"   📂 正在掃描: {folder} ...")
+        for root, _, files in os.walk(folder):
+            for file in files:
+                if os.path.splitext(file)[1].lower() in valid_extensions:
+                    full_path = os.path.abspath(os.path.join(root, file))
+                    disk_paths.add(full_path)
     return disk_paths
 
 def clean_deleted_files(conn, disk_paths):
-    """檢查資料庫中過期的檔案 (已刪除或改名)，並移除之"""
+    """同步刪除與找出新增檔案"""
     cursor = conn.cursor()
     cursor.execute("SELECT file_path FROM images")
     db_paths = set(row[0] for row in cursor.fetchall())
     
-    # 計算差異: 資料庫有 但 硬碟沒有 = 需刪除
+    # 1. 處理刪除 (資料庫有，硬碟沒有)
     to_delete = db_paths - disk_paths
-    
     if to_delete:
-        print(f"🗑️ 發現 {len(to_delete)} 個檔案已刪除或改名，正在清理資料庫...")
-        # 批次刪除
-        # SQLite 的 IN clause 有長度限制，雖然通常很大，但分批刪除比較保險
+        print(f"🗑️ 發現 {len(to_delete)} 個過期檔案，正在清理資料庫...")
         to_delete_list = list(to_delete)
         BATCH = 900
         for i in range(0, len(to_delete_list), BATCH):
@@ -98,140 +108,150 @@ def clean_deleted_files(conn, disk_paths):
             placeholders = ','.join(['?'] * len(batch))
             cursor.execute(f"DELETE FROM images WHERE file_path IN ({placeholders})", batch)
         conn.commit()
-        print("✅ 清理完成。")
     
-    # 計算差異: 硬碟有 但 資料庫沒有 = 需新增
+    # 2. 找出新增 (硬碟有，資料庫沒有)
     to_add = disk_paths - db_paths
     return list(to_add)
 
-def main():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"🚀 啟動全能索引引擎 (Device: {device.upper()})")
-
-    conn = init_db(DB_PATH)
-    
-    # 1. 載入模型
-    print(f"📥 正在載入 OpenCLIP & PaddleOCR...")
+def load_ai_models(device):
+    """
+    獨立的模型載入函式
+    只有在真的需要處理圖片時才會被呼叫
+    """
+    print(f"📥 正在載入 OpenCLIP & PaddleOCR (Device: {device})...")
     try:
         model, _, preprocess = open_clip.create_model_and_transforms(
             MODEL_NAME, pretrained=PRETRAINED, device=device
         )
         model.eval()
-        # use_angle_cls=False 加快速度，若你的圖片很多歪斜的再設為 True
+        # use_angle_cls=False 速度較快
         ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False)
+        return model, preprocess, ocr_engine
     except Exception as e:
         print(f"❌ 模型載入失敗: {e}")
-        conn.close()
-        return
+        return None, None, None
 
-    # 2. 檔案同步 (Sync)
-    disk_paths_set = scan_disk_files(IMAGE_FOLDER)
+def update_folder_stats(conn):
+    """更新統計表"""
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM folder_stats")
+    cursor.execute("""
+        INSERT INTO folder_stats (folder_path, image_count, last_updated)
+        SELECT folder_path, COUNT(*), datetime('now', 'localtime')
+        FROM images GROUP BY folder_path
+    """)
+    conn.commit()
+    
+    # 顯示
+    print("\n" + "="*50)
+    print("📊 資料庫統計報告")
+    print("="*50)
+    cursor.execute("SELECT * FROM folder_stats ORDER BY folder_path")
+    rows = cursor.fetchall()
+    total = 0
+    if not rows:
+        print("   (無資料)")
+    else:
+        print(f"{'數量':<6} | {'更新時間':<20} | {'資料夾路徑'}")
+        print("-" * 60)
+        for row in rows:
+            print(f"{row[1]:<6} | {row[2]:<20} | {row[0]}")
+            total += row[1]
+        print("-" * 60)
+        print(f"總計: {total} 張圖片")
+    print("="*50 + "\n")
+
+def main():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"🚀 啟動多來源索引引擎 (Device: {device.upper()})")
+
+    conn = init_db(DB_PATH)
+    
+    # --- 步驟 1: 先掃描硬碟與比對資料庫 (輕量級操作) ---
+    disk_paths_set = scan_disk_files(SOURCE_FOLDERS)
+    
+    # 這一步會直接執行刪除操作，並回傳需要新增的檔案列表
     files_to_process = clean_deleted_files(conn, disk_paths_set)
 
+    # --- 步驟 2: 判斷是否需要載入模型 ---
     if not files_to_process:
-        print("✨ 資料庫已是最新狀態，無需更新。")
-        conn.close()
-        return
-
-    print(f"🆕 發現 {len(files_to_process)} 張新圖片，開始建立索引...")
-
-    # 3. 批次處理
-    BATCH_SIZE = 4 # OCR 比較吃資源，如果顯存小可以調小
-    cursor = conn.cursor()
-    
-    for i in tqdm(range(0, len(files_to_process), BATCH_SIZE), desc="Indexing"):
-        batch_paths = files_to_process[i : i + BATCH_SIZE]
+        print("✨ 資料庫已是最新狀態，跳過模型載入。")
+    else:
+        print(f"🆕 發現 {len(files_to_process)} 張新圖片，準備開始索引...")
         
-        batch_images = []
-        db_data = []
+        # --- 步驟 3: 只有這裡才載入模型 (重量級操作) ---
+        model, preprocess, ocr_engine = load_ai_models(device)
         
-        for path in batch_paths:
-            try:
-                # --- A. 圖片與 Metadata ---
-                img = Image.open(path).convert('RGB')
-                processed_img = preprocess(img).unsqueeze(0)
-                
-                filename = os.path.basename(path)
-                folder_path = os.path.dirname(path)
-                mtime = os.path.getmtime(path)
-                
-                # --- B. OCR 處理 (含座標) ---
-                # ocr_result 結構: [ [ [[x1,y1]..], (text, conf) ], ... ]
-                ocr_result = ocr_engine.ocr(path, cls=True)
-                
-                detected_text_list = []
-                json_data_list = []
-                
-                if ocr_result and ocr_result[0]:
-                    for line in ocr_result[0]:
-                        coords = line[0]        # 座標 [[x,y], [x,y], [x,y], [x,y]]
-                        text = line[1][0]       # 文字內容
-                        conf = float(line[1][1]) # 置信度 (轉為 python float 以便存 JSON)
-                        
-                        detected_text_list.append(text)
-                        
-                        # 儲存結構化資料
-                        json_data_list.append({
-                            "box": coords,
-                            "text": text,
-                            "conf": round(conf, 4)
-                        })
-                
-                full_ocr_text = " ".join(detected_text_list)
-                ocr_json_str = json.dumps(json_data_list, ensure_ascii=False)
-                
-                # --- C. 暫存準備計算向量 ---
-                batch_images.append(processed_img)
-                
-                # 準備寫入資料庫的資料 (Embedding 稍後補上)
-                db_data.append({
-                    "path": path,
-                    "filename": filename,
-                    "folder": folder_path,
-                    "mtime": mtime,
-                    "ocr_text": full_ocr_text,
-                    "ocr_data": ocr_json_str
-                })
-                
-            except Exception as e:
-                print(f"⚠️ 跳過損壞圖片 {path}: {e}")
-                continue
-        
-        if not batch_images:
-            continue
-
-        # --- D. 計算向量 (CLIP) ---
-        with torch.no_grad(), torch.cuda.amp.autocast():
-            image_input = torch.cat(batch_images).to(device)
-            image_features = model.encode_image(image_input)
-            image_features /= image_features.norm(dim=-1, keepdim=True)
-            image_features = image_features.cpu().numpy()
-
-        # --- E. 組合與寫入 ---
-        final_insert_data = []
-        for idx, item in enumerate(db_data):
-            emb_blob = image_features[idx].astype(np.float32).tobytes()
-            final_insert_data.append((
-                item["path"],
-                item["filename"],
-                item["folder"],
-                item["mtime"],
-                emb_blob,
-                item["ocr_text"],
-                item["ocr_data"]
-            ))
+        if model and ocr_engine:
+            BATCH_SIZE = 4
+            cursor = conn.cursor()
             
-        try:
-            cursor.executemany('''
-                INSERT INTO images (file_path, filename, folder_path, mtime, embedding, ocr_text, ocr_data)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', final_insert_data)
-            conn.commit()
-        except sqlite3.IntegrityError:
-            pass # 忽略重複路徑錯誤
+            for i in tqdm(range(0, len(files_to_process), BATCH_SIZE), desc="Indexing"):
+                batch_paths = files_to_process[i : i + BATCH_SIZE]
+                batch_images = []
+                db_data = []
+                
+                for path in batch_paths:
+                    try:
+                        img = Image.open(path).convert('RGB')
+                        processed_img = preprocess(img).unsqueeze(0)
+                        
+                        # OCR
+                        ocr_result = ocr_engine.ocr(path, cls=True)
+                        detected_text_list = []
+                        json_data_list = []
+                        if ocr_result and ocr_result[0]:
+                            for line in ocr_result[0]:
+                                detected_text_list.append(line[1][0])
+                                json_data_list.append({
+                                    "box": line[0],
+                                    "text": line[1][0],
+                                    "conf": round(float(line[1][1]), 4)
+                                })
+                        
+                        batch_images.append(processed_img)
+                        db_data.append({
+                            "path": path,
+                            "filename": os.path.basename(path),
+                            "folder": os.path.dirname(path),
+                            "mtime": os.path.getmtime(path),
+                            "ocr_text": " ".join(detected_text_list),
+                            "ocr_data": json.dumps(json_data_list, ensure_ascii=False)
+                        })
+                    except Exception:
+                        continue
+                
+                if not batch_images: continue
 
+                # CLIP
+                with torch.no_grad(), torch.cuda.amp.autocast():
+                    image_input = torch.cat(batch_images).to(device)
+                    image_features = model.encode_image(image_input)
+                    image_features /= image_features.norm(dim=-1, keepdim=True)
+                    image_features = image_features.cpu().numpy()
+
+                # Insert
+                final_insert_data = []
+                for idx, item in enumerate(db_data):
+                    emb_blob = image_features[idx].astype(np.float32).tobytes()
+                    final_insert_data.append((
+                        item["path"], item["filename"], item["folder"], 
+                        item["mtime"], emb_blob, item["ocr_text"], item["ocr_data"]
+                    ))
+                
+                try:
+                    cursor.executemany('''
+                        INSERT INTO images (file_path, filename, folder_path, mtime, embedding, ocr_text, ocr_data)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', final_insert_data)
+                    conn.commit()
+                except sqlite3.IntegrityError: pass
+            
+            print("✅ 索引同步完成！")
+
+    # --- 步驟 4: 無論是否有更新，都重新統計並顯示結果 ---
+    update_folder_stats(conn)
     conn.close()
-    print(f"\n✅ 索引同步完成！")
 
 if __name__ == "__main__":
     main()
