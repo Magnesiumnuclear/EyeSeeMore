@@ -630,7 +630,13 @@ class OCRLabel(QLabel):
     def paintEvent(self, event):
         super().paintEvent(event)
         
+        # 只有在需要繪製 OCR 框、有資料且有圖片時才進入
         if self.show_ocr_boxes and self.ocr_data and self.pixmap():
+            
+            # [加入] 安全檢查：防止原始尺寸為 0 導致除法錯誤
+            if self.original_size.width() == 0 or self.original_size.height() == 0:
+                return
+
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             
@@ -644,6 +650,7 @@ class OCRLabel(QLabel):
             offset_x = (self.width() - displayed_w) / 2
             offset_y = (self.height() - displayed_h) / 2
             
+            # 這裡如果 original_size 是 0，沒有上面的檢查就會崩潰
             scale_x = displayed_w / self.original_size.width()
             scale_y = displayed_h / self.original_size.height()
 
@@ -918,13 +925,42 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.KeyPress:
-            # [修正] 如果焦點在搜尋框，直接放行，確保能正常打字
+            key = event.key()
+
+            # ---------------------------------------------------------
+            # [情境 1] 當焦點在「搜尋框」
+            # ---------------------------------------------------------
             if self.input.hasFocus():
+                # 如果按下 Esc
+                if key == Qt.Key.Key_Escape:
+                    # A. 如果歷史選單開著，先關選單
+                    if self.history_list.isVisible():
+                        self.history_list.hide()
+                    # B. 否則退出輸入框 -> 把焦點丟給列表 (讓你可以直接用方向鍵選圖)
+                    else:
+                        self.input.clearFocus()
+                        self.list_view.setFocus()
+                    return True  # 攔截事件
+                
+                # 如果是其他按鍵，直接放行讓使用者打字
                 return False 
 
-            key = event.key()
+            # ---------------------------------------------------------
+            # [情境 2] 當焦點「不在」搜尋框 (例如正在選圖時)
+            # ---------------------------------------------------------
             
-            # WASD 導航
+            # 如果按下 Esc -> 回到搜尋框
+            if key == Qt.Key.Key_Escape:
+                # 如果預覽視窗開著，先關預覽
+                if self.preview_overlay.isVisible():
+                    self.preview_overlay.hide()
+                # 否則回到輸入框
+                else:
+                    self.input.setFocus()
+                    self.input.selectAll()  # [貼心功能] 全選文字，方便直接打新的關鍵字
+                return True
+
+            # WASD 導航 (焦點不在輸入框時才生效)
             if key == Qt.Key.Key_W:
                 self.send_nav_key(Qt.Key.Key_Up); return True
             elif key == Qt.Key.Key_S:
@@ -951,7 +987,7 @@ class MainWindow(QMainWindow):
                     self.preview_overlay.set_ocr_visible(False)
                 return True
 
-        # 處理滑鼠點擊 (隱藏浮動視窗)
+        # 滑鼠點擊處理 (保持原本邏輯)
         if event.type() == QEvent.Type.MouseButtonPress:
             click_pos = event.globalPosition().toPoint()
             
