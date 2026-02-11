@@ -12,6 +12,8 @@ from transformers import AutoTokenizer
 from datetime import datetime
 from collections import OrderedDict
 
+from PyQt6.QtGui import QActionGroup
+
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLayout, QLineEdit, QPushButton, 
                              QLabel, QScrollArea, QComboBox, QProgressBar, QFrame,
@@ -136,17 +138,22 @@ class SearchResultsModel(QAbstractListModel):
         self.items = []
         self.item_size = item_size 
         
-        # 快取設定
         self._thumbnail_cache = OrderedDict()
         self.CACHE_SIZE = 200 
         
-        # 執行緒池
         self._loading_set = set() 
         self.thread_pool = QThreadPool.globalInstance()
         self.thread_pool.setMaxThreadCount(4) 
 
+    # [新增] 用於切換檢視模式時更新尺寸
+    def update_target_size(self, new_size):
+        self.item_size = new_size
+        self._thumbnail_cache.clear() # 清除舊尺寸的快取，重新載入清晰的圖
+        self._loading_set.clear()
+
+    # ... (其餘 set_search_results, rowCount, data, request_thumbnail, on_thumbnail_loaded 保持不變) ...
+    # 這裡為了節省版面，請保留原本的程式碼，只要補上 update_target_size 即可
     def set_search_results(self, results_dict_list):
-        """接收搜尋結果並重置列表"""
         self.beginResetModel()
         self.items = []
         self._thumbnail_cache.clear()
@@ -181,10 +188,9 @@ class SearchResultsModel(QAbstractListModel):
             return item.filename
             
         elif role == Qt.ItemDataRole.UserRole:
-            return item # 回傳完整物件供 Delegate 使用
+            return item 
 
         elif role == Qt.ItemDataRole.DecorationRole:
-            # 處理圖片請求
             if item.path in self._thumbnail_cache:
                 self._thumbnail_cache.move_to_end(item.path)
                 return self._thumbnail_cache[item.path]
@@ -211,7 +217,6 @@ class SearchResultsModel(QAbstractListModel):
             if len(self._thumbnail_cache) > self.CACHE_SIZE:
                 self._thumbnail_cache.popitem(last=False)
 
-            # 通知 View 更新該列
             for row, item in enumerate(self.items):
                 if item.path == file_path:
                     idx = self.index(row, 0)
@@ -219,8 +224,8 @@ class SearchResultsModel(QAbstractListModel):
                     break
 
 class ImageDelegate(QStyledItemDelegate):
-    """負責繪製列表中的每一個項目 (優化版：防止文字重疊)"""
-    def __init__(self, parent=None):
+    """負責繪製列表中的每一個項目 (支援動態調整大小)"""
+    def __init__(self, card_size, thumb_height, parent=None):
         super().__init__(parent)
         self.padding = 10
         self.radius = 8
@@ -228,11 +233,21 @@ class ImageDelegate(QStyledItemDelegate):
         self.font_score = QFont("Consolas", 9)
         self.font_tag = QFont("Segoe UI", 8, QFont.Weight.Bold)
         
+        # [新增] 儲存當前的尺寸設定
+        self.card_size = card_size
+        self.thumb_height = thumb_height
+        
         provider = QFileIconProvider()
         self.placeholder_icon = provider.icon(QFileInfo("template.jpg"))
 
+    # [新增] 更新尺寸的方法
+    def set_view_params(self, card_size, thumb_height):
+        self.card_size = card_size
+        self.thumb_height = thumb_height
+
     def sizeHint(self, option, index):
-        return QSize(CARD_SIZE[0], CARD_SIZE[1])
+        # [修改] 回傳動態設定的大小
+        return self.card_size
 
     def paint(self, painter: QPainter, option, index):
         if not index.isValid(): return
@@ -248,7 +263,6 @@ class ImageDelegate(QStyledItemDelegate):
             return
 
         rect = option.rect
-        # 內縮一點，避免邊框被吃掉
         card_rect = rect.adjusted(4, 4, -4, -4)
 
         # 狀態判斷
@@ -269,7 +283,7 @@ class ImageDelegate(QStyledItemDelegate):
             bg_color = QColor("#323232")
             border_color = QColor("#7ce0ff")
 
-        # 1. 繪製背景與圓角邊框
+        # 1. 繪製背景
         path = QPainterPath()
         path.addRoundedRect(QRectF(card_rect), self.radius, self.radius)
         
@@ -277,12 +291,8 @@ class ImageDelegate(QStyledItemDelegate):
         painter.setPen(QPen(border_color, border_width))
         painter.drawPath(path)
 
-        # --- 版面計算 (從底部往上算，確保文字絕對不會跑出去) ---
-        
-        # 底部留白
+        # --- 版面計算 (從底部往上算) ---
         bottom_margin = self.padding
-        
-        # 分數與標籤區域高度
         score_height = 20
         score_y = card_rect.bottom() - bottom_margin - score_height
         score_rect = QRect(
@@ -291,7 +301,6 @@ class ImageDelegate(QStyledItemDelegate):
             100, score_height
         )
 
-        # 檔名區域高度 (在分數上方)
         name_height = 20
         name_y = score_y - 2 - name_height
         text_rect = QRect(
@@ -301,14 +310,16 @@ class ImageDelegate(QStyledItemDelegate):
             name_height
         )
 
-        # 2. 繪製圖片 (剩餘空間全部給圖片)
-        # 圖片底部 = 檔名頂部 - 間距
-        img_bottom = name_y - 8
+        # 2. 繪製圖片 (使用動態的 thumb_height 計算)
+        # 這裡我們讓圖片區域佔據上方大部分空間
+        # 如果你希望圖片高度固定為 thumb_height，可以用下面這行：
+        img_rect_height = self.thumb_height
+        
         img_rect = QRect(
             card_rect.left() + self.padding,
             card_rect.top() + self.padding,
             card_rect.width() - 2 * self.padding,
-            img_bottom - (card_rect.top() + self.padding)
+            img_rect_height
         )
         
         painter.setClipPath(path) 
@@ -319,7 +330,6 @@ class ImageDelegate(QStyledItemDelegate):
                 Qt.AspectRatioMode.KeepAspectRatio, 
                 Qt.TransformationMode.SmoothTransformation
             )
-            # 置中
             x_off = (img_rect.width() - scaled_pixmap.width()) / 2
             y_off = (img_rect.height() - scaled_pixmap.height()) / 2
             painter.drawPixmap(
@@ -328,9 +338,7 @@ class ImageDelegate(QStyledItemDelegate):
                 scaled_pixmap
             )
         else:
-            # 預設圖示
             icon_size = 64
-            # 確保 icon 不會比 img_rect 還大
             if img_rect.height() < icon_size: icon_size = img_rect.height() - 10
             
             icon_rect = QRect(
@@ -344,10 +352,9 @@ class ImageDelegate(QStyledItemDelegate):
 
         painter.setClipping(False)
 
-        # 3. 繪製文字 (檔名)
+        # 3. 繪製文字
         painter.setFont(self.font_name)
         painter.setPen(QColor("#ffffff"))
-        
         fm = QFontMetrics(self.font_name)
         elided_name = fm.elidedText(item.filename, Qt.TextElideMode.ElideRight, text_rect.width())
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, elided_name)
@@ -359,10 +366,9 @@ class ImageDelegate(QStyledItemDelegate):
             painter.setPen(QColor("#60cdff"))
         else:
             painter.setPen(QColor("#999999"))
-            
         painter.drawText(score_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"{score_val:.4f}")
 
-        # 5. 繪製 OCR 標籤 (靠右對齊)
+        # 5. OCR 標籤
         if item.is_ocr_match:
             tag_text = "TEXT"
             tag_width = 36
@@ -371,11 +377,9 @@ class ImageDelegate(QStyledItemDelegate):
                 score_rect.top() + 2,
                 tag_width, 16
             )
-            
             painter.setBrush(QBrush(QColor("#4caf50")))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(tag_rect, 3, 3)
-            
             painter.setFont(self.font_tag)
             painter.setPen(QColor("white"))
             painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter, tag_text)
@@ -837,6 +841,60 @@ class MainWindow(QMainWindow):
         
         QApplication.instance().installEventFilter(self)
         threading.Thread(target=self.load_engine, daemon=True).start()
+    
+    def resizeEvent(self, event): 
+        # [關鍵修正] 把這行移到最上面！
+        # 先讓 Qt 處理完視窗大小改變，Layout 才會更新 list_view 的寬度
+        super().resizeEvent(event)
+
+        # 隱藏浮動視窗
+        self.history_list.hide()
+        self.stats_menu.hide()
+        
+        # 調整預覽層大小
+        if self.preview_overlay.isVisible():
+            self.preview_overlay.resize(self.size())
+            
+        # [這時候 list_view.width() 才是新的正確數值]
+        self.adjust_layout()
+
+    def adjust_layout(self):
+        """動態計算間距 (修正版：確保單列置中 + Debug 資訊)"""
+        # 防呆
+        if not hasattr(self, 'list_view') or self.list_view.width() <= 0:
+            return
+
+        # 1. 取得基本數據
+        # 扣除 26px 預留給垂直卷軸 (這是固定值，避免卷軸出現時寬度跳動)
+        raw_width = self.list_view.width()
+        view_w = raw_width - 26 
+        
+        # 取得目前卡片寬度
+        item_w = self.current_card_size.width() 
+
+        # 2. 計算這一行能放幾張 (n_cols)
+        # 用簡單除法： 視窗寬度 // 卡片寬度
+        n_cols = view_w // item_w
+        if n_cols < 1: n_cols = 1 # 至少放一張
+
+        # 3. 計算剩下的空間 (Remaining Space)
+        total_card_w = n_cols * item_w
+        remaining_space = view_w - total_card_w
+
+        # 4. 計算間隔 (Space Evenly: 平分給所有縫隙)
+        # 縫隙數量 = 卡片數 + 1 (左邊 + 中間縫隙 + 右邊)
+        space = int(remaining_space // (n_cols + 1))
+        
+        # 允許間距為 0 (當視窗超窄時，讓卡片盡量置中，不要被強制間距擠出去)
+        space = max(0, space)
+
+        # --- [DEBUG] 觀察數值變化 ---
+        # print(f"Win: {raw_width} | Cols: {n_cols} | Space: {space} px | Leftover: {remaining_space}")
+        # ---------------------------
+
+        # 5. 設定給 ListView
+        self.list_view.setSpacing(space) # 卡片之間的距離
+        self.list_view.setContentsMargins(space, space, space, space) # 邊框距離
 
     def on_item_clicked(self, index):
         if not index.isValid(): return
@@ -851,38 +909,118 @@ class MainWindow(QMainWindow):
             try: os.startfile(item.path)
             except: pass
 
+# [修改] 全新的右鍵選單邏輯
     def show_context_menu(self, pos):
         index = self.list_view.indexAt(pos)
-        if not index.isValid(): return
         
-        item = index.data(Qt.ItemDataRole.UserRole)
-        if not item: return
-
         menu = QMenu(self)
-        
-        action_copy = QAction("Copy Image", self)
-        action_copy.triggered.connect(lambda: self.copy_image_to_clipboard(item.path))
-        
-        action_path = QAction("Copy Path", self)
-        action_path.triggered.connect(lambda: QApplication.clipboard().setText(item.path))
-        
-        action_search = QAction("Search Similar", self)
-        action_search.triggered.connect(lambda: self.start_image_search(item.path))
-        
-        action_rename = QAction("Rename", self)
-        action_rename.triggered.connect(lambda: self.handle_rename_model(index, item))
-        
-        action_props = QAction("Properties", self)
-        action_props.triggered.connect(lambda: self.show_properties_dialog(item))
+        menu.setStyleSheet(WIN11_STYLESHEET) # 確保樣式一致
 
-        menu.addAction(action_copy)
-        menu.addAction(action_path)
-        menu.addAction(action_search)
-        menu.addSeparator()
-        menu.addAction(action_rename)
-        menu.addAction(action_props)
-        
+        if index.isValid():
+            # ========================
+            # 1. 點擊在圖片上 (Item Menu)
+            # ========================
+            item = index.data(Qt.ItemDataRole.UserRole)
+            if not item: return
+
+            action_copy = QAction("Copy Image", self)
+            action_copy.triggered.connect(lambda: self.copy_image_to_clipboard(item.path))
+            
+            action_path = QAction("Copy Path", self)
+            action_path.triggered.connect(lambda: QApplication.clipboard().setText(item.path))
+            
+            action_search = QAction("Search Similar", self)
+            action_search.triggered.connect(lambda: self.start_image_search(item.path))
+            
+            action_rename = QAction("Rename", self)
+            action_rename.triggered.connect(lambda: self.handle_rename_model(index, item))
+            
+            action_props = QAction("Properties", self)
+            action_props.triggered.connect(lambda: self.show_properties_dialog(item))
+
+            menu.addAction(action_copy)
+            menu.addAction(action_path)
+            menu.addAction(action_search)
+            menu.addSeparator()
+            menu.addAction(action_rename)
+            menu.addAction(action_props)
+            
+        else:
+            # ========================
+            # 2. 點擊在空白處 (View Menu)
+            # ========================
+            view_menu = menu.addMenu("View")
+            
+            # 定義三個選項
+            action_xl = QAction("Extra Large Icons", self)
+            action_xl.setCheckable(True)
+            action_xl.setChecked(self.current_view_mode == "xl")
+            action_xl.triggered.connect(lambda: self.change_view_mode("xl"))
+            
+            action_l = QAction("Large Icons", self)
+            action_l.setCheckable(True)
+            action_l.setChecked(self.current_view_mode == "large")
+            action_l.triggered.connect(lambda: self.change_view_mode("large"))
+            
+            action_m = QAction("Medium Icons", self)
+            action_m.setCheckable(True)
+            action_m.setChecked(self.current_view_mode == "medium")
+            action_m.triggered.connect(lambda: self.change_view_mode("medium"))
+            
+            # 加到群組確保單選效果
+            group = QActionGroup(self)
+            group.addAction(action_xl)
+            group.addAction(action_l)
+            group.addAction(action_m)
+            
+            view_menu.addAction(action_xl)
+            view_menu.addAction(action_l)
+            view_menu.addAction(action_m)
+            
+            menu.addSeparator()
+            # 這裡也可以加其他全域功能，例如「重新整理」
+            # action_refresh = QAction("Refresh", self)
+            # menu.addAction(action_refresh)
+
         menu.exec(self.list_view.mapToGlobal(pos))
+    
+    # [新增] 切換檢視模式的核心邏輯
+    def change_view_mode(self, mode):
+        if mode == self.current_view_mode: return
+        self.current_view_mode = mode
+        
+        # 定義不同模式的尺寸 (Card WxH, Thumb H)
+        if mode == "xl":
+            # 超大：卡片 320x380, 縮圖高 240
+            new_card_size = QSize(320, 380)
+            thumb_h = 240
+        elif mode == "large":
+            # 預設：卡片 240x290, 縮圖高 160
+            new_card_size = QSize(240, 290)
+            thumb_h = 160
+        elif mode == "medium":
+            # 中等：卡片 180x230, 縮圖高 120
+            new_card_size = QSize(180, 230)
+            thumb_h = 120
+        else:
+            return
+
+        # 更新尺寸記錄
+        self.current_card_size = new_card_size
+        self.current_thumb_size = QSize(new_card_size.width(), thumb_h)
+
+        # 1. 通知 Delegate 更新繪圖參數
+        self.delegate.set_view_params(new_card_size, thumb_h)
+        
+        # 2. 通知 Model 更新載入尺寸 (並清除快取)
+        self.model.update_target_size(self.current_thumb_size)
+        
+        # 3. 強制 View 重新計算佈局
+        # layoutChanged 會觸發 View 重新詢問 Delegate 的 sizeHint
+        self.model.layoutChanged.emit()
+        
+        # 4. 重新計算 RWD 間距 (因為卡片寬度變了)
+        self.adjust_layout()
 
     def copy_image_to_clipboard(self, path):
         try:
@@ -1019,10 +1157,14 @@ class MainWindow(QMainWindow):
         self.list_view.setSpacing(MIN_SPACING)
         self.list_view.setMouseTracking(True)
         self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        
-        item_size = QSize(CARD_SIZE[0], THUMBNAIL_SIZE[1])
-        self.model = SearchResultsModel(item_size)
-        self.delegate = ImageDelegate()
+
+        self.current_card_size = QSize(CARD_SIZE[0], CARD_SIZE[1])
+        self.current_thumb_size = QSize(CARD_SIZE[0], THUMBNAIL_SIZE[1])
+        self.current_view_mode = "large"
+
+        self.model = SearchResultsModel(self.current_thumb_size)
+
+        self.delegate = ImageDelegate(self.current_card_size, THUMBNAIL_SIZE[1])
         
         self.list_view.setModel(self.model)
         self.list_view.setItemDelegate(self.delegate)
@@ -1040,44 +1182,6 @@ class MainWindow(QMainWindow):
         self.stats_menu = StatsMenuWidget(self)
         self.preview_overlay = PreviewOverlay(self)
         self.adjust_layout()
-
-    def adjust_layout(self):
-        """
-        [新增] 動態計算間距，實現 RWD 自動排版
-        目標：讓卡片均勻分布，左右兩側也有留白 (Space Evenly)
-        """
-        # 1. 取得列表視圖目前的寬度
-        # 扣除 26px 是為了預留垂直卷軸 (Scrollbar) 的空間，避免出現卷軸後寬度變窄導致換行抖動
-        view_w = self.list_view.width() - 26
-        
-        item_w = CARD_SIZE[0] # 240
-        min_space = MIN_SPACING # 24
-
-        # 2. 計算這一行「最多」能放幾張卡片 (n_cols)
-        # 公式： 視窗寬 >= (n * 卡片寬) + ((n+1) * 最小間距)
-        # 也就是：要預留 n+1 個縫隙的最小空間
-        n_cols = (view_w - min_space) // (item_w + min_space)
-        n_cols = max(1, n_cols) # 至少要有一列
-
-        # 3. 計算剩餘的白色空間 (Remaining Space)
-        # 總剩餘 = 視窗寬 - (卡片總寬)
-        total_card_w = n_cols * item_w
-        remaining_space = view_w - total_card_w
-
-        # 4. 平均分配間距
-        # 我們有 n_cols 張卡片，所以有 n_cols + 1 個縫隙 (包含最左和最右)
-        space = remaining_space // (n_cols + 1)
-        
-        # 確保不要小於最小間距 (雖然理論上不會，但防呆)
-        space = int(max(min_space, space))
-
-        # 5. 應用設定
-        # setSpacing 控制「卡片之間」的距離
-        self.list_view.setSpacing(space)
-        
-        # setContentsMargins 控制「整個列表四周」的距離 (左, 上, 右, 下)
-        # 這樣就能達成你圖中「左側有箭頭、右側也有箭頭」的效果
-        self.list_view.setContentsMargins(space, space, space, space)
 
     def eventFilter(self, obj, event):
         # 處理鍵盤按下 (KeyPress)
@@ -1214,50 +1318,6 @@ class MainWindow(QMainWindow):
         self.worker.finished_search.connect(self.on_finished)
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
-    
-    # [新增] 這是負責計算間距的數學邏輯
-# 1. [新增] 自動排版核心邏輯
-    def adjust_layout(self):
-        """動態計算間距，讓卡片左右平均分布 (Space Evenly)"""
-        # 防呆：如果列表還沒建立或寬度無效，就跳過
-        if not hasattr(self, 'list_view') or self.list_view.width() <= 0:
-            return
-
-        # 扣除 26px 預留給垂直卷軸，避免卷軸出現時版面跳動
-        view_w = self.list_view.width() - 26
-        
-        item_w = CARD_SIZE[0]   # 240
-        min_space = MIN_SPACING # 24
-
-        # 計算一行最多能放幾張
-        n_cols = (view_w - min_space) // (item_w + min_space)
-        n_cols = max(1, n_cols)
-
-        # 計算剩餘空間
-        total_card_w = n_cols * item_w
-        remaining_space = view_w - total_card_w
-
-        # 平均分配給所有縫隙 (縫隙數 = 卡片數 + 1)
-        space = int(remaining_space // (n_cols + 1))
-        
-        # 確保不小於最小間距
-        space = max(min_space, space)
-
-        # 設定間距與邊界
-        self.list_view.setSpacing(space)
-        self.list_view.setContentsMargins(space, space, space, space)
-
-    # 2. [修改] 視窗大小改變時觸發
-    def resizeEvent(self, event): 
-        self.history_list.hide()
-        self.stats_menu.hide()
-        if self.preview_overlay.isVisible():
-            self.preview_overlay.resize(self.size())
-            
-        # 每次拉視窗都重新算一次
-        self.adjust_layout()
-        
-        super().resizeEvent(event)
 
     # 3. [新增] 視窗「第一次顯示」時觸發 (關鍵修復點！)
     def showEvent(self, event):
