@@ -839,279 +839,9 @@ class MainWindow(QMainWindow):
         
         self.load_history(); self.init_ui()
         
+        # 鍵盤監聽 (處理空白鍵)
         QApplication.instance().installEventFilter(self)
         threading.Thread(target=self.load_engine, daemon=True).start()
-    
-    def resizeEvent(self, event): 
-        # [關鍵修正] 把這行移到最上面！
-        # 先讓 Qt 處理完視窗大小改變，Layout 才會更新 list_view 的寬度
-        super().resizeEvent(event)
-
-        # 隱藏浮動視窗
-        self.history_list.hide()
-        self.stats_menu.hide()
-        
-        # 調整預覽層大小
-        if self.preview_overlay.isVisible():
-            self.preview_overlay.resize(self.size())
-            
-        # [這時候 list_view.width() 才是新的正確數值]
-        self.adjust_layout()
-
-    def adjust_layout(self):
-        """動態計算間距 (修正版：確保單列置中 + Debug 資訊)"""
-        # 防呆
-        if not hasattr(self, 'list_view') or self.list_view.width() <= 0:
-            return
-
-        # 1. 取得基本數據
-        # 扣除 26px 預留給垂直卷軸 (這是固定值，避免卷軸出現時寬度跳動)
-        raw_width = self.list_view.width()
-        view_w = raw_width - 26 
-        
-        # 取得目前卡片寬度
-        item_w = self.current_card_size.width() 
-
-        # 2. 計算這一行能放幾張 (n_cols)
-        # 用簡單除法： 視窗寬度 // 卡片寬度
-        n_cols = view_w // item_w
-        if n_cols < 1: n_cols = 1 # 至少放一張
-
-        # 3. 計算剩下的空間 (Remaining Space)
-        total_card_w = n_cols * item_w
-        remaining_space = view_w - total_card_w
-
-        # 4. 計算間隔 (Space Evenly: 平分給所有縫隙)
-        # 縫隙數量 = 卡片數 + 1 (左邊 + 中間縫隙 + 右邊)
-        space = int(remaining_space // (n_cols + 1))
-        
-        # 允許間距為 0 (當視窗超窄時，讓卡片盡量置中，不要被強制間距擠出去)
-        space = max(0, space)
-
-        # --- [DEBUG] 觀察數值變化 ---
-        # print(f"Win: {raw_width} | Cols: {n_cols} | Space: {space} px | Leftover: {remaining_space}")
-        # ---------------------------
-
-        # 5. 設定給 ListView
-        self.list_view.setSpacing(space) # 卡片之間的距離
-        self.list_view.setContentsMargins(space, space, space, space) # 邊框距離
-
-    def on_item_clicked(self, index):
-        if not index.isValid(): return
-        item = index.data(Qt.ItemDataRole.UserRole)
-        if item:
-            self.current_selected_path = item.path
-
-    def on_item_double_clicked(self, index):
-        if not index.isValid(): return
-        item = index.data(Qt.ItemDataRole.UserRole)
-        if item:
-            try: os.startfile(item.path)
-            except: pass
-
-# [修改] 全新的右鍵選單邏輯
-    def show_context_menu(self, pos):
-        index = self.list_view.indexAt(pos)
-        
-        menu = QMenu(self)
-        menu.setStyleSheet(WIN11_STYLESHEET) # 確保樣式一致
-
-        if index.isValid():
-            # ========================
-            # 1. 點擊在圖片上 (Item Menu)
-            # ========================
-            item = index.data(Qt.ItemDataRole.UserRole)
-            if not item: return
-
-            action_copy = QAction("Copy Image", self)
-            action_copy.triggered.connect(lambda: self.copy_image_to_clipboard(item.path))
-            
-            action_path = QAction("Copy Path", self)
-            action_path.triggered.connect(lambda: QApplication.clipboard().setText(item.path))
-            
-            action_search = QAction("Search Similar", self)
-            action_search.triggered.connect(lambda: self.start_image_search(item.path))
-            
-            action_rename = QAction("Rename", self)
-            action_rename.triggered.connect(lambda: self.handle_rename_model(index, item))
-            
-            action_props = QAction("Properties", self)
-            action_props.triggered.connect(lambda: self.show_properties_dialog(item))
-
-            menu.addAction(action_copy)
-            menu.addAction(action_path)
-            menu.addAction(action_search)
-            menu.addSeparator()
-            menu.addAction(action_rename)
-            menu.addAction(action_props)
-            
-        else:
-            # ========================
-            # 2. 點擊在空白處 (View Menu)
-            # ========================
-            view_menu = menu.addMenu("View")
-            
-            # 定義三個選項
-            action_xl = QAction("Extra Large Icons", self)
-            action_xl.setCheckable(True)
-            action_xl.setChecked(self.current_view_mode == "xl")
-            action_xl.triggered.connect(lambda: self.change_view_mode("xl"))
-            
-            action_l = QAction("Large Icons", self)
-            action_l.setCheckable(True)
-            action_l.setChecked(self.current_view_mode == "large")
-            action_l.triggered.connect(lambda: self.change_view_mode("large"))
-            
-            action_m = QAction("Medium Icons", self)
-            action_m.setCheckable(True)
-            action_m.setChecked(self.current_view_mode == "medium")
-            action_m.triggered.connect(lambda: self.change_view_mode("medium"))
-            
-            # 加到群組確保單選效果
-            group = QActionGroup(self)
-            group.addAction(action_xl)
-            group.addAction(action_l)
-            group.addAction(action_m)
-            
-            view_menu.addAction(action_xl)
-            view_menu.addAction(action_l)
-            view_menu.addAction(action_m)
-            
-            menu.addSeparator()
-            # 這裡也可以加其他全域功能，例如「重新整理」
-            # action_refresh = QAction("Refresh", self)
-            # menu.addAction(action_refresh)
-
-        menu.exec(self.list_view.mapToGlobal(pos))
-    
-    # [新增] 切換檢視模式的核心邏輯
-    def change_view_mode(self, mode):
-        if mode == self.current_view_mode: return
-        self.current_view_mode = mode
-        
-        # 定義不同模式的尺寸 (Card WxH, Thumb H)
-        if mode == "xl":
-            # 超大：卡片 320x380, 縮圖高 240
-            new_card_size = QSize(320, 380)
-            thumb_h = 240
-        elif mode == "large":
-            # 預設：卡片 240x290, 縮圖高 160
-            new_card_size = QSize(240, 290)
-            thumb_h = 160
-        elif mode == "medium":
-            # 中等：卡片 180x230, 縮圖高 120
-            new_card_size = QSize(180, 230)
-            thumb_h = 120
-        else:
-            return
-
-        # 更新尺寸記錄
-        self.current_card_size = new_card_size
-        self.current_thumb_size = QSize(new_card_size.width(), thumb_h)
-
-        # 1. 通知 Delegate 更新繪圖參數
-        self.delegate.set_view_params(new_card_size, thumb_h)
-        
-        # 2. 通知 Model 更新載入尺寸 (並清除快取)
-        self.model.update_target_size(self.current_thumb_size)
-        
-        # 3. 強制 View 重新計算佈局
-        # layoutChanged 會觸發 View 重新詢問 Delegate 的 sizeHint
-        self.model.layoutChanged.emit()
-        
-        # 4. 重新計算 RWD 間距 (因為卡片寬度變了)
-        self.adjust_layout()
-
-    def copy_image_to_clipboard(self, path):
-        try:
-            img = QImage(path)
-            if not img.isNull(): QApplication.clipboard().setImage(img)
-        except: pass
-
-    def show_properties_dialog(self, item):
-        from datetime import datetime
-        date_str = "Unknown"
-        if item.mtime > 0:
-            date_str = datetime.fromtimestamp(item.mtime).strftime('%Y-%m-%d %H:%M')
-            
-        msg = f"""
-        <h3>{item.filename}</h3>
-        <hr>
-        <b>Path:</b> {item.path}<br>
-        <b>Score:</b> {item.score:.4f}<br>
-        <b>Date:</b> {date_str}
-        """
-        QMessageBox.information(self, "Properties", msg)
-
-    def handle_rename_model(self, index, item):
-        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=item.filename)
-        if ok and new_name and new_name != item.filename:
-            success, result = self.engine.rename_file(item.path, new_name)
-            if success:
-                item.filename = new_name
-                item.path = result 
-                self.model.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole])
-            else:
-                QMessageBox.warning(self, "Error", f"Rename failed: {result}")
-
-    def load_history(self):
-        if os.path.exists(HISTORY_FILE):
-            try:
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f: self.search_history = json.load(f)
-            except: self.search_history = []
-
-    def save_history_to_file(self):
-        try:
-            with open(HISTORY_FILE, 'w', encoding='utf-8') as f: json.dump(self.search_history, f, ensure_ascii=False)
-        except: pass
-
-    def add_to_history(self, query):
-        if not query: return
-        if query in self.search_history: self.search_history.remove(query)
-        self.search_history.insert(0, query); 
-        if len(self.search_history) > 10: self.search_history = self.search_history[:10]
-        self.save_history_to_file()
-
-    def delete_history_item(self, text):
-        if text in self.search_history: self.search_history.remove(text); self.save_history_to_file(); self.show_history_popup()
-    
-    def trigger_history_search(self, text): 
-        self.input.setText(text); self.start_search()
-
-    # [修復] 這就是缺失的函式！
-    def show_history_popup(self):
-        if not self.search_history: 
-            self.history_list.hide()
-            return
-        
-        self.history_list.clear()
-        
-        # 標題
-        title_item = QListWidgetItem()
-        title_widget = QLabel(" Recent Searches")
-        title_widget.setStyleSheet("color: #888888; font-size: 12px; padding: 4px;")
-        title_item.setFlags(Qt.ItemFlag.NoItemFlags)
-        title_item.setSizeHint(QSize(0, 30))
-        self.history_list.addItem(title_item)
-        self.history_list.setItemWidget(title_item, title_widget)
-        
-        # 內容
-        for text in self.search_history:
-            item = QListWidgetItem()
-            item.setSizeHint(QSize(0, 44))
-            widget = HistoryItemWidget(text, search_callback=self.trigger_history_search, delete_callback=self.delete_history_item)
-            self.history_list.addItem(item)
-            self.history_list.setItemWidget(item, widget)
-            
-        # 定位
-        input_pos = self.input.mapTo(self, QPoint(0, 0))
-        input_h = self.input.height()
-        input_w = self.input.width()
-        
-        list_height = min(320, self.history_list.sizeHintForRow(0) * (len(self.search_history) + 1) + 20)
-        self.history_list.setGeometry(input_pos.x(), input_pos.y() + input_h + 8, input_w, list_height)
-        self.history_list.show()
-        self.history_list.raise_()
 
     def init_ui(self):
         central = QWidget(); self.setCentralWidget(central); layout = QVBoxLayout(central); layout.setSpacing(0); layout.setContentsMargins(0, 0, 0, 0)
@@ -1149,7 +879,9 @@ class MainWindow(QMainWindow):
         self.status = QLabel("Initializing..."); self.status.setStyleSheet("color: #888888; font-size: 12px;"); header_layout.addWidget(self.status); layout.addWidget(top_bar)
         self.progress = QProgressBar(); self.progress.hide(); layout.addWidget(self.progress)
         
-        # List View
+        # ---------------------------------------------------------
+        # [NEW] 高效能列表視圖 (取代了舊的 AdaptiveResultView)
+        # ---------------------------------------------------------
         self.list_view = QListView()
         self.list_view.setViewMode(QListView.ViewMode.IconMode)
         self.list_view.setResizeMode(QListView.ResizeMode.Adjust)
@@ -1157,13 +889,14 @@ class MainWindow(QMainWindow):
         self.list_view.setSpacing(MIN_SPACING)
         self.list_view.setMouseTracking(True)
         self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list_view.setStyleSheet("QListView { border: none; background-color: #1e1e1e; }")
 
+        # 初始檢視設定
         self.current_card_size = QSize(CARD_SIZE[0], CARD_SIZE[1])
         self.current_thumb_size = QSize(CARD_SIZE[0], THUMBNAIL_SIZE[1])
         self.current_view_mode = "large"
 
         self.model = SearchResultsModel(self.current_thumb_size)
-
         self.delegate = ImageDelegate(self.current_card_size, THUMBNAIL_SIZE[1])
         
         self.list_view.setModel(self.model)
@@ -1175,26 +908,23 @@ class MainWindow(QMainWindow):
         self.list_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
         layout.addWidget(self.list_view)
+        # ---------------------------------------------------------
         
         self.history_list = QListWidget(self); self.history_list.hide(); self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         shadow = QGraphicsDropShadowEffect(); shadow.setBlurRadius(20); shadow.setColor(QColor(0, 0, 0, 100)); shadow.setOffset(0, 4); self.history_list.setGraphicsEffect(shadow)
 
         self.stats_menu = StatsMenuWidget(self)
         self.preview_overlay = PreviewOverlay(self)
-        self.adjust_layout()
 
     def eventFilter(self, obj, event):
-        # 處理鍵盤按下 (KeyPress)
         if event.type() == QEvent.Type.KeyPress:
-            
-            # [關鍵修正] 如果焦點在搜尋框，直接放行所有按鍵，確保能正常打字
+            # [修正] 如果焦點在搜尋框，直接放行，確保能正常打字
             if self.input.hasFocus():
-                return False # False 代表「不攔截」，讓事件繼續傳遞給搜尋框
+                return False 
 
             key = event.key()
             
-            # [新增] WASD 導航 (對應到方向鍵)
-            # 只有在「沒有」打字時，這些鍵才會變成方向鍵
+            # WASD 導航
             if key == Qt.Key.Key_W:
                 self.send_nav_key(Qt.Key.Key_Up); return True
             elif key == Qt.Key.Key_S:
@@ -1221,7 +951,7 @@ class MainWindow(QMainWindow):
                     self.preview_overlay.set_ocr_visible(False)
                 return True
 
-        # 處理滑鼠點擊 (保持原樣)
+        # 處理滑鼠點擊 (隱藏浮動視窗)
         if event.type() == QEvent.Type.MouseButtonPress:
             click_pos = event.globalPosition().toPoint()
             
@@ -1254,6 +984,7 @@ class MainWindow(QMainWindow):
         if self.preview_overlay.isVisible():
             self.preview_overlay.hide()
         else:
+            # 獲取選取項目
             index = self.list_view.currentIndex()
             if index.isValid():
                 item = index.data(Qt.ItemDataRole.UserRole)
@@ -1278,6 +1009,174 @@ class MainWindow(QMainWindow):
             self.stats_menu.move(menu_x, menu_y)
             self.stats_menu.show()
             self.stats_menu.raise_()
+
+    # 右鍵選單邏輯
+    def show_context_menu(self, pos):
+        index = self.list_view.indexAt(pos)
+        menu = QMenu(self)
+        
+        if index.isValid():
+            item = index.data(Qt.ItemDataRole.UserRole)
+            if not item: return
+
+            action_copy = QAction("Copy Image", self)
+            action_copy.triggered.connect(lambda: self.copy_image_to_clipboard(item.path))
+            action_path = QAction("Copy Path", self)
+            action_path.triggered.connect(lambda: QApplication.clipboard().setText(item.path))
+            action_search = QAction("Search Similar", self)
+            action_search.triggered.connect(lambda: self.start_image_search(item.path))
+            action_rename = QAction("Rename", self)
+            action_rename.triggered.connect(lambda: self.handle_rename_model(index, item))
+            action_props = QAction("Properties", self)
+            action_props.triggered.connect(lambda: self.show_properties_dialog(item))
+
+            menu.addAction(action_copy)
+            menu.addAction(action_path)
+            menu.addAction(action_search)
+            menu.addSeparator()
+            menu.addAction(action_rename)
+            menu.addAction(action_props)
+        else:
+            view_menu = menu.addMenu("檢視 (View)")
+            
+            action_xl = QAction("超大圖示 (Extra Large)", self); action_xl.setCheckable(True)
+            action_xl.setChecked(self.current_view_mode == "xl")
+            action_xl.triggered.connect(lambda: self.change_view_mode("xl"))
+            
+            action_l = QAction("大圖示 (Large)", self); action_l.setCheckable(True)
+            action_l.setChecked(self.current_view_mode == "large")
+            action_l.triggered.connect(lambda: self.change_view_mode("large"))
+            
+            action_m = QAction("中圖示 (Medium)", self); action_m.setCheckable(True)
+            action_m.setChecked(self.current_view_mode == "medium")
+            action_m.triggered.connect(lambda: self.change_view_mode("medium"))
+            
+            group = QActionGroup(self)
+            group.addAction(action_xl); group.addAction(action_l); group.addAction(action_m)
+            view_menu.addAction(action_xl); view_menu.addAction(action_l); view_menu.addAction(action_m)
+
+        menu.exec(self.list_view.mapToGlobal(pos))
+
+    def change_view_mode(self, mode):
+        if mode == self.current_view_mode: return
+        self.current_view_mode = mode
+        
+        if mode == "xl":
+            new_card_size = QSize(320, 380); thumb_h = 240
+        elif mode == "large":
+            new_card_size = QSize(240, 290); thumb_h = 160
+        elif mode == "medium":
+            new_card_size = QSize(180, 230); thumb_h = 120
+        else: return
+
+        self.current_card_size = new_card_size
+        self.current_thumb_size = QSize(new_card_size.width(), thumb_h)
+
+        self.delegate.set_view_params(new_card_size, thumb_h)
+        self.model.update_target_size(self.current_thumb_size)
+        self.model.layoutChanged.emit()
+        self.adjust_layout()
+
+    def adjust_layout(self):
+        """動態計算間距"""
+        if not hasattr(self, 'list_view') or self.list_view.width() <= 0: return
+
+        raw_width = self.list_view.width()
+        view_w = raw_width - 26 
+        item_w = self.current_card_size.width() 
+
+        n_cols = view_w // item_w
+        if n_cols < 1: n_cols = 1 
+
+        total_card_w = n_cols * item_w
+        remaining_space = view_w - total_card_w
+        space = int(remaining_space // (n_cols + 1))
+        space = max(0, space)
+
+        self.list_view.setSpacing(space)
+        self.list_view.setContentsMargins(space, space, space, space)
+
+    def on_item_clicked(self, index):
+        if not index.isValid(): return
+        item = index.data(Qt.ItemDataRole.UserRole)
+        if item: self.current_selected_path = item.path
+
+    def on_item_double_clicked(self, index):
+        if not index.isValid(): return
+        item = index.data(Qt.ItemDataRole.UserRole)
+        if item:
+            try: os.startfile(item.path)
+            except: pass
+
+    def copy_image_to_clipboard(self, path):
+        try:
+            img = QImage(path)
+            if not img.isNull(): QApplication.clipboard().setImage(img)
+        except: pass
+
+    def show_properties_dialog(self, item):
+        from datetime import datetime
+        date_str = "Unknown"
+        if item.mtime > 0:
+            date_str = datetime.fromtimestamp(item.mtime).strftime('%Y-%m-%d %H:%M')
+        msg = f"<h3>{item.filename}</h3><hr><b>Path:</b> {item.path}<br><b>Score:</b> {item.score:.4f}<br><b>Date:</b> {date_str}"
+        QMessageBox.information(self, "Properties", msg)
+
+    def handle_rename_model(self, index, item):
+        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=item.filename)
+        if ok and new_name and new_name != item.filename:
+            success, result = self.engine.rename_file(item.path, new_name)
+            if success:
+                item.filename = new_name
+                item.path = result 
+                self.model.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole])
+            else:
+                QMessageBox.warning(self, "Error", f"Rename failed: {result}")
+
+    def load_history(self):
+        if os.path.exists(HISTORY_FILE):
+            try:
+                with open(HISTORY_FILE, 'r', encoding='utf-8') as f: self.search_history = json.load(f)
+            except: self.search_history = []
+
+    def save_history_to_file(self):
+        try:
+            with open(HISTORY_FILE, 'w', encoding='utf-8') as f: json.dump(self.search_history, f, ensure_ascii=False)
+        except: pass
+
+    def add_to_history(self, query):
+        if not query: return
+        if query in self.search_history: self.search_history.remove(query)
+        self.search_history.insert(0, query); 
+        if len(self.search_history) > 10: self.search_history = self.search_history[:10]
+        self.save_history_to_file()
+
+    def delete_history_item(self, text):
+        if text in self.search_history: self.search_history.remove(text); self.save_history_to_file(); self.show_history_popup()
+    
+    def trigger_history_search(self, text): 
+        self.input.setText(text); self.start_search()
+
+    def show_history_popup(self):
+        if not self.search_history: self.history_list.hide(); return
+        self.history_list.clear()
+        title_item = QListWidgetItem()
+        title_widget = QLabel(" Recent Searches")
+        title_widget.setStyleSheet("color: #888888; font-size: 12px; padding: 4px;")
+        title_item.setFlags(Qt.ItemFlag.NoItemFlags)
+        title_item.setSizeHint(QSize(0, 30))
+        self.history_list.addItem(title_item)
+        self.history_list.setItemWidget(title_item, title_widget)
+        
+        for text in self.search_history:
+            item = QListWidgetItem(); item.setSizeHint(QSize(0, 44))
+            widget = HistoryItemWidget(text, search_callback=self.trigger_history_search, delete_callback=self.delete_history_item)
+            self.history_list.addItem(item); self.history_list.setItemWidget(item, widget)
+            
+        input_pos = self.input.mapTo(self, QPoint(0, 0))
+        list_height = min(320, self.history_list.sizeHintForRow(0) * (len(self.search_history) + 1) + 20)
+        self.history_list.setGeometry(input_pos.x(), input_pos.y() + self.input.height() + 8, self.input.width(), list_height)
+        self.history_list.show(); self.history_list.raise_()
     
     def load_engine(self):
         try: self.engine = ImageSearchEngine(); QApplication.processEvents(); self.status.setText("System Ready")
@@ -1296,6 +1195,7 @@ class MainWindow(QMainWindow):
         limit = self.combo_limit.currentText()
         k = 100000 if limit == "All" else int(limit)
         
+        # [修改] 使用新的 Worker，並連接到 Model
         self.worker = SearchWorker(self.engine, q, k, search_mode="text", use_ocr=self.chk_ocr.isChecked())
         self.worker.batch_ready.connect(self.model.set_search_results)
         self.worker.finished_search.connect(self.on_finished)
@@ -1304,9 +1204,7 @@ class MainWindow(QMainWindow):
 
     def start_image_search(self, image_path):
         if not self.engine: return
-        self.history_list.hide()
-        self.progress.show()
-        self.progress.setRange(0, 0)
+        self.history_list.hide(); self.progress.show(); self.progress.setRange(0, 0)
         self.status.setText("Searching by Image...")
         self.input.setText(f"[Image] {os.path.basename(image_path)}")
         
@@ -1319,11 +1217,16 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
 
-    # 3. [新增] 視窗「第一次顯示」時觸發 (關鍵修復點！)
+    def resizeEvent(self, event): 
+        super().resizeEvent(event)
+        self.history_list.hide()
+        self.stats_menu.hide()
+        if self.preview_overlay.isVisible():
+            self.preview_overlay.resize(self.size())
+        self.adjust_layout()
+
     def showEvent(self, event):
         super().showEvent(event)
-        # 使用 QTimer 延遲 50 毫秒，確保視窗幾何尺寸已經計算完成後再排版
-        # 這能完美解決「剛開啟時沒有置中」的問題
         QTimer.singleShot(50, self.adjust_layout)
 
     def on_finished(self, elapsed, total): self.progress.hide(); self.status.setText(f"Found {total} items ({elapsed:.2f}s)")
