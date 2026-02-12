@@ -231,11 +231,12 @@ class ImageDelegate(QStyledItemDelegate):
         self.font_score = QFont("Consolas", 9)
         self.font_tag = QFont("Segoe UI", 8, QFont.Weight.Bold)
         
-        # [新增] 儲存當前的尺寸設定
         self.card_size = card_size
         self.thumb_height = thumb_height
         
+        # 取得系統預設圖示
         provider = QFileIconProvider()
+        # 使用一個不存在的 .jpg 檔名來獲取系統對 jpg 的預設圖示
         self.placeholder_icon = provider.icon(QFileInfo("template.jpg"))
 
     # [新增] 更新尺寸的方法
@@ -244,7 +245,6 @@ class ImageDelegate(QStyledItemDelegate):
         self.thumb_height = thumb_height
 
     def sizeHint(self, option, index):
-        # [修改] 回傳動態設定的大小
         return self.card_size
 
     def paint(self, painter: QPainter, option, index):
@@ -289,7 +289,7 @@ class ImageDelegate(QStyledItemDelegate):
         painter.setPen(QPen(border_color, border_width))
         painter.drawPath(path)
 
-        # --- 版面計算 (從底部往上算) ---
+        # --- 版面計算 ---
         bottom_margin = self.padding
         score_height = 20
         score_y = card_rect.bottom() - bottom_margin - score_height
@@ -308,11 +308,7 @@ class ImageDelegate(QStyledItemDelegate):
             name_height
         )
 
-        # 2. 繪製圖片 (使用動態的 thumb_height 計算)
-        # 這裡我們讓圖片區域佔據上方大部分空間
-        # 如果你希望圖片高度固定為 thumb_height，可以用下面這行：
         img_rect_height = self.thumb_height
-        
         img_rect = QRect(
             card_rect.left() + self.padding,
             card_rect.top() + self.padding,
@@ -323,6 +319,7 @@ class ImageDelegate(QStyledItemDelegate):
         painter.setClipPath(path) 
         
         if pixmap and not pixmap.isNull():
+            # 有縮圖時：繪製縮圖
             scaled_pixmap = pixmap.scaled(
                 img_rect.size(), 
                 Qt.AspectRatioMode.KeepAspectRatio, 
@@ -336,15 +333,28 @@ class ImageDelegate(QStyledItemDelegate):
                 scaled_pixmap
             )
         else:
-            icon_size = 64
-            if img_rect.height() < icon_size: icon_size = img_rect.height() - 10
+            # ==========================================
+            # [修改] 動態計算預設圖示大小
+            # ==========================================
             
+            # 1. 計算可用空間的最小邊 (寬或高)
+            min_dim = min(img_rect.width(), img_rect.height())
+            
+            # 2. 設定圖示大小為可用空間的 45% (看起來比較像 Windows 檔案總管)
+            # 你可以調整 0.80 這個數值 (0.3 ~ 0.6 效果都不錯)
+            icon_size = int(min_dim * 0.80)
+            
+            # 3. 設定最小限制，避免圖示小到看不見
+            icon_size = max(48, icon_size)
+            
+            # 4. 居中計算
             icon_rect = QRect(
-                img_rect.center().x() - icon_size//2,
-                img_rect.center().y() - icon_size//2,
+                img_rect.center().x() - icon_size // 2,
+                img_rect.center().y() - icon_size // 2,
                 icon_size, icon_size
             )
-            painter.setOpacity(0.3)
+            
+            painter.setOpacity(0.2) # 稍微透明一點，讓它看起來像背景浮水印
             self.placeholder_icon.paint(painter, icon_rect)
             painter.setOpacity(1.0)
 
@@ -360,11 +370,18 @@ class ImageDelegate(QStyledItemDelegate):
         # 4. 繪製分數
         painter.setFont(self.font_score)
         score_val = float(item.score)
-        if score_val > 0.3:
-            painter.setPen(QColor("#60cdff"))
+        
+        # 只有分數大於 0 才顯示高亮顏色 (0.0 通常代表剛載入還沒搜尋)
+        if score_val > 0.0001:
+            if score_val > 0.3:
+                painter.setPen(QColor("#60cdff"))
+            else:
+                painter.setPen(QColor("#999999"))
+            painter.drawText(score_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"{score_val:.4f}")
         else:
-            painter.setPen(QColor("#999999"))
-        painter.drawText(score_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"{score_val:.4f}")
+            # 如果分數是 0 (例如剛啟動顯示全部圖片時)，顯示日期可能比較實用，或者留白
+            # 這裡示範顯示日期
+            pass
 
         # 5. OCR 標籤
         if item.is_ocr_match:
@@ -388,13 +405,27 @@ class ImageDelegate(QStyledItemDelegate):
 # ==========================================
 class ImageSearchEngine:
     def __init__(self, config: ConfigManager):
-        self.config = config  # 保存設定物件
+        self.config = config
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.is_ready = False
-        print(f"[Engine] Initializing on {self.device.upper()}...")
+        self.model = None
+        self.preprocess = None
+        self.tokenizer = None
         
+        # [修正] 預先定義 stored_embeddings
+        self.stored_embeddings = None 
+        self.data_store = []
+
+        # 1. 初始化資料庫
+        print(f"[Engine] Initializing Database...")
+        if os.path.exists(self.config.db_path):
+            self.load_data_from_db()
+        else:
+            print(f"[Error] Database file not found: {self.config.db_path}")
+
+    def load_ai_models(self):
+        """第二階段：載入重量級 AI 模型 (耗時操作)"""
         try:
-            # [修改 2] 從 config 讀取模型名稱
             model_name = self.config.get("model_name")
             pretrained = self.config.get("pretrained")
 
@@ -404,23 +435,49 @@ class ImageSearchEngine:
             )
             self.model.eval()
             self.tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-large')
-
-            # [修改 3] 使用 config.db_path 取得資料庫路徑
-            if os.path.exists(self.config.db_path):
-                self.load_data_from_db()
-            else:
-                print(f"[Error] Database file not found: {self.config.db_path}")
-
+            
+            # 模型載入完畢，標記為 Ready
+            self.is_ready = True
+            print(f"[Engine] AI Models Loaded. System is fully ready.")
+            
         except Exception as e:
-            print(f"[Error] Engine initialization failed: {e}")
+            print(f"[Error] AI Model loading failed: {e}")
+
+    def get_all_images_sorted(self):
+        """
+        [高效能] 取得資料庫中所有圖片，並依時間 (新->舊) 排序。
+        用於冷啟動時的瀑布流顯示。
+        """
+        if not hasattr(self, 'data_store') or not self.data_store:
+            return []
+        
+        print(f"[Engine] Sorting {len(self.data_store)} images by date...")
+        
+        # 1. 使用 Python 內建 Timsort 進行快速排序 (mtime 大的排前面)
+        sorted_data = sorted(self.data_store, key=lambda x: x["mtime"], reverse=True)
+        
+        # 2. 轉換為 UI 需要的格式
+        results = []
+        for item in sorted_data:
+            results.append({
+                "score": 0.0, # 初始顯示沒有相似度分數
+                "clip_score": 0.0,
+                "ocr_bonus": 0.0,
+                "name_bonus": 0.0,
+                "is_ocr_match": False,
+                "path": item["path"],
+                "filename": item["filename"],
+                "ocr_data": item.get("ocr_data", []),
+                "mtime": item.get("mtime", 0)
+            })
+            
+        return results
 
     def load_data_from_db(self):
-        # [修改 4] 使用 self.config.db_path
         print(f"[Engine] Connecting to database: {self.config.db_path}...")
         conn = sqlite3.connect(self.config.db_path)
         cursor = conn.cursor()
         try:
-            # 讀取 5 個欄位
             cursor.execute("SELECT file_path, embedding, ocr_text, ocr_data, mtime FROM images")
             rows = cursor.fetchall()
             
@@ -429,6 +486,8 @@ class ImageSearchEngine:
             
             for path, blob, ocr_text, ocr_data_json, mtime in rows:
                 if not os.path.exists(path): continue 
+                
+                # 這裡只需存 embedding array，不用轉 tensor (省記憶體/時間)
                 emb_array = np.frombuffer(blob, dtype=np.float32)
                 embeddings_list.append(emb_array)
                 
@@ -447,13 +506,15 @@ class ImageSearchEngine:
                     "mtime": mtime
                 })
             
-            if self.data_store:
+            if self.data_store and embeddings_list:
+                # 預先轉好 tensor 以備搜尋用
                 emb_matrix = np.stack(embeddings_list)
                 self.stored_embeddings = torch.from_numpy(emb_matrix).to(self.device)
-                self.is_ready = True
-                print(f"[Engine] Loaded {len(self.data_store)} records.")
+                print(f"[Engine] Loaded {len(self.data_store)} records from DB.")
             else:
-                print("[Engine] Database is empty.")
+                print("[Engine] Database is empty or no valid files found.")
+                # [修正 2] 確保即使沒資料，變數也要存在，避免後續 NoneType 錯誤
+                self.stored_embeddings = None
                 
         except sqlite3.Error as e:
             print(f"[Error] Database query failed: {e}")
@@ -465,52 +526,37 @@ class ImageSearchEngine:
         try:
             conn = sqlite3.connect(self.config.db_path)
             cursor = conn.cursor()
-            
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='folder_stats'")
             if cursor.fetchone():
                 cursor.execute("SELECT folder_path, image_count FROM folder_stats ORDER BY folder_path ASC")
             else:
                 cursor.execute("SELECT folder_path, COUNT(*) FROM images GROUP BY folder_path")
-                
             stats = cursor.fetchall()
             conn.close()
             return stats
         except Exception as e:
-            print(f"[Error] Failed to get stats: {e}")
-            return []
+            print(f"[Error] Failed to get stats: {e}"); return []
 
     def rename_file(self, old_path, new_name):
-        folder = os.path.dirname(old_path)
-        new_path = os.path.join(folder, new_name)
-        
-        if os.path.exists(new_path):
-            return False, "Target filename already exists."
-
+        folder = os.path.dirname(old_path); new_path = os.path.join(folder, new_name)
+        if os.path.exists(new_path): return False, "Target filename already exists."
         try:
             os.rename(old_path, new_path)
-            conn = sqlite3.connect(self.config.db_path)
-            cursor = conn.cursor()
-            cursor.execute("UPDATE images SET file_path = ?, filename = ? WHERE file_path = ?", 
-                           (new_path, new_name, old_path))
-            conn.commit()
-            conn.close()
-            
+            conn = sqlite3.connect(self.config.db_path); cursor = conn.cursor()
+            cursor.execute("UPDATE images SET file_path = ?, filename = ? WHERE file_path = ?", (new_path, new_name, old_path))
+            conn.commit(); conn.close()
             for item in self.data_store:
                 if item["path"] == old_path:
-                    item["path"] = new_path
-                    item["filename"] = new_name
-                    break
-                    
+                    item["path"] = new_path; item["filename"] = new_name; break
             return True, new_path
-        except Exception as e:
-            return False, str(e)
+        except Exception as e: return False, str(e)
 
     def search_hybrid(self, query, top_k=50, use_ocr=True):
-        if not self.is_ready: return []
-        
-        results = []
-        query_lower = query.lower()
-        
+        # [安全檢查] 增加檢查 stored_embeddings 是否存在
+        if not self.is_ready or self.stored_embeddings is None: 
+            return [] 
+            
+        results = []; query_lower = query.lower()
         try:
             with torch.no_grad():
                 inputs = self.tokenizer(query, padding=True, truncation=True, return_tensors="pt").to(self.device)
@@ -520,76 +566,48 @@ class ImageSearchEngine:
             
             similarity = (text_features @ self.stored_embeddings.T).squeeze(0)
             scores = similarity.cpu().numpy()
-            
         except Exception as e:
-            print(f"CLIP Search Error: {e}")
-            scores = np.zeros(len(self.data_store))
+            print(f"CLIP Search Error: {e}"); scores = np.zeros(len(self.data_store))
 
         for idx, item in enumerate(self.data_store):
-            clip_score = float(scores[idx])
-            ocr_bonus = 0.0
-            name_bonus = 0.0
-            
-            if use_ocr and query_lower in item["ocr_text"]:
-                ocr_bonus = 0.5
-            
-            if query_lower in item["filename"].lower():
-                name_bonus = 0.2
-                
+            clip_score = float(scores[idx]); ocr_bonus = 0.0; name_bonus = 0.0
+            if use_ocr and query_lower in item["ocr_text"]: ocr_bonus = 0.5
+            if query_lower in item["filename"].lower(): name_bonus = 0.2
             final_score = clip_score + ocr_bonus + name_bonus
-            
             if final_score > 0.15: 
                 results.append({
-                    "score": final_score,
-                    "clip_score": clip_score,
-                    "ocr_bonus": ocr_bonus,
-                    "name_bonus": name_bonus,
-                    "is_ocr_match": (ocr_bonus > 0),
-                    "path": item["path"],
-                    "filename": item["filename"],
-                    "ocr_data": item.get("ocr_data", []),
-                    "mtime": item.get("mtime", 0)
+                    "score": final_score, "clip_score": clip_score, "ocr_bonus": ocr_bonus, "name_bonus": name_bonus,
+                    "is_ocr_match": (ocr_bonus > 0), "path": item["path"], "filename": item["filename"],
+                    "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0)
                 })
-        
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
     def search_image(self, image_path, top_k=50):
-        if not self.is_ready: return []
+        # [安全檢查]
+        if not self.is_ready or self.stored_embeddings is None: 
+            return []
+            
         try:
             image = Image.open(image_path).convert('RGB')
             processed_image = self.preprocess(image).unsqueeze(0).to(self.device)
-            
             with torch.no_grad():
                 image_features = self.model.encode_image(processed_image)
                 image_features /= image_features.norm(dim=-1, keepdim=True)
                 image_features = image_features.to(self.stored_embeddings.dtype)
-            
             similarity = (image_features @ self.stored_embeddings.T).squeeze(0)
-            
             k = min(top_k, len(self.data_store))
             values, indices = similarity.topk(k)
-            
             results = []
             for i in range(k):
-                idx = indices[i].item()
-                item = self.data_store[idx]
-                score = values[i].item()
+                idx = indices[i].item(); item = self.data_store[idx]; score = values[i].item()
                 results.append({
-                    "score": score,
-                    "clip_score": score,
-                    "ocr_bonus": 0.0,
-                    "name_bonus": 0.0,
-                    "is_ocr_match": False,
-                    "path": item["path"],
-                    "filename": item["filename"],
-                    "ocr_data": item.get("ocr_data", []),
-                    "mtime": item.get("mtime", 0)
+                    "score": score, "clip_score": score, "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
+                    "path": item["path"], "filename": item["filename"], "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0)
                 })
             return results
         except Exception as e:
-            print(f"[Error] Image search failed: {e}")
-            return []
+            print(f"[Error] Image search failed: {e}"); return []
 
 class SearchWorker(QThread):
     batch_ready = pyqtSignal(list) 
@@ -844,22 +862,32 @@ class StatsMenuWidget(QFrame):
         self.total_label.setText(f"Total: {total_images:,} images")
 
 class MainWindow(QMainWindow):
+    # 定義訊號
+    random_data_ready = pyqtSignal(list)
+
     def __init__(self, config: ConfigManager):
+        # [關鍵修正] 這行一定要在第一行，且不能漏掉！
         super().__init__()
-        self.config = config # 保存設定
+        
+        self.config = config
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(1280, 900)
         self.engine = None
         self.search_history = [] 
         self.current_selected_path = None
         
-        # [修改 2] 設定歷史紀錄檔的絕對路徑 (放在 App 根目錄下)
+        # 設定歷史紀錄檔路徑
         self.history_file_path = os.path.join(self.config.app_root, "search_history.json")
 
         self.load_history()
         self.init_ui()
         
+        # 連接訊號
+        self.random_data_ready.connect(self.model.set_search_results)
+
         QApplication.instance().installEventFilter(self)
+        
+        # 啟動背景載入 (這裡才會去建立 ImageSearchEngine)
         threading.Thread(target=self.load_engine, daemon=True).start()
 
     def init_ui(self):
@@ -1231,12 +1259,33 @@ class MainWindow(QMainWindow):
         self.history_list.show(); self.history_list.raise_()
     
     def load_engine(self):
-        try: 
-            # [修改 5] 建立引擎時，把 self.config 傳進去
+        try:
+            self.status.setText("Loading Database...")
+            
+            # 正確建立 Engine 實例
             self.engine = ImageSearchEngine(self.config)
+            
+            self.status.setText("Rendering Gallery...")
+            # 呼叫排序方法
+            all_images = self.engine.get_all_images_sorted()
+            
+            if all_images:
+                self.random_data_ready.emit(all_images)
+                self.status.setText(f"Loaded {len(all_images)} images. Loading AI in background...")
+            
+            time.sleep(0.05)
+            
+            # 載入模型
+            self.engine.load_ai_models()
+            
             QApplication.processEvents()
-            self.status.setText("System Ready")
-        except Exception as e: print(e)
+            self.status.setText(f"System Ready ({len(all_images)} images indexed)")
+            
+        except Exception as e: 
+            print(f"Engine Load Error: {e}")
+            import traceback
+            traceback.print_exc()
+            self.status.setText("Error Loading Engine")
         
     def start_search(self):
         q = self.input.text().strip()
