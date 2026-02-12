@@ -861,6 +861,131 @@ class StatsMenuWidget(QFrame):
             
         self.total_label.setText(f"Total: {total_images:,} images")
 
+class SidebarWidget(QFrame):
+    folder_selected = pyqtSignal(str) 
+    toggled = pyqtSignal(bool) 
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.expanded_width = 240
+        # [修改] 寬度設為 60 (配合 TopBar 高度)
+        self.collapsed_width = 60 
+        self.is_expanded = True
+        
+        self.setStyleSheet("""
+            QFrame { background-color: #252525; border-right: 1px solid #333; }
+            QListWidget { border: none; background: transparent; outline: none; }
+            QListWidget::item { color: #ccc; padding: 12px; border-radius: 4px; margin: 4px; }
+            QListWidget::item:hover { background-color: #333; color: white; }
+            QListWidget::item:selected { background-color: #3d3d3d; color: #60cdff; border-left: 3px solid #60cdff; }
+            
+            /* [修改] 按鈕樣式：純圖示，無邊框，置中 */
+            QPushButton { 
+                background: transparent; 
+                border: none; 
+                color: #ccc; 
+                font-size: 26px; 
+                border-radius: 0px;
+                text-align: center; 
+            }
+            QPushButton:hover { background-color: #333; color: white; }
+        """)
+        
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+        
+        # --- 1. 頂部收合按鈕區 ---
+        self.top_container = QWidget()
+        # [修改] 高度設為 60
+        self.top_container.setFixedHeight(60) 
+        
+        top_layout = QHBoxLayout(self.top_container)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(0)
+        # [關鍵] 靠左對齊，確保按鈕永遠在左上角
+        top_layout.setAlignment(Qt.AlignmentFlag.AlignLeft) 
+        
+        self.btn_toggle = QPushButton("≡")
+        self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle.setToolTip("Toggle Sidebar")
+        
+        # [修改] 固定大小 60x60
+        self.btn_toggle.setFixedSize(60, 60)
+        self.btn_toggle.clicked.connect(self.toggle_sidebar)
+        
+        top_layout.addWidget(self.btn_toggle)
+        self.layout.addWidget(self.top_container)
+        
+        # --- 2. 資料夾列表 ---
+        self.folder_list = QListWidget()
+        self.folder_list.setIconSize(QSize(24, 24))
+        self.folder_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.folder_list.itemClicked.connect(self.on_item_clicked)
+        self.layout.addWidget(self.folder_list)
+        
+        # 初始狀態
+        self.setFixedWidth(self.expanded_width)
+
+    def update_folders(self, stats):
+        self.folder_list.clear()
+        provider = QFileIconProvider()
+        folder_icon = provider.icon(QFileInfo("."))
+        
+        total_count = sum(count for _, count in stats)
+        
+        all_item = QListWidgetItem(folder_icon, f"All Images ({total_count})")
+        all_item.setData(Qt.ItemDataRole.UserRole, "ALL")
+        all_item.setToolTip("Show all indexed images")
+        self.folder_list.addItem(all_item)
+        
+        for folder_path, count in stats:
+            folder_name = os.path.basename(folder_path)
+            if len(folder_name) < 2: folder_name = folder_path
+            display_text = f"{folder_name} ({count})"
+            
+            item = QListWidgetItem(folder_icon, display_text)
+            item.setData(Qt.ItemDataRole.UserRole, folder_path)
+            item.setToolTip(folder_path)
+            self.folder_list.addItem(item)
+            
+        if not self.is_expanded:
+            self.refresh_text_visibility()
+
+    def toggle_sidebar(self):
+        """切換展開/收合"""
+        self.is_expanded = not self.is_expanded
+        
+        if self.is_expanded:
+            self.setFixedWidth(self.expanded_width)
+        else:
+            self.setFixedWidth(self.collapsed_width)
+            
+        # [修正] 這裡不再去動 btn_toggle 的 style，防止它跳動
+        self.refresh_text_visibility()
+        
+        # 發出訊號
+        self.toggled.emit(self.is_expanded)
+
+    def refresh_text_visibility(self):
+        for i in range(self.folder_list.count()):
+            item = self.folder_list.item(i)
+            path = item.data(Qt.ItemDataRole.UserRole)
+            
+            if self.is_expanded:
+                if path == "ALL":
+                    item.setText(item.toolTip().replace("Show all indexed images", "All Images")) 
+                else:
+                    folder_name = os.path.basename(path)
+                    if len(folder_name) < 2: folder_name = path
+                    item.setText(folder_name)
+            else:
+                item.setText("") # 收合時隱藏文字
+
+    def on_item_clicked(self, item):
+        path = item.data(Qt.ItemDataRole.UserRole)
+        self.folder_selected.emit(path)
+
 class MainWindow(QMainWindow):
     # 定義訊號
     random_data_ready = pyqtSignal(list)
@@ -891,44 +1016,62 @@ class MainWindow(QMainWindow):
         threading.Thread(target=self.load_engine, daemon=True).start()
 
     def init_ui(self):
-        central = QWidget(); self.setCentralWidget(central); layout = QVBoxLayout(central); layout.setSpacing(0); layout.setContentsMargins(0, 0, 0, 0)
+        # ... (前段 layout 設定保持不變) ...
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # --- 左側：側邊欄 ---
+        self.sidebar = SidebarWidget()
+        self.sidebar.folder_selected.connect(self.on_folder_filter)
+        self.sidebar.toggled.connect(self.on_sidebar_toggled)
+        main_layout.addWidget(self.sidebar)
+        
+        # --- 右側 ---
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setSpacing(0)
+        right_layout.setContentsMargins(0, 0, 0, 0)
         
         # Top Bar
-        top_bar = QFrame(); top_bar.setFixedHeight(90); top_bar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #333;")
-        header_layout = QHBoxLayout(top_bar); header_layout.setContentsMargins(20, 0, 30, 0); header_layout.setSpacing(15)
+        top_bar = QFrame()
+        # [修改] 高度改為 60，與側邊欄按鈕切齊
+        top_bar.setFixedHeight(60) 
+        top_bar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #333;")
+        header_layout = QHBoxLayout(top_bar)
+        header_layout.setContentsMargins(20, 0, 30, 0)
+        header_layout.setSpacing(15)
         
-        self.btn_menu = QPushButton("Menu"); self.btn_menu.setObjectName("MenuButton")
-        self.btn_menu.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.btn_menu.clicked.connect(self.toggle_menu)
-        
-        title_label = QLabel("AI Search"); title_label.setStyleSheet("color: #e0e0e0; font-size: 18px; font-weight: 600; letter-spacing: 0.5px;")
-        
-        header_layout.addWidget(self.btn_menu)
+        title_label = QLabel("Gallery") 
+        title_label.setStyleSheet("color: #e0e0e0; font-size: 18px; font-weight: 600;")
         header_layout.addWidget(title_label)
+        
         header_layout.addStretch(1)
         
-        search_container = QWidget(); search_container.setFixedWidth(600)
-        search_layout = QHBoxLayout(search_container); search_layout.setContentsMargins(0, 0, 0, 0); search_layout.setSpacing(10)
-        self.input = QLineEdit(); self.input.setPlaceholderText("Type and press Enter..."); self.input.returnPressed.connect(self.start_search)
-        
+        # ... (中間搜尋區 search_container 設定保持不變) ...
+        search_container = QWidget()
+        search_container.setFixedWidth(500)
+        search_layout = QHBoxLayout(search_container)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(10)
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Search images...")
+        self.input.returnPressed.connect(self.start_search)
         self.chk_ocr = QCheckBox("OCR"); self.chk_ocr.setChecked(True)
-        self.chk_ocr.setToolTip("Enable Text Search inside images")
-        
         self.combo_limit = QComboBox(); self.combo_limit.addItems(["20", "50", "100", "All"]); self.combo_limit.setCurrentText("50")
-        
-        search_layout.addWidget(self.input, stretch=1)
-        search_layout.addWidget(self.chk_ocr)
-        search_layout.addWidget(self.combo_limit)
-        
+        search_layout.addWidget(self.input, stretch=1); search_layout.addWidget(self.chk_ocr); search_layout.addWidget(self.combo_limit)
         header_layout.addWidget(search_container)
-        header_layout.addStretch(1) 
         
-        self.status = QLabel("Initializing..."); self.status.setStyleSheet("color: #888888; font-size: 12px;"); header_layout.addWidget(self.status); layout.addWidget(top_bar)
-        self.progress = QProgressBar(); self.progress.hide(); layout.addWidget(self.progress)
+        # Status Label
+        self.status = QLabel("Initializing..."); self.status.setStyleSheet("color: #888888; font-size: 12px; margin-left: 10px;")
+        header_layout.addWidget(self.status)
+        right_layout.addWidget(top_bar)
         
-        # ---------------------------------------------------------
-        # [NEW] 高效能列表視圖 (取代了舊的 AdaptiveResultView)
-        # ---------------------------------------------------------
+        self.progress = QProgressBar(); self.progress.hide(); right_layout.addWidget(self.progress)
+        
+        # List View
         self.list_view = QListView()
         self.list_view.setViewMode(QListView.ViewMode.IconMode)
         self.list_view.setResizeMode(QListView.ResizeMode.Adjust)
@@ -938,7 +1081,6 @@ class MainWindow(QMainWindow):
         self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list_view.setStyleSheet("QListView { border: none; background-color: #1e1e1e; }")
 
-        # 初始檢視設定
         self.current_card_size = QSize(CARD_SIZE[0], CARD_SIZE[1])
         self.current_thumb_size = QSize(CARD_SIZE[0], THUMBNAIL_SIZE[1])
         self.current_view_mode = "large"
@@ -954,72 +1096,62 @@ class MainWindow(QMainWindow):
         self.list_view.customContextMenuRequested.connect(self.show_context_menu)
         self.list_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
-        layout.addWidget(self.list_view)
-        # ---------------------------------------------------------
+        right_layout.addWidget(self.list_view)
+        main_layout.addWidget(right_container)
         
+        # 其他浮動元件
         self.history_list = QListWidget(self); self.history_list.hide(); self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         shadow = QGraphicsDropShadowEffect(); shadow.setBlurRadius(20); shadow.setColor(QColor(0, 0, 0, 100)); shadow.setOffset(0, 4); self.history_list.setGraphicsEffect(shadow)
-
-        self.stats_menu = StatsMenuWidget(self)
         self.preview_overlay = PreviewOverlay(self)
 
+    # [重點修正] 側邊欄切換後的排版修正
+    def on_sidebar_toggled(self, is_expanded):
+        """
+        當側邊欄收合/展開時，強制 QListView 重新計算 Grid 佈局。
+        解決「兩邊被減距離」的問題。
+        """
+        # 1. 強制處理 Layout 事件，確保 list_view 的寬度已經更新
+        QApplication.processEvents()
+        
+        # 2. 重新計算間距 (這會根據新的寬度來決定 margin)
+        self.adjust_layout()
+        
+        # 3. 強制視圖重繪
+        self.list_view.doItemsLayout()
+        self.list_view.viewport().update()
+
+    # 新增一個空的 Slot，之後用來實作資料夾過濾
+    def on_folder_filter(self, path):
+        if path == "ALL":
+            print("Show All")
+            # 這裡之後會呼叫顯示全部的邏輯
+        else:
+            print(f"Filter by folder: {path}")
+            # 這裡之後會呼叫資料庫篩選邏輯
+
     def eventFilter(self, obj, event):
+        # 處理鍵盤按下 (KeyPress)
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
-
-            # ---------------------------------------------------------
-            # [情境 1] 當焦點在「搜尋框」
-            # ---------------------------------------------------------
-            if self.input.hasFocus():
-                # 如果按下 Esc
-                if key == Qt.Key.Key_Escape:
-                    # A. 如果歷史選單開著，先關選單
-                    if self.history_list.isVisible():
-                        self.history_list.hide()
-                    # B. 否則退出輸入框 -> 把焦點丟給列表 (讓你可以直接用方向鍵選圖)
-                    else:
-                        self.input.clearFocus()
-                        self.list_view.setFocus()
-                    return True  # 攔截事件
-                
-                # 如果是其他按鍵，直接放行讓使用者打字
-                return False 
-
-            # ---------------------------------------------------------
-            # [情境 2] 當焦點「不在」搜尋框 (例如正在選圖時)
-            # ---------------------------------------------------------
             
-            # 如果按下 Esc -> 回到搜尋框
-            if key == Qt.Key.Key_Escape:
-                # 如果預覽視窗開著，先關預覽
-                if self.preview_overlay.isVisible():
-                    self.preview_overlay.hide()
-                # 否則回到輸入框
-                else:
-                    self.input.setFocus()
-                    self.input.selectAll()  # [貼心功能] 全選文字，方便直接打新的關鍵字
-                return True
-
-            # WASD 導航 (焦點不在輸入框時才生效)
-            if key == Qt.Key.Key_W:
-                self.send_nav_key(Qt.Key.Key_Up); return True
-            elif key == Qt.Key.Key_S:
-                self.send_nav_key(Qt.Key.Key_Down); return True
-            elif key == Qt.Key.Key_A:
-                self.send_nav_key(Qt.Key.Key_Left); return True
-            elif key == Qt.Key.Key_D:
-                self.send_nav_key(Qt.Key.Key_Right); return True
-            
-            # 空白鍵預覽
-            elif key == Qt.Key.Key_Space:
-                self.toggle_preview(); return True
-            
-            # Shift 開啟紅框 (按下)
-            elif key == Qt.Key.Key_Shift:
+            # 全域 Shift 偵測 (按下) -> 開啟紅框
+            if key == Qt.Key.Key_Shift:
                 if self.preview_overlay.isVisible():
                     self.preview_overlay.set_ocr_visible(True)
                 return True 
 
+            if not self.input.hasFocus():
+                if key == Qt.Key.Key_W:
+                    self.list_view.setFocus(); self.send_nav_key(Qt.Key.Key_Up); return True
+                elif key == Qt.Key.Key_S:
+                    self.list_view.setFocus(); self.send_nav_key(Qt.Key.Key_Down); return True
+                elif key == Qt.Key.Key_A:
+                    self.list_view.setFocus(); self.send_nav_key(Qt.Key.Key_Left); return True
+                elif key == Qt.Key.Key_D:
+                    self.list_view.setFocus(); self.send_nav_key(Qt.Key.Key_Right); return True
+                elif key == Qt.Key.Key_Space:
+                    self.toggle_preview(); return True
+        
         # 處理鍵盤放開 (KeyRelease) -> 關閉紅框
         if event.type() == QEvent.Type.KeyRelease:
             if event.key() == Qt.Key.Key_Shift:
@@ -1027,21 +1159,19 @@ class MainWindow(QMainWindow):
                     self.preview_overlay.set_ocr_visible(False)
                 return True
 
-        # 滑鼠點擊處理 (保持原本邏輯)
+        # 處理滑鼠點擊 (MouseButtonPress)
         if event.type() == QEvent.Type.MouseButtonPress:
             click_pos = event.globalPosition().toPoint()
             
+            # 點擊外部關閉歷史紀錄
             if self.history_list.isVisible():
                 input_rect = QRect(self.input.mapToGlobal(QPoint(0, 0)), self.input.size())
                 list_rect = QRect(self.history_list.mapToGlobal(QPoint(0, 0)), self.history_list.size())
                 if not input_rect.contains(click_pos) and not list_rect.contains(click_pos): 
                     self.history_list.hide()
             
-            if self.stats_menu.isVisible():
-                btn_rect = QRect(self.btn_menu.mapToGlobal(QPoint(0, 0)), self.btn_menu.size())
-                menu_rect = QRect(self.stats_menu.mapToGlobal(QPoint(0, 0)), self.stats_menu.size())
-                if not btn_rect.contains(click_pos) and not menu_rect.contains(click_pos): 
-                    self.stats_menu.hide()
+            # [修正] 移除舊的 stats_menu 判斷邏輯
+            # if self.stats_menu.isVisible(): ... (已刪除)
 
             if obj == self.input: 
                 self.show_history_popup()
@@ -1067,24 +1197,16 @@ class MainWindow(QMainWindow):
                 if item:
                     self.preview_overlay.show_image(item)
 
-    def toggle_menu(self):
-        if self.stats_menu.isVisible():
-            self.stats_menu.hide()
-        else:
-            if self.engine:
-                stats = self.engine.get_folder_stats()
-                self.stats_menu.update_stats(stats)
-            
-            btn_pos = self.btn_menu.mapTo(self, QPoint(0,0))
-            menu_x = btn_pos.x()
-            menu_y = btn_pos.y() + self.btn_menu.height() + 8
-            
-            if menu_y + self.stats_menu.height() > self.height():
-                 self.stats_menu.setFixedHeight(self.height() - menu_y - 20)
-            
-            self.stats_menu.move(menu_x, menu_y)
-            self.stats_menu.show()
-            self.stats_menu.raise_()
+    def on_ai_loaded(self):
+        """當 AI 模型載入完成後被呼叫"""
+        count = len(self.engine.data_store) if self.engine else 0
+        self.status.setText(f"System Ready ({count} images)")
+        self.progress.hide()
+        
+        # [新增] 更新側邊欄的資料夾統計
+        if self.engine:
+            stats = self.engine.get_folder_stats()
+            self.sidebar.update_folders(stats)
 
     # 右鍵選單邏輯
     def show_context_menu(self, pos):
@@ -1325,10 +1447,9 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event): 
         super().resizeEvent(event)
         self.history_list.hide()
-        self.stats_menu.hide()
+        # [修正] 移除舊的 stats_menu.hide()
         if self.preview_overlay.isVisible():
             self.preview_overlay.resize(self.size())
-        self.adjust_layout()
 
     def showEvent(self, event):
         super().showEvent(event)
