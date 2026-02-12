@@ -1272,50 +1272,49 @@ class MainWindow(QMainWindow):
 
     def adjust_layout(self):
         """
-        [修正邏輯] 安全緩衝版
-        計算出剩餘空間後，分配給左右 Margin，但會故意少分配一點 (Safety Buffer)。
-        這能確保 Viewport 寬度 > 內容寬度，防止因為 1px 的誤差導致 QListView 減少一行圖片。
+        [回歸 test.py 邏輯] 全動態均分佈局
+        1. 放棄上方固定距離，讓 Top Margin 跟隨左右間距自動調整。
+        2. 算法：剩餘空間 / (列數 + 1)。
+        3. 效果：四周邊距 (上、下、左、右) 與圖片間距完全相等，視覺上最和諧。
         """
+        # 防呆
         if not hasattr(self, 'list_view') or self.list_view.width() <= 0: return
 
-        # 1. 取得 ListView 當前的總寬度
-        total_width = self.list_view.width()
+        # 1. 取得 ListView 當前寬度
+        # 因為這是在 Sidebar 旁邊，這個寬度已經是扣除 Sidebar 後的剩餘寬度
+        raw_width = self.list_view.width()
         
-        # 2. 定義常數 (必須與 Stylesheet 一致)
-        SCROLLBAR_WIDTH = 8   # 你的 Stylesheet 設定為 8px
-        FIXED_SPACING = 15    # 圖片間距
-        FIXED_TOP = 20        # 上方固定距離
-        FIXED_BOTTOM = 20
-        ITEM_WIDTH = self.current_card_size.width()
-
-        # 3. 計算「理論上」可用的最大寬度 (預設滾動條存在)
-        available_width = total_width - SCROLLBAR_WIDTH
+        # 2. 扣除滾動條預留空間
+        # test.py 使用 26px，我們這裡照抄以確保行為一致
+        # (這包含滾動條本體 8px + 左右緩衝)
+        view_w = raw_width - 26
         
-        # 4. 計算最多能放幾列
-        # 公式：N * 寬 + (N-1) * 間距 <= 可用寬
-        n_cols = (available_width + FIXED_SPACING) // (ITEM_WIDTH + FIXED_SPACING)
+        # 取得目前卡片寬度
+        item_w = self.current_card_size.width()
+        
+        # 3. 計算列數 (Columns)
+        n_cols = view_w // item_w
         if n_cols < 1: n_cols = 1
         
-        # 5. 計算這 N 列圖片「實際需要」的寬度
-        required_width = (n_cols * ITEM_WIDTH) + ((n_cols - 1) * FIXED_SPACING)
+        # 4. 計算剩餘空間
+        total_card_w = n_cols * item_w
+        remaining_space = view_w - total_card_w
         
-        # 6. 計算剩餘空間
-        remaining = available_width - required_width
+        # 5. 計算間距 (Space)
+        # 邏輯：均分給 (左邊界 + 所有圖片間隙 + 右邊界)
+        # 總縫隙數 = n_cols + 1
+        space = int(remaining_space // (n_cols + 1))
         
-        # 7. 計算左右邊距 (Side Margin)
-        side_margin = remaining // 2
-        
-        # [關鍵修正] 安全緩衝 (Safety Buffer)
-        # 這裡故意減去 5px。這會讓 Viewport 比內容寬 10px。
-        # QListView 會因此判定空間充足，絕對不會把最右邊那行擠下去。
-        # 雖然這會讓整體內容視覺上向左偏 5px，但這能徹底解決「右邊大缺口」的問題。
-        side_margin -= 5
-        
-        if side_margin < 0: side_margin = 0
+        # 安全限制：不小於 0
+        space = max(0, space)
 
-        # 8. 應用設定
-        self.list_view.setSpacing(FIXED_SPACING)
-        self.list_view.setContentsMargins(side_margin, FIXED_TOP, side_margin, FIXED_BOTTOM)
+        # 6. 應用設定
+        # setSpacing: 圖片之間的距離
+        self.list_view.setSpacing(space)
+        
+        # setContentsMargins: 四周邊界
+        # 關鍵差異：這裡把 Top (第二個參數) 也設為 space，不再鎖死 20
+        self.list_view.setContentsMargins(space, space, space, space)
 
     def on_item_clicked(self, index):
         if not index.isValid(): return
