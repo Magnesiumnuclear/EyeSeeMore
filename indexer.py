@@ -212,7 +212,7 @@ def main():
                 if not batch_images: continue
 
                 # CLIP
-                with torch.no_grad(), torch.cuda.amp.autocast():
+                with torch.no_grad(), torch.amp.autocast('cuda'):#with torch.no_grad(), torch.cuda.amp.autocast():
                     image_input = torch.cat(batch_images).to(device)
                     image_features = model.encode_image(image_input)
                     image_features /= image_features.norm(dim=-1, keepdim=True)

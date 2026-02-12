@@ -39,21 +39,22 @@ class ClipGradCAM:
     def generate_heatmap(self, image_tensor, token_ids, original_image_cv2):
         """
         生成 Grad-CAM 熱力圖
-        Args:
-            image_tensor: 預處理後的圖片 Tensor (1, C, H, W)
-            token_ids: 文字 token IDs
-            original_image_cv2: 原始 OpenCV 圖片 (BGR)
-        Returns:
-            result_image: 疊加熱力圖的結果圖片
-            heatmap: 熱力圖 numpy array
         """
+        # 確保輸入在正確的裝置
         image_tensor = image_tensor.to(self.device)
         token_ids = token_ids.to(self.device)
         
+        # 啟用梯度追蹤
         image_tensor.requires_grad_(True)
         
         try:
-            with torch.enable_grad():
+            # 1. 確保模型梯度歸零
+            self.model.zero_grad()
+
+            # [關鍵修正] 必須開啟 autocast，讓 PyTorch 自動處理 FP16/FP32 的轉換
+            # 這樣 LayerNorm (FP32) 接收到 FP16 輸入時，會自動轉型，不會崩潰
+            # 指定 device_type='cuda'
+            with torch.enable_grad(), torch.amp.autocast('cuda'):
                 # 前向傳播
                 image_features = self.model.encode_image(image_tensor)
                 text_features = self.model.encode_text(token_ids)
@@ -64,27 +65,42 @@ class ClipGradCAM:
                 
                 # 計算相似度
                 similarity = (image_features @ text_features.T).sum()
+            
+            # 反向傳播 (必須在 autocast 範圍外或內皆可，通常沒差，但計算圖已建立)
+            similarity.backward()
                 
-                # 反向傳播
-                similarity.backward()
-                
-                # 取得梯度
-                gradients = image_tensor.grad.data.abs().mean(dim=1, keepdim=True)  # (1, 1, H, W)
-                gradients = gradients.squeeze().cpu().numpy()
-                
-                # 正規化梯度到 0-1
-                heatmap = (gradients - gradients.min()) / (gradients.max() - gradients.min() + 1e-8)
-                heatmap = cv2.resize(heatmap, (original_image_cv2.shape[1], original_image_cv2.shape[0]))
-                
-                # 轉成彩色熱力圖 (紅色)
-                heatmap_color = cv2.applyColorMap((heatmap * 255).astype(np.uint8), cv2.COLORMAP_JET)
-                
-                # 疊加到原圖
-                result = cv2.addWeighted(original_image_cv2, 0.7, heatmap_color, 0.3, 0)
-                
-                return result, heatmap
+            # 取得梯度 (如果有梯度才處理)
+            if image_tensor.grad is None:
+                print("[GradCAM] No gradients found.")
+                return original_image_cv2, None
+
+            # 處理梯度 (轉回 float32 進行數值運算)
+            gradients = image_tensor.grad.data.abs().mean(dim=1, keepdim=True)
+            gradients = gradients.squeeze().float().cpu().numpy()
+            
+            # 正規化梯度到 0-1
+            heatmap = (gradients - gradients.min()) / (gradients.max() - gradients.min() + 1e-8)
+            
+            # 檢查 heatmap 是否有效
+            if heatmap.size == 0 or np.isnan(heatmap).any():
+                return original_image_cv2, None
+
+            # 調整大小至原圖尺寸
+            heatmap = cv2.resize(heatmap, (original_image_cv2.shape[1], original_image_cv2.shape[0]))
+            
+            # 轉成彩色熱力圖 (紅色代表高關注)
+            heatmap_uint8 = (heatmap * 255).astype(np.uint8)
+            heatmap_color = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+            
+            # 疊加到原圖
+            result = cv2.addWeighted(original_image_cv2, 0.7, heatmap_color, 0.3, 0)
+            
+            return result, heatmap
+
         except Exception as e:
             print(f"[GradCAM] Error: {e}")
+            import traceback
+            traceback.print_exc()
             return original_image_cv2, None
 
 # ==========================================
@@ -464,6 +480,17 @@ class ImageSearchEngine:
             self.model.eval()
             self.tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-large')
 
+            # VRAM 優化處理流程
+            if self.device == "cuda":
+                print("[Engine] Optimizing model for VRAM (FP16)...")
+                self.model.half() # 轉為半精度
+                
+                # 修正 LayerNorm：將所有 Norm 層轉回 float32 以避免崩潰
+                import torch.nn as nn
+                for name, module in self.model.named_modules():
+                    if "LayerNorm" in module.__class__.__name__ or isinstance(module, (nn.LayerNorm, nn.GroupNorm)):
+                        module.float()
+
             if os.path.exists(DB_FILE):
                 self.load_data_from_db()
             else:
@@ -477,7 +504,6 @@ class ImageSearchEngine:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         try:
-            # 讀取 5 個欄位
             cursor.execute("SELECT file_path, embedding, ocr_text, ocr_data, mtime FROM images")
             rows = cursor.fetchall()
             
@@ -570,16 +596,21 @@ class ImageSearchEngine:
         
         try:
             with torch.no_grad():
-                inputs = self.tokenizer(query, padding=True, truncation=True, return_tensors="pt").to(self.device)
-                text_features = self.model.encode_text(inputs.input_ids)
-                text_features /= text_features.norm(dim=-1, keepdim=True)
-                text_features = text_features.to(self.stored_embeddings.dtype)
+                # [關鍵修正] 加入 autocast 以解決 Half/Float 混合錯誤
+                with torch.amp.autocast('cuda'):
+                    inputs = self.tokenizer(query, padding=True, truncation=True, return_tensors="pt").to(self.device)
+                    text_features = self.model.encode_text(inputs.input_ids)
+                    text_features /= text_features.norm(dim=-1, keepdim=True)
+                    # 確保轉回與資料庫相同的型態 (通常是 float32)
+                    text_features = text_features.to(self.stored_embeddings.dtype)
             
             similarity = (text_features @ self.stored_embeddings.T).squeeze(0)
             scores = similarity.cpu().numpy()
             
         except Exception as e:
             print(f"CLIP Search Error: {e}")
+            import traceback
+            traceback.print_exc()
             scores = np.zeros(len(self.data_store))
 
         for idx, item in enumerate(self.data_store):
@@ -618,9 +649,11 @@ class ImageSearchEngine:
             processed_image = self.preprocess(image).unsqueeze(0).to(self.device)
             
             with torch.no_grad():
-                image_features = self.model.encode_image(processed_image)
-                image_features /= image_features.norm(dim=-1, keepdim=True)
-                image_features = image_features.to(self.stored_embeddings.dtype)
+                # [關鍵修正] 加入 autocast
+                with torch.amp.autocast('cuda'):
+                    image_features = self.model.encode_image(processed_image)
+                    image_features /= image_features.norm(dim=-1, keepdim=True)
+                    image_features = image_features.to(self.stored_embeddings.dtype)
             
             similarity = (image_features @ self.stored_embeddings.T).squeeze(0)
             
@@ -1332,7 +1365,6 @@ class MainWindow(QMainWindow):
     
     def analyze_image(self, item):
         """觸發 Grad-CAM 分析"""
-        # 1. 跳出輸入框讓使用者輸入想分析的關鍵字 (預設帶入目前的搜尋詞)
         current_text = self.input.text()
         text, ok = QInputDialog.getText(self, "AI Analyze", 
             f"Why does AI think this image matches?\n\nEnter keyword:", 
@@ -1340,37 +1372,31 @@ class MainWindow(QMainWindow):
             
         if not ok or not text: return
 
-        # 2. 顯示 Loading (或是暫時卡一下 UI，因為 CUDA 很快)
         self.status.setText("Analyzing Heatmap...")
-        QApplication.processEvents() # 讓介面刷新一下
+        QApplication.processEvents() 
 
         try:
-            # 載入圖片 (給 cv2 用)
             img_cv2 = cv2.imread(item.path)
             if img_cv2 is None: return
 
-            # 準備 Tensor (給模型用)
             pil_img = Image.open(item.path).convert("RGB")
             tensor_img = self.engine.preprocess(pil_img).unsqueeze(0).to(self.engine.device)
             
+            # [修正] 加上 return_tensors="pt" 確保回傳 PyTorch Tensor
+            # [修正] 加上 padding/truncation 確保格式正確
             token_text = self.engine.tokenizer([text], padding=True, truncation=True, return_tensors="pt").to(self.engine.device)
 
-            # 3. 初始化 GradCAM (只要做一次，甚至可以放在 Engine 裡)
             if not hasattr(self, 'grad_cam'):
-                # 傳入模型
                 self.grad_cam = ClipGradCAM(self.engine.model)
 
-            # 4. 計算！
+            # 這裡傳入 input_ids
             result_img, _ = self.grad_cam.generate_heatmap(tensor_img, token_text.input_ids, img_cv2)
 
-            # 5. 顯示結果
-            # 這裡我們簡單地把 OpenCV 圖片轉回 QPixmap 顯示在彈出視窗
+            # 顯示結果... (略)
             result_img = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
             h, w, ch = result_img.shape
-            bytes_per_line = ch * w
-            q_img = QImage(result_img.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            q_img = QImage(result_img.data, w, h, ch * w, QImage.Format.Format_RGB888)
             
-            # 彈出預覽視窗
             dialog = QDialog(self)
             dialog.setWindowTitle(f"Heatmap: {text}")
             vbox = QVBoxLayout(dialog)
@@ -1381,6 +1407,8 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             print(f"GradCAM Error: {e}")
+            import traceback
+            traceback.print_exc()
             QMessageBox.warning(self, "Error", f"Analysis failed: {e}")
         
         self.status.setText("Ready")
