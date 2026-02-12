@@ -12,8 +12,14 @@ from transformers import AutoTokenizer
 from datetime import datetime
 from collections import OrderedDict
 
-from PyQt6.QtGui import QActionGroup
+# [New] 引入 OpenCV (給 Grad-CAM 用)
+import cv2
 
+# [New] 引入設定管理器
+from config_manager import ConfigManager 
+
+# [修正] 確保所有 PyQt6 模組都已引入
+from PyQt6.QtGui import QActionGroup
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLayout, QLineEdit, QPushButton, 
                              QLabel, QScrollArea, QComboBox, QProgressBar, QFrame,
@@ -24,14 +30,6 @@ from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QPoint, QRect, QRectF, QSize,
                           QFileInfo, QTimer, QAbstractListModel, QRunnable, QThreadPool, QObject, QModelIndex)
 from PyQt6.QtGui import (QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, 
                          QShortcut, QFontMetrics, QPainter, QBrush, QPen, QIcon, QPainterPath, QPolygon, QImageReader)
-
-# ==========================================
-#  設定區
-# ==========================================
-DB_FILE = "images.db"
-HISTORY_FILE = "search_history.json"
-MODEL_NAME = 'xlm-roberta-large-ViT-H-14'
-PRETRAINED = 'frozen_laion5b_s13b_b90k'
 
 THUMBNAIL_SIZE = (220, 180)
 CARD_SIZE = (240, 290) 
@@ -389,30 +387,37 @@ class ImageDelegate(QStyledItemDelegate):
 #  引擎核心
 # ==========================================
 class ImageSearchEngine:
-    def __init__(self):
+    def __init__(self, config: ConfigManager):
+        self.config = config  # 保存設定物件
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.is_ready = False
         print(f"[Engine] Initializing on {self.device.upper()}...")
         
         try:
-            print(f"[Engine] Loading OpenCLIP model: {MODEL_NAME}...")
+            # [修改 2] 從 config 讀取模型名稱
+            model_name = self.config.get("model_name")
+            pretrained = self.config.get("pretrained")
+
+            print(f"[Engine] Loading OpenCLIP model: {model_name}...")
             self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-                MODEL_NAME, pretrained=PRETRAINED, device=self.device
+                model_name, pretrained=pretrained, device=self.device
             )
             self.model.eval()
             self.tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-large')
 
-            if os.path.exists(DB_FILE):
+            # [修改 3] 使用 config.db_path 取得資料庫路徑
+            if os.path.exists(self.config.db_path):
                 self.load_data_from_db()
             else:
-                print(f"[Error] Database file not found: {DB_FILE}")
+                print(f"[Error] Database file not found: {self.config.db_path}")
 
         except Exception as e:
             print(f"[Error] Engine initialization failed: {e}")
 
     def load_data_from_db(self):
-        print(f"[Engine] Connecting to database: {DB_FILE}...")
-        conn = sqlite3.connect(DB_FILE)
+        # [修改 4] 使用 self.config.db_path
+        print(f"[Engine] Connecting to database: {self.config.db_path}...")
+        conn = sqlite3.connect(self.config.db_path)
         cursor = conn.cursor()
         try:
             # 讀取 5 個欄位
@@ -456,9 +461,9 @@ class ImageSearchEngine:
             if conn: conn.close()
 
     def get_folder_stats(self):
-        if not os.path.exists(DB_FILE): return []
+        if not os.path.exists(self.config.db_path): return []
         try:
-            conn = sqlite3.connect(DB_FILE)
+            conn = sqlite3.connect(self.config.db_path)
             cursor = conn.cursor()
             
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='folder_stats'")
@@ -483,7 +488,7 @@ class ImageSearchEngine:
 
         try:
             os.rename(old_path, new_path)
-            conn = sqlite3.connect(DB_FILE)
+            conn = sqlite3.connect(self.config.db_path)
             cursor = conn.cursor()
             cursor.execute("UPDATE images SET file_path = ?, filename = ? WHERE file_path = ?", 
                            (new_path, new_name, old_path))
@@ -839,14 +844,21 @@ class StatsMenuWidget(QFrame):
         self.total_label.setText(f"Total: {total_images:,} images")
 
 class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__(); self.setWindowTitle(WINDOW_TITLE); self.resize(1280, 900)
-        self.engine = None; self.search_history = [] 
+    def __init__(self, config: ConfigManager):
+        super().__init__()
+        self.config = config # 保存設定
+        self.setWindowTitle(WINDOW_TITLE)
+        self.resize(1280, 900)
+        self.engine = None
+        self.search_history = [] 
         self.current_selected_path = None
         
-        self.load_history(); self.init_ui()
+        # [修改 2] 設定歷史紀錄檔的絕對路徑 (放在 App 根目錄下)
+        self.history_file_path = os.path.join(self.config.app_root, "search_history.json")
+
+        self.load_history()
+        self.init_ui()
         
-        # 鍵盤監聽 (處理空白鍵)
         QApplication.instance().installEventFilter(self)
         threading.Thread(target=self.load_engine, daemon=True).start()
 
@@ -1170,14 +1182,18 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Error", f"Rename failed: {result}")
 
     def load_history(self):
-        if os.path.exists(HISTORY_FILE):
+        # [修改 3] 使用 self.history_file_path
+        if os.path.exists(self.history_file_path):
             try:
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f: self.search_history = json.load(f)
+                with open(self.history_file_path, 'r', encoding='utf-8') as f: 
+                    self.search_history = json.load(f)
             except: self.search_history = []
 
     def save_history_to_file(self):
+        # [修改 4] 使用 self.history_file_path
         try:
-            with open(HISTORY_FILE, 'w', encoding='utf-8') as f: json.dump(self.search_history, f, ensure_ascii=False)
+            with open(self.history_file_path, 'w', encoding='utf-8') as f: 
+                json.dump(self.search_history, f, ensure_ascii=False)
         except: pass
 
     def add_to_history(self, query):
@@ -1215,7 +1231,11 @@ class MainWindow(QMainWindow):
         self.history_list.show(); self.history_list.raise_()
     
     def load_engine(self):
-        try: self.engine = ImageSearchEngine(); QApplication.processEvents(); self.status.setText("System Ready")
+        try: 
+            # [修改 5] 建立引擎時，把 self.config 傳進去
+            self.engine = ImageSearchEngine(self.config)
+            QApplication.processEvents()
+            self.status.setText("System Ready")
         except Exception as e: print(e)
         
     def start_search(self):
@@ -1268,6 +1288,20 @@ class MainWindow(QMainWindow):
     def on_finished(self, elapsed, total): self.progress.hide(); self.status.setText(f"Found {total} items ({elapsed:.2f}s)")
 
 if __name__ == "__main__":
+    # 1. 初始化 ConfigManager (這會自動建立 config.json 如果不存在)
+    app_config = ConfigManager()
+
+    # (可選) 檢查是否為第一次執行，如果是，可以在這裡跳出提示
+    if not app_config.get("source_folders"):
+        print("提示：目前沒有設定圖片來源資料夾，請在 config.json 中設定或之後透過介面新增。")
+
     if hasattr(Qt.ApplicationAttribute, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
-    app = QApplication(sys.argv); app.setStyleSheet(WIN11_STYLESHEET); w = MainWindow(); w.show(); sys.exit(app.exec())
+        
+    app = QApplication(sys.argv)
+    app.setStyleSheet(WIN11_STYLESHEET)
+    
+    # 2. 將 config 傳入主視窗
+    w = MainWindow(app_config) 
+    w.show()
+    sys.exit(app.exec())
