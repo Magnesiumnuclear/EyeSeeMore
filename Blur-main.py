@@ -1076,6 +1076,7 @@ class MainWindow(QMainWindow):
         self.list_view.setViewMode(QListView.ViewMode.IconMode)
         self.list_view.setResizeMode(QListView.ResizeMode.Adjust)
         self.list_view.setUniformItemSizes(True) 
+        self.list_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.list_view.setSpacing(MIN_SPACING)
         self.list_view.setMouseTracking(True)
         self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1104,21 +1105,15 @@ class MainWindow(QMainWindow):
         shadow = QGraphicsDropShadowEffect(); shadow.setBlurRadius(20); shadow.setColor(QColor(0, 0, 0, 100)); shadow.setOffset(0, 4); self.history_list.setGraphicsEffect(shadow)
         self.preview_overlay = PreviewOverlay(self)
 
-    # [重點修正] 側邊欄切換後的排版修正
     def on_sidebar_toggled(self, is_expanded):
         """
         當側邊欄收合/展開時，強制 QListView 重新計算 Grid 佈局。
-        解決「兩邊被減距離」的問題。
         """
-        # 1. 強制處理 Layout 事件，確保 list_view 的寬度已經更新
+        # 1. 強制處理所有的 Layout 事件，確保 sidebar 的寬度變更已經應用到 main_layout
         QApplication.processEvents()
         
-        # 2. 重新計算間距 (這會根據新的寬度來決定 margin)
+        # 2. 重新計算間距
         self.adjust_layout()
-        
-        # 3. 強制視圖重繪
-        self.list_view.doItemsLayout()
-        self.list_view.viewport().update()
 
     # 新增一個空的 Slot，之後用來實作資料夾過濾
     def on_folder_filter(self, path):
@@ -1276,23 +1271,51 @@ class MainWindow(QMainWindow):
         self.adjust_layout()
 
     def adjust_layout(self):
-        """動態計算間距"""
+        """
+        [修正邏輯] 安全緩衝版
+        計算出剩餘空間後，分配給左右 Margin，但會故意少分配一點 (Safety Buffer)。
+        這能確保 Viewport 寬度 > 內容寬度，防止因為 1px 的誤差導致 QListView 減少一行圖片。
+        """
         if not hasattr(self, 'list_view') or self.list_view.width() <= 0: return
 
-        raw_width = self.list_view.width()
-        view_w = raw_width - 26 
-        item_w = self.current_card_size.width() 
+        # 1. 取得 ListView 當前的總寬度
+        total_width = self.list_view.width()
+        
+        # 2. 定義常數 (必須與 Stylesheet 一致)
+        SCROLLBAR_WIDTH = 8   # 你的 Stylesheet 設定為 8px
+        FIXED_SPACING = 15    # 圖片間距
+        FIXED_TOP = 20        # 上方固定距離
+        FIXED_BOTTOM = 20
+        ITEM_WIDTH = self.current_card_size.width()
 
-        n_cols = view_w // item_w
-        if n_cols < 1: n_cols = 1 
+        # 3. 計算「理論上」可用的最大寬度 (預設滾動條存在)
+        available_width = total_width - SCROLLBAR_WIDTH
+        
+        # 4. 計算最多能放幾列
+        # 公式：N * 寬 + (N-1) * 間距 <= 可用寬
+        n_cols = (available_width + FIXED_SPACING) // (ITEM_WIDTH + FIXED_SPACING)
+        if n_cols < 1: n_cols = 1
+        
+        # 5. 計算這 N 列圖片「實際需要」的寬度
+        required_width = (n_cols * ITEM_WIDTH) + ((n_cols - 1) * FIXED_SPACING)
+        
+        # 6. 計算剩餘空間
+        remaining = available_width - required_width
+        
+        # 7. 計算左右邊距 (Side Margin)
+        side_margin = remaining // 2
+        
+        # [關鍵修正] 安全緩衝 (Safety Buffer)
+        # 這裡故意減去 5px。這會讓 Viewport 比內容寬 10px。
+        # QListView 會因此判定空間充足，絕對不會把最右邊那行擠下去。
+        # 雖然這會讓整體內容視覺上向左偏 5px，但這能徹底解決「右邊大缺口」的問題。
+        side_margin -= 5
+        
+        if side_margin < 0: side_margin = 0
 
-        total_card_w = n_cols * item_w
-        remaining_space = view_w - total_card_w
-        space = int(remaining_space // (n_cols + 1))
-        space = max(0, space)
-
-        self.list_view.setSpacing(space)
-        self.list_view.setContentsMargins(space, space, space, space)
+        # 8. 應用設定
+        self.list_view.setSpacing(FIXED_SPACING)
+        self.list_view.setContentsMargins(side_margin, FIXED_TOP, side_margin, FIXED_BOTTOM)
 
     def on_item_clicked(self, index):
         if not index.isValid(): return
@@ -1444,16 +1467,22 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
 
-    def resizeEvent(self, event): 
+    def resizeEvent(self, event):
         super().resizeEvent(event)
+        
+        # 隱藏浮動視窗
         self.history_list.hide()
-        # [修正] 移除舊的 stats_menu.hide()
         if self.preview_overlay.isVisible():
             self.preview_overlay.resize(self.size())
+            
+        # [關鍵] 視窗大小改變時，Viewport 寬度也會變，必須重算
+        # 使用 QTimer.singleShot 0 毫秒，確保在 resize 事件完成後才計算，避免卡頓與計算錯誤
+        QTimer.singleShot(0, self.adjust_layout)
 
     def showEvent(self, event):
         super().showEvent(event)
-        QTimer.singleShot(50, self.adjust_layout)
+        # 延遲觸發，確保 Qt 的幾何運算已經完成
+        QTimer.singleShot(10, self.adjust_layout)
 
     def on_finished(self, elapsed, total): self.progress.hide(); self.status.setText(f"Found {total} items ({elapsed:.2f}s)")
 
