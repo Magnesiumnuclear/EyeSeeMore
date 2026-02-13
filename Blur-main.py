@@ -864,19 +864,18 @@ class StatsMenuWidget(QFrame):
 class FolderHoverMenu(QWidget):
     """
     [最終修正版] 二級點擊選單
-    1. 改為 Popup 模式：點擊外部自動關閉，點擊按鈕切換顯示。
-    2. 強制寬度計算：根據按鈕數量手動計算寬度，確保 "+" 按鈕 100% 顯示。
+    1. 資料夾顯示：改用數字索引 (1, 2, 3...) 代替截斷的名稱。
+    2. 新增按鈕：改為實線邊框，並修正 "+" 號的置中對齊。
     """
     folder_clicked = pyqtSignal(str)
     add_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # [關鍵] 使用 Popup 屬性，這樣點擊視窗外部時會自動關閉
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        # 主佈局 (外層透明)
+        # 主佈局
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
@@ -885,18 +884,18 @@ class FolderHoverMenu(QWidget):
         self.container_frame = QFrame()
         self.container_frame.setObjectName("MenuContainer")
         
-        # 容器佈局 (橫向排列)
+        # 容器佈局
         self.container_layout = QHBoxLayout(self.container_frame)
-        self.container_layout.setContentsMargins(5, 5, 5, 5) # 邊距
-        self.container_layout.setSpacing(5)              # 間距
+        self.container_layout.setContentsMargins(5, 5, 5, 5) 
+        self.container_layout.setSpacing(5)              
         self.container_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         
         self.main_layout.addWidget(self.container_frame)
 
-        # 樣式表
+        # 樣式表 (Paste this into FolderHoverMenu class)
         self.setStyleSheet("""
             QFrame#MenuContainer {
-                background-color: rgba(45, 45, 45, 255); /* 改為不透明深色，避免視覺干擾 */
+                background-color: rgba(45, 45, 45, 255);
                 border: 1px solid #666;
                 border-radius: 0px;
             }
@@ -905,21 +904,30 @@ class FolderHoverMenu(QWidget):
                 border: 1px solid #555;
                 color: #eee;
                 border-radius: 4px;
-                font-size: 11px;
+                font-size: 16px;
                 font-weight: bold;
+                font-family: "Segoe UI", sans-serif;
+                /* [修正] 一般按鈕也要置中 */
+                text-align: center; 
             }
             QPushButton:hover {
                 background-color: #60cdff;
                 color: #111;
                 border: 1px solid #60cdff;
             }
-            /* 新增按鈕特別樣式 (綠色加號) */
+            /* 新增按鈕特別樣式 */
             QPushButton#AddBtn {
                 background-color: #2a2a2a;
-                border: 1px dashed #777;
-                font-size: 20px;
+                border: 1px solid #555;
+                font-size: 32px;        /* [微調] 字體加大 */
                 color: #aaa;
-                font-weight: 900;
+                font-weight: 300;       /* [微調] 字體變細一點，看起來更現代 */
+                
+                /* [絕對置中關鍵] */
+                text-align: center;
+                padding: 0px;
+                margin: 0px;
+                padding-bottom: 6px;    /* [微調] 將符號視覺向上推，修正垂直偏差 */
             }
             QPushButton#AddBtn:hover {
                 background-color: #4caf50;
@@ -940,16 +948,18 @@ class FolderHoverMenu(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         
-        btn_size = 48 # 按鈕尺寸
+        btn_size = 48 
         
-        # 1. 建立資料夾按鈕
-        for folder_path, count in stats:
+        # 1. 建立資料夾按鈕 (使用數字索引)
+        # enumerate(stats, 1) 代表從 1 開始計數
+        for i, (folder_path, count) in enumerate(stats, 1):
             btn = QPushButton()
             btn.setFixedSize(btn_size, btn_size)
             
-            name = os.path.basename(folder_path)
-            display_text = name[:2].upper() if len(name) >= 2 else name.upper()
-            btn.setText(display_text)
+            # [修改] 使用數字代替文字
+            btn.setText(str(i))
+            
+            # Tooltip 顯示路徑與圖片數
             btn.setToolTip(f"{folder_path}\n({count} images)")
             
             btn.clicked.connect(lambda checked, p=folder_path: self.on_folder_click(p))
@@ -965,22 +975,16 @@ class FolderHoverMenu(QWidget):
 
     def on_folder_click(self, path):
         self.folder_clicked.emit(path)
-        self.close() # 點擊後關閉選單
+        self.close()
 
     def on_add_click(self):
         self.add_clicked.emit()
         self.close()
 
     def show_at(self, global_pos, height):
-        """
-        顯示選單，並強制計算正確寬度
-        """
-        # 設定高度
         self.container_frame.setFixedHeight(height)
         
-        # [關鍵修復] 手動計算寬度，解決 layout 更新不及導致切邊的問題
-        # 寬度 = 左邊距(5) + 右邊距(5) + (按鈕數 * 寬度) + ((按鈕數-1) * 間距)
-        
+        # 計算寬度
         btn_count = self.container_layout.count()
         btn_width = 48
         spacing = 5
@@ -988,15 +992,13 @@ class FolderHoverMenu(QWidget):
         
         if btn_count > 0:
             total_width = (margin * 2) + (btn_count * btn_width) + ((btn_count - 1) * spacing)
-            # 加上一點緩衝 (2px) 避免邊框被切
-            total_width += 4
+            total_width += 4 # 緩衝
         else:
-            total_width = 100 # 預設值
+            total_width = 100
             
         self.resize(total_width, height)
         self.container_frame.setFixedSize(total_width, height)
 
-        # 移動並顯示
         self.move(global_pos)
         self.show()
 
