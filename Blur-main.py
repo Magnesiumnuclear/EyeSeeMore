@@ -861,134 +861,282 @@ class StatsMenuWidget(QFrame):
             
         self.total_label.setText(f"Total: {total_images:,} images")
 
+class FolderHoverMenu(QWidget):
+    """
+    [最終修正版] 二級點擊選單
+    1. 改為 Popup 模式：點擊外部自動關閉，點擊按鈕切換顯示。
+    2. 強制寬度計算：根據按鈕數量手動計算寬度，確保 "+" 按鈕 100% 顯示。
+    """
+    folder_clicked = pyqtSignal(str)
+    add_clicked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # [關鍵] 使用 Popup 屬性，這樣點擊視窗外部時會自動關閉
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        # 主佈局 (外層透明)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
+        
+        # 內部容器
+        self.container_frame = QFrame()
+        self.container_frame.setObjectName("MenuContainer")
+        
+        # 容器佈局 (橫向排列)
+        self.container_layout = QHBoxLayout(self.container_frame)
+        self.container_layout.setContentsMargins(5, 5, 5, 5) # 邊距
+        self.container_layout.setSpacing(5)              # 間距
+        self.container_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        
+        self.main_layout.addWidget(self.container_frame)
+
+        # 樣式表
+        self.setStyleSheet("""
+            QFrame#MenuContainer {
+                background-color: rgba(45, 45, 45, 255); /* 改為不透明深色，避免視覺干擾 */
+                border: 1px solid #666;
+                border-radius: 0px;
+            }
+            QPushButton {
+                background-color: #333;
+                border: 1px solid #555;
+                color: #eee;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #60cdff;
+                color: #111;
+                border: 1px solid #60cdff;
+            }
+            /* 新增按鈕特別樣式 (綠色加號) */
+            QPushButton#AddBtn {
+                background-color: #2a2a2a;
+                border: 1px dashed #777;
+                font-size: 20px;
+                color: #aaa;
+                font-weight: 900;
+            }
+            QPushButton#AddBtn:hover {
+                background-color: #4caf50;
+                border: 1px solid #4caf50;
+                color: white;
+            }
+            QToolTip {
+                background-color: #222;
+                color: #fff;
+                border: 1px solid #555;
+            }
+        """)
+
+    def update_menu(self, stats):
+        # 清除舊按鈕
+        while self.container_layout.count():
+            item = self.container_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        btn_size = 48 # 按鈕尺寸
+        
+        # 1. 建立資料夾按鈕
+        for folder_path, count in stats:
+            btn = QPushButton()
+            btn.setFixedSize(btn_size, btn_size)
+            
+            name = os.path.basename(folder_path)
+            display_text = name[:2].upper() if len(name) >= 2 else name.upper()
+            btn.setText(display_text)
+            btn.setToolTip(f"{folder_path}\n({count} images)")
+            
+            btn.clicked.connect(lambda checked, p=folder_path: self.on_folder_click(p))
+            self.container_layout.addWidget(btn)
+
+        # 2. 建立「新增按鈕」 (+)
+        self.btn_add = QPushButton("+")
+        self.btn_add.setObjectName("AddBtn")
+        self.btn_add.setFixedSize(btn_size, btn_size)
+        self.btn_add.setToolTip("Add new folder source...")
+        self.btn_add.clicked.connect(self.on_add_click)
+        self.container_layout.addWidget(self.btn_add)
+
+    def on_folder_click(self, path):
+        self.folder_clicked.emit(path)
+        self.close() # 點擊後關閉選單
+
+    def on_add_click(self):
+        self.add_clicked.emit()
+        self.close()
+
+    def show_at(self, global_pos, height):
+        """
+        顯示選單，並強制計算正確寬度
+        """
+        # 設定高度
+        self.container_frame.setFixedHeight(height)
+        
+        # [關鍵修復] 手動計算寬度，解決 layout 更新不及導致切邊的問題
+        # 寬度 = 左邊距(5) + 右邊距(5) + (按鈕數 * 寬度) + ((按鈕數-1) * 間距)
+        
+        btn_count = self.container_layout.count()
+        btn_width = 48
+        spacing = 5
+        margin = 5
+        
+        if btn_count > 0:
+            total_width = (margin * 2) + (btn_count * btn_width) + ((btn_count - 1) * spacing)
+            # 加上一點緩衝 (2px) 避免邊框被切
+            total_width += 4
+        else:
+            total_width = 100 # 預設值
+            
+        self.resize(total_width, height)
+        self.container_frame.setFixedSize(total_width, height)
+
+        # 移動並顯示
+        self.move(global_pos)
+        self.show()
+
 class SidebarWidget(QFrame):
     folder_selected = pyqtSignal(str) 
-    toggled = pyqtSignal(bool) 
+    toggled = pyqtSignal(bool)
+    add_folder_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.expanded_width = 240
-        # [修改] 寬度設為 60 (配合 TopBar 高度)
         self.collapsed_width = 60 
         self.is_expanded = True
+        self.stats_cache = []
         
         self.setStyleSheet("""
             QFrame { background-color: #252525; border-right: 1px solid #333; }
-            QListWidget { border: none; background: transparent; outline: none; }
-            QListWidget::item { color: #ccc; padding: 12px; border-radius: 4px; margin: 4px; }
-            QListWidget::item:hover { background-color: #333; color: white; }
-            QListWidget::item:selected { background-color: #3d3d3d; color: #60cdff; border-left: 3px solid #60cdff; }
-            
-            /* [修改] 按鈕樣式：純圖示，無邊框，置中 */
-            QPushButton { 
-                background: transparent; 
-                border: none; 
-                color: #ccc; 
-                font-size: 26px; 
-                border-radius: 0px;
-                text-align: center; 
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #ccc;
+                text-align: left;
+                padding-left: 0px; 
             }
-            QPushButton:hover { background-color: #333; color: white; }
+            QPushButton:hover {
+                background-color: #333;
+                color: white;
+            }
+            QPushButton#Row1 {
+                border-left: 3px solid transparent; 
+            }
+            QPushButton#Row1:hover {
+                background-color: #383838;
+                border-left: 3px solid #60cdff; 
+            }
         """)
         
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
+        self.layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
-        # --- 1. 頂部收合按鈕區 ---
-        self.top_container = QWidget()
-        # [修改] 高度設為 60
-        self.top_container.setFixedHeight(60) 
-        
-        top_layout = QHBoxLayout(self.top_container)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.setSpacing(0)
-        # [關鍵] 靠左對齊，確保按鈕永遠在左上角
-        top_layout.setAlignment(Qt.AlignmentFlag.AlignLeft) 
-        
+        # 1. 漢堡選單
         self.btn_toggle = QPushButton("≡")
-        self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_toggle.setToolTip("Toggle Sidebar")
-        
-        # [修改] 固定大小 60x60
         self.btn_toggle.setFixedSize(60, 60)
+        self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle.setStyleSheet("font-size: 26px; text-align: center;")
         self.btn_toggle.clicked.connect(self.toggle_sidebar)
+        self.layout.addWidget(self.btn_toggle)
+
+        # 2. Row 1: All Images (點擊觸發選單)
+        self.row1_container = QWidget()
+        self.row1_container.setFixedHeight(60) 
         
-        top_layout.addWidget(self.btn_toggle)
-        self.layout.addWidget(self.top_container)
+        self.row1_layout = QHBoxLayout(self.row1_container)
+        self.row1_layout.setContentsMargins(0, 0, 0, 0)
+        self.row1_layout.setSpacing(0)
         
-        # --- 2. 資料夾列表 ---
-        self.folder_list = QListWidget()
-        self.folder_list.setIconSize(QSize(24, 24))
-        self.folder_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.folder_list.itemClicked.connect(self.on_item_clicked)
-        self.layout.addWidget(self.folder_list)
+        self.btn_all_images = QPushButton()
+        self.btn_all_images.setObjectName("Row1")
+        self.btn_all_images.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_all_images.setFixedHeight(60)
+        self.btn_all_images.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         
-        # 初始狀態
+        self.icon_folder = QFileIconProvider().icon(QFileInfo("."))
+        self.btn_all_images.setIcon(self.icon_folder)
+        self.btn_all_images.setIconSize(QSize(24, 24))
+        
+        # [修改] 點擊時觸發選單，而不是只送出訊號
+        self.btn_all_images.clicked.connect(self.on_row1_clicked)
+        
+        self.row1_layout.addWidget(self.btn_all_images)
+        self.layout.addWidget(self.row1_container)
+
+        # [修改] 移除了 eventFilter (不再需要懸浮觸發)
+        
+        # 3. 初始化二級選單
+        self.hover_menu = FolderHoverMenu(self)
+        self.hover_menu.folder_clicked.connect(self.on_sub_folder_clicked)
+        self.hover_menu.add_clicked.connect(self.add_folder_requested.emit)
+        
+        self.update_ui_text()
         self.setFixedWidth(self.expanded_width)
 
     def update_folders(self, stats):
-        self.folder_list.clear()
-        provider = QFileIconProvider()
-        folder_icon = provider.icon(QFileInfo("."))
-        
-        total_count = sum(count for _, count in stats)
-        
-        all_item = QListWidgetItem(folder_icon, f"All Images ({total_count})")
-        all_item.setData(Qt.ItemDataRole.UserRole, "ALL")
-        all_item.setToolTip("Show all indexed images")
-        self.folder_list.addItem(all_item)
-        
-        for folder_path, count in stats:
-            folder_name = os.path.basename(folder_path)
-            if len(folder_name) < 2: folder_name = folder_path
-            display_text = f"{folder_name} ({count})"
-            
-            item = QListWidgetItem(folder_icon, display_text)
-            item.setData(Qt.ItemDataRole.UserRole, folder_path)
-            item.setToolTip(folder_path)
-            self.folder_list.addItem(item)
-            
-        if not self.is_expanded:
-            self.refresh_text_visibility()
+        self.stats_cache = stats
+        self.hover_menu.update_menu(stats)
+        total = sum(c for _, c in stats)
+        self.all_images_text = f"  All Images ({total})"
+        self.update_ui_text()
 
     def toggle_sidebar(self):
-        """切換展開/收合"""
         self.is_expanded = not self.is_expanded
-        
-        if self.is_expanded:
-            self.setFixedWidth(self.expanded_width)
-        else:
-            self.setFixedWidth(self.collapsed_width)
-            
-        # [修正] 這裡不再去動 btn_toggle 的 style，防止它跳動
-        self.refresh_text_visibility()
-        
-        # 發出訊號
+        self.setFixedWidth(self.expanded_width if self.is_expanded else self.collapsed_width)
+        self.update_ui_text()
         self.toggled.emit(self.is_expanded)
 
-    def refresh_text_visibility(self):
-        for i in range(self.folder_list.count()):
-            item = self.folder_list.item(i)
-            path = item.data(Qt.ItemDataRole.UserRole)
-            
-            if self.is_expanded:
-                if path == "ALL":
-                    item.setText(item.toolTip().replace("Show all indexed images", "All Images")) 
-                else:
-                    folder_name = os.path.basename(path)
-                    if len(folder_name) < 2: folder_name = path
-                    item.setText(folder_name)
-            else:
-                item.setText("") # 收合時隱藏文字
+    def update_ui_text(self):
+        base_style = """
+            QPushButton#Row1:hover {
+                background-color: #383838;
+                border-left: 3px solid #60cdff;
+            }
+        """
+        if self.is_expanded:
+            self.btn_all_images.setText(getattr(self, 'all_images_text', "  All Images"))
+            self.btn_all_images.setStyleSheet(base_style + """
+                QPushButton#Row1 { text-align: left; padding-left: 18px; border-left: 3px solid transparent; }
+            """)
+        else:
+            self.btn_all_images.setText("")
+            self.btn_all_images.setStyleSheet(base_style + """
+                QPushButton#Row1 { text-align: center; padding-left: 0px; border-left: 3px solid transparent; }
+            """)
 
-    def on_item_clicked(self, item):
-        path = item.data(Qt.ItemDataRole.UserRole)
+    def on_row1_clicked(self):
+        """點擊第一行資料夾時的動作"""
+        # 1. 先執行「顯示全部」的邏輯 (如果您希望點擊也切換到首頁)
+        self.folder_selected.emit("ALL")
+        
+        # 2. 切換顯示二級選單
+        if self.hover_menu.isVisible():
+            self.hover_menu.close()
+        else:
+            # 計算位置：Sidebar 右上角
+            sidebar_global_pos = self.mapToGlobal(QPoint(0, 0))
+            row1_y = self.btn_toggle.height()
+            
+            target_x = sidebar_global_pos.x() + self.width()
+            target_y = sidebar_global_pos.y() + row1_y
+            
+            self.hover_menu.show_at(QPoint(target_x, target_y), 60)
+
+    def on_sub_folder_clicked(self, path):
         self.folder_selected.emit(path)
 
 class MainWindow(QMainWindow):
     # 定義訊號
     random_data_ready = pyqtSignal(list)
+    ai_ready = pyqtSignal()
 
     def __init__(self, config: ConfigManager):
         # [關鍵修正] 這行一定要在第一行，且不能漏掉！
@@ -1007,6 +1155,10 @@ class MainWindow(QMainWindow):
         self.load_history()
         self.init_ui()
         
+        # [修改 2] 連接訊號：當 AI 準備好時，執行 on_ai_loaded
+        self.random_data_ready.connect(self.model.set_search_results)
+        self.ai_ready.connect(self.on_ai_loaded)
+
         # 連接訊號
         self.random_data_ready.connect(self.model.set_search_results)
 
@@ -1027,6 +1179,9 @@ class MainWindow(QMainWindow):
         self.sidebar = SidebarWidget()
         self.sidebar.folder_selected.connect(self.on_folder_filter)
         self.sidebar.toggled.connect(self.on_sidebar_toggled)
+
+        self.sidebar.add_folder_requested.connect(self.on_add_folder_clicked)
+
         main_layout.addWidget(self.sidebar)
         
         # --- 右側 ---
@@ -1105,6 +1260,19 @@ class MainWindow(QMainWindow):
         shadow = QGraphicsDropShadowEffect(); shadow.setBlurRadius(20); shadow.setColor(QColor(0, 0, 0, 100)); shadow.setOffset(0, 4); self.history_list.setGraphicsEffect(shadow)
         self.preview_overlay = PreviewOverlay(self)
 
+    # [新增] 處理新增資料夾的 Slot
+    def on_add_folder_clicked(self):
+        from PyQt6.QtWidgets import QFileDialog
+        
+        folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
+        if folder:
+            # 呼叫 ConfigManager 新增資料夾
+            if self.config.add_source_folder(folder):
+                QMessageBox.information(self, "Success", f"Added: {folder}\nPlease restart or re-index to scan new images.")
+                # 若您的架構支援熱重載，可在此呼叫 self.engine.reload()
+            else:
+                QMessageBox.warning(self, "Duplicate", "This folder is already indexed.")
+
     def on_sidebar_toggled(self, is_expanded):
         """
         當側邊欄收合/展開時，強制 QListView 重新計算 Grid 佈局。
@@ -1115,14 +1283,43 @@ class MainWindow(QMainWindow):
         # 2. 重新計算間距
         self.adjust_layout()
 
-    # 新增一個空的 Slot，之後用來實作資料夾過濾
+    # [修正] 實作資料夾篩選邏輯
     def on_folder_filter(self, path):
+        if not self.engine: return
+        
+        print(f"Filtering by: {path}")
+        
+        # 1. 如果是 "ALL"，顯示全部 (依時間排序)
         if path == "ALL":
-            print("Show All")
-            # 這裡之後會呼叫顯示全部的邏輯
-        else:
-            print(f"Filter by folder: {path}")
-            # 這裡之後會呼叫資料庫篩選邏輯
+            all_imgs = self.engine.get_all_images_sorted()
+            self.model.set_search_results(all_imgs)
+            self.status.setText(f"Showing all {len(all_imgs)} images")
+            return
+
+        # 2. 篩選特定資料夾
+        # 這邊簡單用 Python list comprehension 過濾 (高效能做法建議在 Engine 寫 SQL)
+        if self.engine.data_store:
+            filtered = [
+                item for item in self.engine.data_store 
+                if item["path"].startswith(path)
+            ]
+            
+            # 轉換格式給 Model
+            results = []
+            for item in filtered:
+                results.append({
+                    "score": 0.0,
+                    "path": item["path"],
+                    "filename": item["filename"],
+                    "ocr_data": item.get("ocr_data", []),
+                    "mtime": item.get("mtime", 0)
+                })
+            
+            # 按時間排序
+            results.sort(key=lambda x: x["mtime"], reverse=True)
+            
+            self.model.set_search_results(results)
+            self.status.setText(f"Folder: {os.path.basename(path)} ({len(results)} items)")
 
     def eventFilter(self, obj, event):
         # 處理鍵盤按下 (KeyPress)
@@ -1193,15 +1390,15 @@ class MainWindow(QMainWindow):
                     self.preview_overlay.show_image(item)
 
     def on_ai_loaded(self):
-        """當 AI 模型載入完成後被呼叫"""
+        """當 AI 模型載入完成後被呼叫 (會在主執行緒執行)"""
         count = len(self.engine.data_store) if self.engine else 0
         self.status.setText(f"System Ready ({count} images)")
         self.progress.hide()
         
-        # [新增] 更新側邊欄的資料夾統計
+        # 這裡會去抓取資料夾統計，並建立二級選單的按鈕
         if self.engine:
             stats = self.engine.get_folder_stats()
-            self.sidebar.update_folders(stats)
+            self.sidebar.update_folders(stats) # 這行才是真正建立按鈕的地方！
 
     # 右鍵選單邏輯
     def show_context_menu(self, pos):
@@ -1404,12 +1601,12 @@ class MainWindow(QMainWindow):
     
     def load_engine(self):
         try:
-            self.status.setText("Loading Database...")
+            #self.status.setText("Loading Database...")
             
             # 正確建立 Engine 實例
             self.engine = ImageSearchEngine(self.config)
             
-            self.status.setText("Rendering Gallery...")
+            #self.status.setText("Rendering Gallery...")
             # 呼叫排序方法
             all_images = self.engine.get_all_images_sorted()
             
@@ -1421,6 +1618,8 @@ class MainWindow(QMainWindow):
             
             # 載入模型
             self.engine.load_ai_models()
+
+            self.ai_ready.emit()
             
             QApplication.processEvents()
             self.status.setText(f"System Ready ({len(all_images)} images indexed)")
@@ -1429,7 +1628,6 @@ class MainWindow(QMainWindow):
             print(f"Engine Load Error: {e}")
             import traceback
             traceback.print_exc()
-            self.status.setText("Error Loading Engine")
         
     def start_search(self):
         q = self.input.text().strip()
