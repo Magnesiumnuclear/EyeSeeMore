@@ -936,10 +936,12 @@ class StatsMenuWidget(QFrame):
 class FolderHoverMenu(QWidget):
     """
     [最終修正版] 二級點擊選單
-    1. 資料夾顯示：改用數字索引 (1, 2, 3...) 代替截斷的名稱。
-    2. 新增按鈕：改為實線邊框，並修正 "+" 號的置中對齊。
+    1. 資料夾顯示：數字索引。
+    2. [新增] 重新整理按鈕 (環形箭頭)，位於倒數第二格。
+    3. 新增按鈕：位於最右邊。
     """
     folder_clicked = pyqtSignal(str)
+    refresh_clicked = pyqtSignal() # [新增] 重新整理訊號
     add_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -964,7 +966,7 @@ class FolderHoverMenu(QWidget):
         
         self.main_layout.addWidget(self.container_frame)
 
-        # 樣式表 (Paste this into FolderHoverMenu class)
+        # 樣式表
         self.setStyleSheet("""
             QFrame#MenuContainer {
                 background-color: rgba(45, 45, 45, 255);
@@ -979,7 +981,6 @@ class FolderHoverMenu(QWidget):
                 font-size: 16px;
                 font-weight: bold;
                 font-family: "Segoe UI", sans-serif;
-                /* [修正] 一般按鈕也要置中 */
                 text-align: center; 
             }
             QPushButton:hover {
@@ -987,25 +988,41 @@ class FolderHoverMenu(QWidget):
                 color: #111;
                 border: 1px solid #60cdff;
             }
-            /* 新增按鈕特別樣式 */
+            
+            /* 新增按鈕 (+) 樣式 */
             QPushButton#AddBtn {
                 background-color: #2a2a2a;
                 border: 1px solid #555;
-                font-size: 32px;        /* [微調] 字體加大 */
+                font-size: 32px;
                 color: #aaa;
-                font-weight: 300;       /* [微調] 字體變細一點，看起來更現代 */
-                
-                /* [絕對置中關鍵] */
+                font-weight: 300;
                 text-align: center;
                 padding: 0px;
                 margin: 0px;
-                padding-bottom: 6px;    /* [微調] 將符號視覺向上推，修正垂直偏差 */
+                padding-bottom: 6px;
             }
             QPushButton#AddBtn:hover {
                 background-color: #4caf50;
                 border: 1px solid #4caf50;
                 color: white;
             }
+            
+            /* [新增] 重新整理按鈕 (環形箭頭) 樣式 */
+            QPushButton#RefreshBtn {
+                background-color: #2a2a2a;
+                border: 1px solid #555;
+                font-size: 24px;   /* 符號大小 */
+                color: #aaa;
+                text-align: center;
+                padding: 0px;
+                padding-bottom: 2px; /* 微調垂直位置 */
+            }
+            QPushButton#RefreshBtn:hover {
+                background-color: #2196f3; /* 藍色 */
+                border: 1px solid #2196f3;
+                color: white;
+            }
+
             QToolTip {
                 background-color: #222;
                 color: #fff;
@@ -1022,22 +1039,24 @@ class FolderHoverMenu(QWidget):
         
         btn_size = 48 
         
-        # 1. 建立資料夾按鈕 (使用數字索引)
-        # enumerate(stats, 1) 代表從 1 開始計數
+        # 1. 建立資料夾按鈕 (1, 2, 3...)
         for i, (folder_path, count) in enumerate(stats, 1):
             btn = QPushButton()
             btn.setFixedSize(btn_size, btn_size)
-            
-            # [修改] 使用數字代替文字
             btn.setText(str(i))
-            
-            # Tooltip 顯示路徑與圖片數
             btn.setToolTip(f"{folder_path}\n({count} images)")
-            
             btn.clicked.connect(lambda checked, p=folder_path: self.on_folder_click(p))
             self.container_layout.addWidget(btn)
 
-        # 2. 建立「新增按鈕」 (+)
+        # 2. [新增] 建立「重新整理按鈕」 (倒數第二格)
+        self.btn_refresh = QPushButton("⟳") # Unicode 環形箭頭
+        self.btn_refresh.setObjectName("RefreshBtn")
+        self.btn_refresh.setFixedSize(btn_size, btn_size)
+        self.btn_refresh.setToolTip("Rescan all folders (Run AI)")
+        self.btn_refresh.clicked.connect(self.on_refresh_click)
+        self.container_layout.addWidget(self.btn_refresh)
+
+        # 3. 建立「新增按鈕」 (+) (最右邊)
         self.btn_add = QPushButton("+")
         self.btn_add.setObjectName("AddBtn")
         self.btn_add.setFixedSize(btn_size, btn_size)
@@ -1047,6 +1066,10 @@ class FolderHoverMenu(QWidget):
 
     def on_folder_click(self, path):
         self.folder_clicked.emit(path)
+        self.close()
+
+    def on_refresh_click(self):
+        self.refresh_clicked.emit()
         self.close()
 
     def on_add_click(self):
@@ -1064,7 +1087,7 @@ class FolderHoverMenu(QWidget):
         
         if btn_count > 0:
             total_width = (margin * 2) + (btn_count * btn_width) + ((btn_count - 1) * spacing)
-            total_width += 4 # 緩衝
+            total_width += 4 
         else:
             total_width = 100
             
@@ -1078,6 +1101,7 @@ class SidebarWidget(QFrame):
     folder_selected = pyqtSignal(str) 
     toggled = pyqtSignal(bool)
     add_folder_requested = pyqtSignal()
+    refresh_requested = pyqtSignal() # [新增]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1139,18 +1163,18 @@ class SidebarWidget(QFrame):
         self.btn_all_images.setIcon(self.icon_folder)
         self.btn_all_images.setIconSize(QSize(24, 24))
         
-        # [修改] 點擊時觸發選單，而不是只送出訊號
         self.btn_all_images.clicked.connect(self.on_row1_clicked)
         
         self.row1_layout.addWidget(self.btn_all_images)
         self.layout.addWidget(self.row1_container)
 
-        # [修改] 移除了 eventFilter (不再需要懸浮觸發)
-        
         # 3. 初始化二級選單
         self.hover_menu = FolderHoverMenu(self)
         self.hover_menu.folder_clicked.connect(self.on_sub_folder_clicked)
         self.hover_menu.add_clicked.connect(self.add_folder_requested.emit)
+        
+        # [新增] 連接重新整理訊號
+        self.hover_menu.refresh_clicked.connect(self.refresh_requested.emit)
         
         self.update_ui_text()
         self.setFixedWidth(self.expanded_width)
@@ -1187,21 +1211,14 @@ class SidebarWidget(QFrame):
             """)
 
     def on_row1_clicked(self):
-        """點擊第一行資料夾時的動作"""
-        # 1. 先執行「顯示全部」的邏輯 (如果您希望點擊也切換到首頁)
         self.folder_selected.emit("ALL")
-        
-        # 2. 切換顯示二級選單
         if self.hover_menu.isVisible():
             self.hover_menu.close()
         else:
-            # 計算位置：Sidebar 右上角
             sidebar_global_pos = self.mapToGlobal(QPoint(0, 0))
             row1_y = self.btn_toggle.height()
-            
             target_x = sidebar_global_pos.x() + self.width()
             target_y = sidebar_global_pos.y() + row1_y
-            
             self.hover_menu.show_at(QPoint(target_x, target_y), 60)
 
     def on_sub_folder_clicked(self, path):
@@ -1263,6 +1280,9 @@ class MainWindow(QMainWindow):
         self.sidebar.toggled.connect(self.on_sidebar_toggled)
 
         self.sidebar.add_folder_requested.connect(self.on_add_folder_clicked)
+
+        #連接側邊欄的重新整理訊號
+        self.sidebar.refresh_requested.connect(self.on_refresh_clicked)
 
         main_layout.addWidget(self.sidebar)
         
@@ -1358,6 +1378,26 @@ class MainWindow(QMainWindow):
                     self.indexer_worker.start()
             else:
                 QMessageBox.warning(self, "Duplicate", "This folder is already indexed.")
+
+    # [新增] 處理重新整理點擊事件
+    def on_refresh_clicked(self):
+        # 1. 檢查是否已經在執行中
+        if self.indexer_worker.isRunning():
+            QMessageBox.warning(self, "Busy", "Indexing is already in progress.")
+            return
+
+        # 2. 確認有資料夾可以掃描
+        current_folders = self.config.get("source_folders")
+        if not current_folders:
+            QMessageBox.information(self, "No Folders", "No source folders configured.")
+            return
+
+        # 3. 確保 Worker 設定是最新的
+        self.indexer_worker.folders = current_folders
+        
+        # 4. 啟動 Worker
+        self.status.setText("Rescanning folders...")
+        self.indexer_worker.start()
 
     def on_sidebar_toggled(self, is_expanded):
         """
