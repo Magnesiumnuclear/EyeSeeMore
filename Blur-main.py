@@ -11,6 +11,7 @@ import open_clip
 from transformers import AutoTokenizer 
 from datetime import datetime
 from collections import OrderedDict
+from indexer import IndexerService
 
 # [New] 引入 OpenCV (給 Grad-CAM 用)
 import cv2
@@ -609,6 +610,77 @@ class ImageSearchEngine:
         except Exception as e:
             print(f"[Error] Image search failed: {e}"); return []
 
+from indexer import IndexerService # 確保引入
+
+class IndexerWorker(QThread):
+    """
+    背景索引工作者
+    階段 1: 掃描檔案 (Scan) -> 回報 scan_finished
+    階段 2: 若有新檔案，執行 AI 處理 (Process) -> 回報 progress -> finished
+    """
+    status_update = pyqtSignal(str)       
+    progress_update = pyqtSignal(int, int)
+    scan_finished = pyqtSignal(int, int)  
+    all_finished = pyqtSignal()           
+
+    # [修改 1] 加入 main_window 參數，以取得主程式的 AI 模型
+    def __init__(self, config, main_window):
+        super().__init__()
+        self.config = config
+        self.main_window = main_window 
+        self.service = IndexerService(
+            db_path=config.db_path,
+            model_name=config.get("model_name"),
+            pretrained_name=config.get("pretrained")
+        )
+        self.folders = config.get("source_folders")
+
+    def run(self):
+        # --- 階段 1: 快速掃描 ---
+        self.status_update.emit("Scanning for file changes...")
+        try:
+            new_files, deleted_count = self.service.scan_for_new_files(self.folders)
+            self.scan_finished.emit(len(new_files), deleted_count)
+        except Exception as e:
+            print(f"Scan Error: {e}")
+            self.status_update.emit("Scan failed.")
+            return
+
+        # 若無新檔案，直接結束
+        if not new_files:
+            self.status_update.emit("No new images found.")
+            self.all_finished.emit()
+            return
+
+        # --- [關鍵修復] 等待主程式的 AI 引擎就緒 ---
+        self.status_update.emit("Waiting for main AI Engine to initialize...")
+        while not (self.main_window.engine and self.main_window.engine.is_ready):
+            time.sleep(1) # 每秒檢查一次，確保不會搶佔 VRAM
+
+        # --- 階段 2: AI 處理 (耗時) ---
+        self.status_update.emit(f"Indexing {len(new_files)} new images (AI)...")
+        
+        def callback(current, total, msg):
+            self.progress_update.emit(current, total)
+            self.status_update.emit(f"AI Processing: {current}/{total}")
+
+        try:
+            # 借用已經載入到顯示卡的主模型
+            shared_model = self.main_window.engine.model
+            shared_preprocess = self.main_window.engine.preprocess
+
+            self.service.run_ai_processing(
+                new_files, 
+                progress_callback=callback,
+                shared_model=shared_model,          # 傳入共用模型
+                shared_preprocess=shared_preprocess
+            )
+            self.status_update.emit("Indexing completed.")
+            self.all_finished.emit()
+        except Exception as e:
+            print(f"Indexing Error: {e}")
+            self.status_update.emit("Indexing Error.")
+
 class SearchWorker(QThread):
     batch_ready = pyqtSignal(list) 
     finished_search = pyqtSignal(float, int)
@@ -1157,6 +1229,12 @@ class MainWindow(QMainWindow):
         self.load_history()
         self.init_ui()
         
+        self.indexer_worker = IndexerWorker(self.config, self)  # 加入 self 參數
+        self.indexer_worker.status_update.connect(self.update_status) # 稍微改一下 status label 的用法
+        self.indexer_worker.progress_update.connect(self.update_progress)
+        self.indexer_worker.scan_finished.connect(self.on_scan_finished)
+        self.indexer_worker.all_finished.connect(self.on_indexing_finished)
+
         # [修改 2] 連接訊號：當 AI 準備好時，執行 on_ai_loaded
         self.random_data_ready.connect(self.model.set_search_results)
         self.ai_ready.connect(self.on_ai_loaded)
@@ -1168,6 +1246,8 @@ class MainWindow(QMainWindow):
         
         # 啟動背景載入 (這裡才會去建立 ImageSearchEngine)
         threading.Thread(target=self.load_engine, daemon=True).start()
+
+        self.indexer_worker.start()
 
     def init_ui(self):
         # ... (前段 layout 設定保持不變) ...
@@ -1268,10 +1348,14 @@ class MainWindow(QMainWindow):
         
         folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
         if folder:
-            # 呼叫 ConfigManager 新增資料夾
             if self.config.add_source_folder(folder):
-                QMessageBox.information(self, "Success", f"Added: {folder}\nPlease restart or re-index to scan new images.")
-                # 若您的架構支援熱重載，可在此呼叫 self.engine.reload()
+                QMessageBox.information(self, "Success", f"Added: {folder}\nScanning started in background...")
+                
+                # [修改] 新增資料夾後，重新啟動 Worker 進行掃描與索引
+                # 更新 worker 的資料夾列表
+                self.indexer_worker.folders = self.config.get("source_folders")
+                if not self.indexer_worker.isRunning():
+                    self.indexer_worker.start()
             else:
                 QMessageBox.warning(self, "Duplicate", "This folder is already indexed.")
 
@@ -1401,6 +1485,35 @@ class MainWindow(QMainWindow):
         if self.engine:
             stats = self.engine.get_folder_stats()
             self.sidebar.update_folders(stats) # 這行才是真正建立按鈕的地方！
+    
+    def update_status(self, text):
+        self.status.setText(text)
+
+    def update_progress(self, current, total):
+        self.progress.show()
+        self.progress.setRange(0, total)
+        self.progress.setValue(current)
+
+    def on_scan_finished(self, added, deleted):
+        if added > 0 or deleted > 0:
+            print(f"[Indexer] Scan found {added} new, {deleted} deleted.")
+            if deleted > 0 and self.engine:
+                self.engine.load_data_from_db()
+                self.on_folder_filter("ALL")
+        else:
+            print("[Indexer] No changes detected.")
+
+    def on_indexing_finished(self):
+        self.progress.hide()
+        self.status.setText("Index Updated.")
+        if self.engine:
+            print("Reloading engine data...")
+            self.engine.load_data_from_db()
+            all_imgs = self.engine.get_all_images_sorted()
+            self.model.set_search_results(all_imgs)
+            stats = self.engine.get_folder_stats()
+            self.sidebar.update_folders(stats)
+            self.status.setText(f"System Ready ({len(all_imgs)} images)")
 
     # 右鍵選單邏輯
     def show_context_menu(self, pos):
