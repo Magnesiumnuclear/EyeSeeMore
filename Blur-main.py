@@ -1266,6 +1266,82 @@ class MainWindow(QMainWindow):
 
         self.indexer_worker.start()
 
+        # =============================================
+        # 設定滾動條樣式 (QSS)
+        # =============================================
+        # 這裡定義了垂直和水平滾動條的外觀
+        scrollbar_stylesheet = """
+            /* --- 垂直滾動條整體區域 --- */
+            QScrollBar:vertical {
+                border: none;
+                background: #2b2b2b;    /* 軌道背景色，設為與視窗背景相同使其「隱形」 */
+                width: 14px;            /* 滾動條總寬度 */
+                margin: 0px 0 0px 0;
+            }
+
+            /* --- 垂直滾動條的滑塊 (Handle) --- */
+            QScrollBar::handle:vertical {
+                background: #555555;    /* 滑塊顏色 (深灰色) */
+                min-height: 30px;       /* 滑塊最小高度 */
+                border-radius: 7px;     /* 圓角效果 (寬度的一半) */
+                margin: 2px;            /* 與軌道的間距，讓滑塊看起來懸浮 */
+            }
+
+            /* 滑鼠懸停在滑塊上時的變色效果 */
+            QScrollBar::handle:vertical:hover {
+                background: #777777;    /* 變亮一點 */
+            }
+
+            /* 滑鼠按下卡住滑塊時的變色效果 */
+            QScrollBar::handle:vertical:pressed {
+                 background: #999999;   /* 再變亮一點 */
+            }
+
+            /* --- 隱藏上下箭頭按鈕 (現代化設計通常不顯示) --- */
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                border: none;
+                background: none;
+                height: 0px;
+            }
+            /* 隱藏滑塊前後的軌道點擊區域背景 */
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+
+            /* =============================================
+               --- 水平滾動條 (邏輯同上，只是 width 變 height) --- 
+               ============================================= */
+            QScrollBar:horizontal {
+                border: none;
+                background: #2b2b2b;
+                height: 14px;
+                margin: 0px 0 0px 0;
+            }
+            QScrollBar::handle:horizontal {
+                background: #555555;
+                min-width: 30px;
+                border-radius: 7px;
+                margin: 2px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #777777;
+            }
+            QScrollBar::handle:horizontal:pressed {
+                 background: #999999;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                border: none;
+                background: none;
+                width: 0px;
+            }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: none;
+            }
+        """
+        # 將新的樣式表附加到現有的樣式表後
+        current_stylesheet = self.styleSheet()
+        self.setStyleSheet(current_stylesheet + scrollbar_stylesheet)
+
     def init_ui(self):
         # ... (前段 layout 設定保持不變) ...
         central = QWidget()
