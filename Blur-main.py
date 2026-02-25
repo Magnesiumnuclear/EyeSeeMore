@@ -668,7 +668,9 @@ class IndexerWorker(QThread):
             model_name=config.get("model_name"),
             pretrained_name=config.get("pretrained")
         )
-        self.folders = config.get("source_folders")
+        # [關鍵修正] 從設定的新格式 [{"path":...}] 中提取出純路徑字串
+        raw_folders = config.get("source_folders")
+        self.folders = [f["path"] if isinstance(f, dict) else f for f in raw_folders]
 
     def run(self):
         # --- 階段 1: 快速掃描 ---
@@ -1065,26 +1067,39 @@ class FolderHoverMenu(QWidget):
             }
         """)
 
-    def update_menu(self, stats):
-        # 清除舊按鈕
+    def update_menu(self, stats, config_folders): 
         while self.container_layout.count():
             item = self.container_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            if item.widget(): item.widget().deleteLater()
         
         btn_size = 48 
         
-        # 1. 建立資料夾按鈕 (1, 2, 3...)
-        for i, (folder_path, count) in enumerate(stats, 1):
+        # 把 SQL stats 轉成字典方便查詢 (路徑 -> 數量)
+        stats_dict = {os.path.normpath(p): c for p, c in stats}
+        
+        # 1. 建立資料夾按鈕 (依照 config_folders 的自訂排序)
+        for i, f_obj in enumerate(config_folders, 1):
+            path = f_obj["path"]
+            icon = f_obj.get("icon", "")
+            count = stats_dict.get(os.path.normpath(path), 0)
+            
             btn = QPushButton()
             btn.setFixedSize(btn_size, btn_size)
-            btn.setText(str(i))
-            btn.setToolTip(f"{folder_path}\n({count} images)")
-            btn.clicked.connect(lambda checked, p=folder_path: self.on_folder_click(p))
+            
+            # 判斷要顯示表情符號還是數字
+            if icon:
+                btn.setText(icon)
+                # 強制使用表情符號字體並加大
+                btn.setStyleSheet(btn.styleSheet() + " font-size: 20px; font-family: 'Segoe UI Emoji';")
+            else:
+                btn.setText(str(i))
+                
+            btn.setToolTip(f"{path}\n({count} 張圖片)")
+            btn.clicked.connect(lambda checked, p=path: self.on_folder_click(p))
             self.container_layout.addWidget(btn)
 
         # 2. [新增] 建立「重新整理按鈕」 (倒數第二格)
-        self.btn_refresh = QPushButton("⟳") # Unicode 環形箭頭
+        self.btn_refresh = QPushButton("⟳")
         self.btn_refresh.setObjectName("RefreshBtn")
         self.btn_refresh.setFixedSize(btn_size, btn_size)
         self.btn_refresh.setToolTip("Rescan all folders (Run AI)")
@@ -1242,9 +1257,9 @@ class SidebarWidget(QFrame):
         self.update_ui_text()
         self.setFixedWidth(self.expanded_width)
 
-    def update_folders(self, stats):
+    def update_folders(self, stats, config_folders): # [修改]
         self.stats_cache = stats
-        self.hover_menu.update_menu(stats)
+        self.hover_menu.update_menu(stats, config_folders) # 把 config 傳遞下去
         total = sum(c for _, c in stats)
         self.all_images_text = f"  All Images ({total})"
         self.update_ui_text()
@@ -1517,22 +1532,23 @@ class MainWindow(QMainWindow):
         shadow = QGraphicsDropShadowEffect(); shadow.setBlurRadius(20); shadow.setColor(QColor(0, 0, 0, 100)); shadow.setOffset(0, 4); self.history_list.setGraphicsEffect(shadow)
         self.preview_overlay = PreviewOverlay(self)
 
-    # [新增] 處理新增資料夾的 Slot
+    def refresh_sidebar(self):
+        """通知側邊欄更新資料夾狀態與排序"""
+        if self.engine:
+            stats = self.engine.get_folder_stats()
+            config_folders = self.config.get("source_folders")
+            self.sidebar.update_folders(stats, config_folders)
+
+    # [修復] 加回此函式，讓側邊欄的 + 號能運作
     def on_add_folder_clicked(self):
         from PyQt6.QtWidgets import QFileDialog
-        
         folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
         if folder:
             if self.config.add_source_folder(folder):
-                QMessageBox.information(self, "Success", f"Added: {folder}\nScanning started in background...")
-                
-                # [修改] 新增資料夾後，重新啟動 Worker 進行掃描與索引
-                # 更新 worker 的資料夾列表
-                self.indexer_worker.folders = self.config.get("source_folders")
-                if not self.indexer_worker.isRunning():
-                    self.indexer_worker.start()
+                self.refresh_sidebar()
+                QMessageBox.information(self, "Success", "加入成功！請點擊側邊欄的「⟳」按鈕進行掃描。")
             else:
-                QMessageBox.warning(self, "Duplicate", "This folder is already indexed.")
+                QMessageBox.warning(self, "重複", "此資料夾已經存在。")
 
     # [新增] 處理重新整理點擊事件
     def on_refresh_clicked(self):
@@ -1541,8 +1557,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Busy", "Indexing is already in progress.")
             return
 
-        # 2. 確認有資料夾可以掃描
-        current_folders = self.config.get("source_folders")
+    # 2. 確認有資料夾可以掃描 (提取純路徑)
+        raw_folders = self.config.get("source_folders")
+        current_folders = [f["path"] if isinstance(f, dict) else f for f in raw_folders]
         if not current_folders:
             QMessageBox.information(self, "No Folders", "No source folders configured.")
             return
@@ -1678,8 +1695,7 @@ class MainWindow(QMainWindow):
         
         # 這裡會去抓取資料夾統計，並建立二級選單的按鈕
         if self.engine:
-            stats = self.engine.get_folder_stats()
-            self.sidebar.update_folders(stats) # 這行才是真正建立按鈕的地方！
+            self.refresh_sidebar()
     
     def update_status(self, text):
         self.status.setText(text)
@@ -1706,8 +1722,7 @@ class MainWindow(QMainWindow):
             self.engine.load_data_from_db()
             all_imgs = self.engine.get_all_images_sorted()
             self.model.set_search_results(all_imgs)
-            stats = self.engine.get_folder_stats()
-            self.sidebar.update_folders(stats)
+            self.refresh_sidebar()
             self.status.setText(f"System Ready ({len(all_imgs)} images)")
 
     # 右鍵選單邏輯
@@ -2071,8 +2086,9 @@ class OnboardingDialog(QDialog):
 
 class SettingsDialog(QDialog):
     """常駐的主設定面板"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self, main_window): # [修改] 接收 main_window
+        super().__init__(main_window)
+        self.main_window = main_window # 取得主視窗的資源 (config, engine 等)
         self.setWindowTitle("設定 (Settings)")
         self.resize(800, 600)
         self.setStyleSheet("background-color: #1e1e1e;")
@@ -2081,7 +2097,6 @@ class SettingsDialog(QDialog):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(15)
 
-        # 左側：導覽選單 (Tab 列表)
         self.nav_list = QListWidget()
         self.nav_list.setFixedWidth(200)
         self.nav_list.setStyleSheet("""
@@ -2091,134 +2106,176 @@ class SettingsDialog(QDialog):
             QListWidget::item:selected { background-color: #383838; color: white; font-weight: bold; border-left: 4px solid #60cdff; border-radius: 6px; }
         """)
         
-        tabs = ["📁 資料夾管理", "🧠 AI 引擎設定", "🖥️ 介面與顯示", "ℹ️ 關於與說明"]
-        for tab in tabs:
+        for tab in ["📁 資料夾管理", "🧠 AI 引擎設定", "🖥️ 介面與顯示", "ℹ️ 關於與說明"]:
             self.nav_list.addItem(tab)
             
         main_layout.addWidget(self.nav_list)
-
-        # 右側：內容區塊切換 (Stacked Widget)
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("background-color: #2b2b2b; border-radius: 8px;")
         main_layout.addWidget(self.stack, stretch=1)
-
-        # 連動左側點擊與右側切換
         self.nav_list.currentRowChanged.connect(self.stack.setCurrentIndex)
 
-        # --- 建立各個分頁 (目前純 UI) ---
         self.init_page_folders()
         self.init_page_ai()
         self.init_page_appearance()
         self.init_page_about()
-        
-        # 預設選中第一頁
         self.nav_list.setCurrentRow(0)
 
     def _create_page_container(self, title_text):
-        """輔助函式：建立每頁的基底容器與標題"""
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(30, 30, 30, 30)
         layout.setSpacing(15)
-        
         title = QLabel(title_text)
         title.setStyleSheet("color: white; font-size: 22px; font-weight: bold;")
         layout.addWidget(title)
-        
-        # 分隔線
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setStyleSheet("border: 1px solid #444;")
         layout.addWidget(line)
-        
         return page, layout
 
+    # ==========================================
+    # 資料夾管理核心邏輯
+    # ==========================================
     def init_page_folders(self):
         page, layout = self._create_page_container("📁 資料夾管理 (Folders)")
         
-        # 資料夾列表
-        folder_list = QListWidget()
-        folder_list.addItem("C:\\Users\\Pictures\\Wallpapers (包含 1,204 張圖片)")
-        folder_list.addItem("D:\\Downloads\\Memes (包含 85 張圖片)")
-        layout.addWidget(folder_list)
+        lbl_hint = QLabel("提示：您可以直接「上下拖曳」列表中的項目來改變側邊欄的按鈕排序。")
+        lbl_hint.setStyleSheet("color: #aaa; font-size: 12px;")
+        layout.addWidget(lbl_hint)
         
-        # 按鈕列
+        self.folder_list = QListWidget()
+        self.folder_list.setStyleSheet("QListWidget { font-size: 14px; } QListWidget::item { padding: 12px; }")
+        
+        # [關鍵] 開啟拖曳排序功能 (Drag & Drop)
+        self.folder_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.folder_list.model().rowsMoved.connect(self.on_folder_order_changed)
+        layout.addWidget(self.folder_list)
+        
         btn_layout = QHBoxLayout()
-        btn_add = QPushButton("+ 新增資料夾")
-        btn_del = QPushButton("- 移除選取")
-        btn_add.setFixedHeight(35)
-        btn_del.setFixedHeight(35)
-        btn_layout.addWidget(btn_add)
-        btn_layout.addWidget(btn_del)
+        self.btn_add = QPushButton("+ 新增資料夾")
+        self.btn_edit = QPushButton("✏️ 編輯圖示")
+        self.btn_del = QPushButton("- 移除選取")
+        
+        self.btn_add.setFixedHeight(35)
+        self.btn_edit.setFixedHeight(35)
+        self.btn_del.setFixedHeight(35)
+        self.btn_del.setStyleSheet("QPushButton:hover { background-color: #ff4747; }")
+        
+        self.btn_add.clicked.connect(self.on_add_folder)
+        self.btn_edit.clicked.connect(self.on_edit_icon)
+        self.btn_del.clicked.connect(self.on_remove_folder)
+        
+        btn_layout.addWidget(self.btn_add)
+        btn_layout.addWidget(self.btn_edit)
+        btn_layout.addWidget(self.btn_del)
         btn_layout.addStretch(1)
         layout.addLayout(btn_layout)
         
+        self.refresh_folder_list()
         self.stack.addWidget(page)
 
+    def refresh_folder_list(self):
+        self.folder_list.clear()
+        config_folders = self.main_window.config.get("source_folders")
+        
+        # 取得 SQL 中的圖片數量統計
+        stats = []
+        if self.main_window.engine:
+            stats = self.main_window.engine.get_folder_stats()
+        stats_dict = {os.path.normpath(p): c for p, c in stats}
+        
+        for f in config_folders:
+            path = f["path"]
+            icon = f.get("icon", "")
+            count = stats_dict.get(os.path.normpath(path), 0)
+            
+            display_icon = f"[{icon}]" if icon else "[🔢]"
+            item = QListWidgetItem(f"{display_icon}  {path}   ({count} 張圖片)")
+            item.setData(Qt.ItemDataRole.UserRole, path) # 把路徑偷偷藏在 Item 裡
+            self.folder_list.addItem(item)
+
+    def on_folder_order_changed(self):
+        """拖曳放開後觸發，儲存新排序"""
+        ordered_paths = []
+        for i in range(self.folder_list.count()):
+            ordered_paths.append(self.folder_list.item(i).data(Qt.ItemDataRole.UserRole))
+        self.main_window.config.update_folder_order(ordered_paths)
+        self.main_window.refresh_sidebar() # 通知主畫面更新側邊欄
+
+    def on_add_folder(self):
+        from PyQt6.QtWidgets import QFileDialog
+        folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
+        if folder:
+            if self.main_window.config.add_source_folder(folder):
+                self.refresh_folder_list()
+                self.main_window.refresh_sidebar()
+                QMessageBox.information(self, "Success", "加入成功！關閉設定面板後請點擊側邊欄的「⟳」按鈕進行掃描。")
+            else:
+                QMessageBox.warning(self, "重複", "此資料夾已經存在。")
+
+    def on_remove_folder(self):
+        item = self.folder_list.currentItem()
+        if not item: return
+        
+        path = item.data(Qt.ItemDataRole.UserRole)
+        reply = QMessageBox.question(self, '確認移除', f"確定要移除此資料夾的索引嗎？\n\n{path}\n\n(這只會從軟體中移除，不會刪除您電腦裡的實體照片)", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # 1. 從 config 移除
+            self.main_window.config.remove_source_folder(path)
+            
+            # 2. 從資料庫 (SQL) 刪除快取
+            if self.main_window.engine:
+                try:
+                    conn = sqlite3.connect(self.main_window.config.db_path)
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM images WHERE folder_path = ?", (path,))
+                    conn.commit()
+                    conn.close()
+                    self.main_window.engine.load_data_from_db() # 重新整理記憶體資料
+                except Exception as e:
+                    print(f"Delete DB error: {e}")
+            
+            self.refresh_folder_list()
+            self.main_window.refresh_sidebar()
+
+    def on_edit_icon(self):
+        item = self.folder_list.currentItem()
+        if not item: return
+        path = item.data(Qt.ItemDataRole.UserRole)
+        
+        # 跳出輸入框
+        icon, ok = QInputDialog.getText(self, "編輯圖示", "請輸入 1 個 Emoji (或最多 2 個英數字)：\n建議按 Win + . 叫出表情符號小鍵盤")
+        if ok:
+            icon = icon.strip()
+            # 防呆：避免輸入太長導致選單方塊爆掉 (Emoji 算多字元，所以抓 4 個長度緩衝)
+            if len(icon) > 4:
+                icon = icon[:4]
+                
+            self.main_window.config.update_folder_icon(path, icon)
+            self.refresh_folder_list()
+            self.main_window.refresh_sidebar()
+
+    # --- 以下保留原本的假 UI ---
     def init_page_ai(self):
         page, layout = self._create_page_container("🧠 AI 引擎設定 (AI Engine)")
-        
-        # 直接拿 Onboarding 的概念來用
-        lbl = QLabel("在此切換您的底層運算模型，切換後需重新啟動軟體。")
-        lbl.setStyleSheet("color: #aaa;")
-        layout.addWidget(lbl)
-        
-        combo_clip = QComboBox()
-        combo_clip.setFixedHeight(35)
-        combo_clip.addItems(["重型模型 (High Accuracy - 5GB)", "輕型模型 (High Performance - 1GB)"])
-        layout.addWidget(QLabel("1. 語意模型 (CLIP) 選擇："))
-        layout.addWidget(combo_clip)
-        
-        combo_ocr = QComboBox()
-        combo_ocr.setFixedHeight(35)
-        combo_ocr.addItems(["純 CPU 模式 (預設/推薦)", "GPU 加速模式 (需 CUDA 環境)"])
-        layout.addWidget(QLabel("2. 文字辨識 (OCR) 引擎："))
-        layout.addWidget(combo_ocr)
-        
-        layout.addStretch(1)
-        self.stack.addWidget(page)
+        combo_clip = QComboBox(); combo_clip.setFixedHeight(35); combo_clip.addItems(["重型模型 (High Accuracy - 5GB)", "輕型模型 (High Performance - 1GB)"])
+        layout.addWidget(QLabel("1. 語意模型 (CLIP) 選擇：")); layout.addWidget(combo_clip)
+        combo_ocr = QComboBox(); combo_ocr.setFixedHeight(35); combo_ocr.addItems(["純 CPU 模式 (預設/推薦)", "GPU 加速模式 (需 CUDA 環境)"])
+        layout.addWidget(QLabel("2. 文字辨識 (OCR) 引擎：")); layout.addWidget(combo_ocr)
+        layout.addStretch(1); self.stack.addWidget(page)
 
     def init_page_appearance(self):
         page, layout = self._create_page_container("🖥️ 介面與顯示 (Appearance)")
-        
-        combo_size = QComboBox()
-        combo_size.setFixedHeight(35)
-        combo_size.addItems(["大圖示 (預設)", "中圖示", "小圖示"])
-        layout.addWidget(QLabel("預設圖片顯示大小："))
-        layout.addWidget(combo_size)
-        
-        theme_chk = QCheckBox("啟用暗黑模式 (Dark Mode)")
-        theme_chk.setChecked(True)
-        theme_chk.setEnabled(False) # 暫時鎖定，因為目前只有暗黑模式
-        layout.addWidget(theme_chk)
-        
-        layout.addStretch(1)
-        self.stack.addWidget(page)
+        combo_size = QComboBox(); combo_size.setFixedHeight(35); combo_size.addItems(["大圖示 (預設)", "中圖示", "小圖示"])
+        layout.addWidget(QLabel("預設圖片顯示大小：")); layout.addWidget(combo_size)
+        layout.addStretch(1); self.stack.addWidget(page)
 
     def init_page_about(self):
         page, layout = self._create_page_container("ℹ️ 關於與說明 (Help & About)")
-        
-        info = QLabel("""
-        <h3>Local AI Search v1.0.0</h3>
-        <p>基於 OpenCLIP 與 PaddleOCR 的本地端圖片搜尋引擎。</p>
-        <br>
-        <b>⌨️ 快捷鍵 (Shortcuts):</b>
-        <ul>
-            <li><b>W, A, S, D</b> 或 <b>方向鍵</b>：在圖片清單中移動選取。</li>
-            <li><b>Space (空白鍵)</b>：快速放大預覽選取的圖片。</li>
-            <li><b>Shift (按住)</b>：在預覽模式下，顯示 OCR 辨識到的文字紅框位置。</li>
-            <li><b>Enter</b>：在搜尋框輸入完畢後執行搜尋。</li>
-        </ul>
-        <br>
-        <b>💡 搜尋技巧:</b>
-        <p>您可以輸入具體的物品（如「白貓」、「咖啡杯」），或是抽象的氛圍（如「賽博龐克」、「下雨的夜晚」）。</p>
-        """)
-        info.setStyleSheet("color: #ccc; font-size: 14px; line-height: 1.5;")
-        info.setTextFormat(Qt.TextFormat.RichText)
-        info.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(info)
-        
-        self.stack.addWidget(page)
+        layout.addWidget(QLabel("Local AI Search v1.0.0")); layout.addStretch(1); self.stack.addWidget(page)
 
 if __name__ == "__main__":
     # 1. 初始化 ConfigManager (這會自動建立 config.json 如果不存在)
