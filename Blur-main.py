@@ -2412,8 +2412,13 @@ class SettingsDialog(QDialog):
         self.stack.addWidget(page)
 
     def on_ai_model_changed(self, selected_text):
-        """當切換模型選單時，動態查詢資料庫統計"""
+        """當切換模型選單時，動態查詢資料庫統計與狀態"""
         target_model = self.ai_models[selected_text]["model"]
+        
+        # [新增] 抓取目前「真正正在運作」的模型
+        current_active_model = self.main_window.config.get("model_name")
+        is_active = (target_model == current_active_model)
+        
         total_indexed = 0
         try:
             conn = sqlite3.connect(self.main_window.config.db_path)
@@ -2424,10 +2429,25 @@ class SettingsDialog(QDialog):
             conn.close()
         except: pass
         
-        if total_indexed > 0:
-            self.lbl_model_stats.setText(f"📊 狀態：此模型已成功建立 <b>{total_indexed}</b> 張圖片的索引。<br>切換後即可立刻搜尋。")
+        # ==========================================
+        # [新增] 根據是否為目前模型，給予不同的視覺與文字提示
+        # ==========================================
+        if is_active:
+            # 綠色標籤代表使用中
+            tag = "<span style='color: #4caf50; font-size: 14px;'><b>[✅ 目前運作中的模型]</b></span>"
+            if total_indexed > 0:
+                desc = f"📊 狀態：已為 <b>{total_indexed}</b> 張圖片建立索引，可正常搜尋。"
+            else:
+                desc = f"⚠️ 狀態：目前 <b>0</b> 張索引。<br>請關閉設定面板，點擊左側「⟳」按鈕來產生專屬索引。"
         else:
-            self.lbl_model_stats.setText(f"⚠️ 狀態：此模型目前 <b>0</b> 張索引。<br>套用後，請至左側側邊欄點擊「⟳ 重新整理」來產生專屬索引。")
+            # 橘黃色標籤代表只是在偷看狀態，還沒套用
+            tag = "<span style='color: #ff9800; font-size: 14px;'><b>[👀 僅檢視狀態 (尚未套用)]</b></span>"
+            if total_indexed > 0:
+                desc = f"📊 狀態：此備用模型庫內已有 <b>{total_indexed}</b> 張圖片的索引。<br>點擊下方「套用並重啟」後即可無縫切換使用。"
+            else:
+                desc = f"⚠️ 狀態：此備用模型目前 <b>0</b> 張索引。<br>點擊下方「套用並重啟」後，需重新執行「⟳」掃描。"
+                
+        self.lbl_model_stats.setText(f"{tag}<br>{desc}")
 
     def check_gpu_environment(self):
         """三道關卡深度檢查 GPU 環境"""
