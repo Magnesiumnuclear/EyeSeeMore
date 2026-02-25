@@ -31,7 +31,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QPoint, QRect, QRectF, QSize, QEvent, 
                           QFileInfo, QTimer, QAbstractListModel, QRunnable, QThreadPool, QObject, QModelIndex)
 from PyQt6.QtGui import (QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, 
-                         QShortcut, QFontMetrics, QPainter, QBrush, QPen, QIcon, QPainterPath, QPolygon, QImageReader)
+                         QShortcut, QFontMetrics, QPainter, QBrush, QPen, QIcon, QPainterPath, QPolygon, QImageReader
+                         , QDrag, QRegion)
 
 THUMBNAIL_SIZE = (220, 180)
 CARD_SIZE = (240, 290) 
@@ -1064,6 +1065,8 @@ class FolderHoverMenu(QWidget):
                 background-color: #222;
                 color: #fff;
                 border: 1px solid #555;
+                font-size: 14px; /* 強制鎖定字體大小 */
+                font-family: "Segoe UI", sans-serif; /* 強制鎖定字型 */
             }
         """)
 
@@ -1094,7 +1097,8 @@ class FolderHoverMenu(QWidget):
             else:
                 btn.setText(str(i))
                 
-            btn.setToolTip(f"{path}\n({count} 張圖片)")
+            # [修正] 使用 HTML 格式強制鎖定 ToolTip 的字型與大小，打破繼承
+            btn.setToolTip(f"<div style='font-family: \"Segoe UI\", sans-serif; font-size: 14px; font-weight: normal;'>{path}<br>({count} 張圖片)</div>")
             btn.clicked.connect(lambda checked, p=path: self.on_folder_click(p))
             self.container_layout.addWidget(btn)
 
@@ -1102,7 +1106,7 @@ class FolderHoverMenu(QWidget):
         self.btn_refresh = QPushButton("⟳")
         self.btn_refresh.setObjectName("RefreshBtn")
         self.btn_refresh.setFixedSize(btn_size, btn_size)
-        self.btn_refresh.setToolTip("Rescan all folders (Run AI)")
+        self.btn_refresh.setToolTip("<div style='font-family: \"Segoe UI\", sans-serif; font-size: 14px; font-weight: normal;'>Rescan all folders (Run AI)</div>")
         self.btn_refresh.clicked.connect(self.on_refresh_click)
         self.container_layout.addWidget(self.btn_refresh)
 
@@ -1110,7 +1114,7 @@ class FolderHoverMenu(QWidget):
         self.btn_add = QPushButton("+")
         self.btn_add.setObjectName("AddBtn")
         self.btn_add.setFixedSize(btn_size, btn_size)
-        self.btn_add.setToolTip("Add new folder source...")
+        self.btn_add.setToolTip("<div style='font-family: \"Segoe UI\", sans-serif; font-size: 14px; font-weight: normal;'>Add new folder source...</div>")
         self.btn_add.clicked.connect(self.on_add_click)
         self.container_layout.addWidget(self.btn_add)
 
@@ -1630,7 +1634,7 @@ class MainWindow(QMainWindow):
                     self.preview_overlay.set_ocr_visible(True)
                 return True 
 
-            if not self.input.hasFocus():
+            if not self.input.hasFocus() and QApplication.activeWindow() == self:
                 if key == Qt.Key.Key_W:
                     self.list_view.setFocus(); self.send_nav_key(Qt.Key.Key_Up); return True
                 elif key == Qt.Key.Key_S:
@@ -2084,6 +2088,42 @@ class OnboardingDialog(QDialog):
         btn_finish.clicked.connect(self.accept) # 關閉對話框
         layout.addWidget(btn_finish)
 
+class TransparentDragListWidget(QListWidget):
+    """自訂的 ListWidget，用於在拖曳時產生半透明的視覺效果"""
+    def startDrag(self, supportedActions):
+        item = self.currentItem()
+        if not item:
+            return super().startDrag(supportedActions)
+
+        # 1. 建立拖曳物件與資料
+        drag = QDrag(self)
+        mimeData = self.model().mimeData(self.selectedIndexes())
+        drag.setMimeData(mimeData)
+
+        # 2. 取得該項目的原始截圖
+        rect = self.visualItemRect(item)
+        pixmap = QPixmap(rect.size())
+        pixmap.fill(Qt.GlobalColor.transparent)
+        self.render(pixmap, QPoint(), QRegion(rect))
+
+        # 3. 建立新的半透明截圖
+        alpha_pixmap = QPixmap(pixmap.size())
+        alpha_pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(alpha_pixmap)
+        painter.setOpacity(0.5)  # ★ 這裡設定透明度 (0.5 代表 50% 半透明)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+
+        drag.setPixmap(alpha_pixmap)
+
+        # 4. 計算滑鼠抓取點的相對位置，讓拖曳手感更自然
+        mouse_pos = self.viewport().mapFromGlobal(QCursor.pos())
+        hotspot = mouse_pos - rect.topLeft()
+        drag.setHotSpot(hotspot)
+
+        # 5. 執行拖曳
+        drag.exec(supportedActions, Qt.DropAction.MoveAction)
+
 class SettingsDialog(QDialog):
     """常駐的主設定面板"""
     def __init__(self, main_window): # [修改] 接收 main_window
@@ -2145,7 +2185,7 @@ class SettingsDialog(QDialog):
         lbl_hint.setStyleSheet("color: #aaa; font-size: 12px;")
         layout.addWidget(lbl_hint)
         
-        self.folder_list = QListWidget()
+        self.folder_list = TransparentDragListWidget()
         self.folder_list.setStyleSheet("QListWidget { font-size: 14px; } QListWidget::item { padding: 12px; }")
         
         # [關鍵] 開啟拖曳排序功能 (Drag & Drop)
@@ -2161,7 +2201,17 @@ class SettingsDialog(QDialog):
         self.btn_add.setFixedHeight(35)
         self.btn_edit.setFixedHeight(35)
         self.btn_del.setFixedHeight(35)
-        self.btn_del.setStyleSheet("QPushButton:hover { background-color: #ff4747; }")
+        # 定義統一的按鈕樣式
+        base_btn_style = """
+            QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; }
+            QPushButton:hover { background-color: #60cdff; color: #111; }
+        """
+        self.btn_add.setStyleSheet(base_btn_style)
+        self.btn_edit.setStyleSheet(base_btn_style)
+        self.btn_del.setStyleSheet("""
+            QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; }
+            QPushButton:hover { background-color: #ff4747; color: white; border-color: #ff4747; }
+        """)
         
         self.btn_add.clicked.connect(self.on_add_folder)
         self.btn_edit.clicked.connect(self.on_edit_icon)
