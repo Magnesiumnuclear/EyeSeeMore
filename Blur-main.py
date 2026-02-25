@@ -471,7 +471,14 @@ class ImageSearchEngine:
                 model_name, pretrained=pretrained, device=self.device
             )
             self.model.eval()
-            self.tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-large')
+            
+            # [關鍵修復 1] 動態切換對應的 Tokenizer
+            if "roberta" in model_name.lower() or "xlm" in model_name.lower():
+                self.tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-large')
+                self.is_hf_tokenizer = True # 標記為 HuggingFace 分詞器
+            else:
+                self.tokenizer = open_clip.get_tokenizer(model_name)
+                self.is_hf_tokenizer = False # 標記為標準 OpenCLIP 分詞器
             
             # 模型載入完畢，標記為 Ready
             self.is_ready = True
@@ -515,7 +522,14 @@ class ImageSearchEngine:
         conn = sqlite3.connect(self.config.db_path)
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT file_path, embedding, ocr_text, ocr_data, mtime FROM images")
+            # [關鍵修復 1] 聯合查詢 (JOIN)：只撈取「當前模型」的特徵向量，並結合共用的實體檔案資料
+            current_model = self.config.get("model_name")
+            cursor.execute("""
+                SELECT f.file_path, e.embedding, f.ocr_text, f.ocr_data, f.mtime 
+                FROM files f
+                JOIN embeddings e ON f.id = e.file_id
+                WHERE e.model_name = ?
+            """, (current_model,))
             rows = cursor.fetchall()
             
             self.data_store = [] 
@@ -524,10 +538,8 @@ class ImageSearchEngine:
             for path, blob, ocr_text, ocr_data_json, mtime in rows:
                 if not os.path.exists(path): continue 
                 
-                # 這裡只需存 embedding array，不用轉 tensor (省記憶體/時間)
                 emb_array = np.frombuffer(blob, dtype=np.float32)
                 embeddings_list.append(emb_array)
-                
                 text_content = ocr_text if ocr_text else ""
                 
                 ocr_boxes = []
@@ -544,13 +556,11 @@ class ImageSearchEngine:
                 })
             
             if self.data_store and embeddings_list:
-                # 預先轉好 tensor 以備搜尋用
                 emb_matrix = np.stack(embeddings_list)
                 self.stored_embeddings = torch.from_numpy(emb_matrix).to(self.device)
-                print(f"[Engine] Loaded {len(self.data_store)} records from DB.")
+                print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
             else:
-                print("[Engine] Database is empty or no valid files found.")
-                # [修正 2] 確保即使沒資料，變數也要存在，避免後續 NoneType 錯誤
+                print(f"[Engine] No records found for model '{current_model}'.")
                 self.stored_embeddings = None
                 
         except sqlite3.Error as e:
@@ -563,11 +573,9 @@ class ImageSearchEngine:
         try:
             conn = sqlite3.connect(self.config.db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='folder_stats'")
-            if cursor.fetchone():
-                cursor.execute("SELECT folder_path, image_count FROM folder_stats ORDER BY folder_path ASC")
-            else:
-                cursor.execute("SELECT folder_path, COUNT(*) FROM images GROUP BY folder_path")
+            # [關鍵修復 2] 根據當前模型去 model_stats 抓取統計
+            current_model = self.config.get("model_name")
+            cursor.execute("SELECT folder_path, image_count FROM model_stats WHERE model_name = ? ORDER BY folder_path ASC", (current_model,))
             stats = cursor.fetchall()
             conn.close()
             return stats
@@ -580,7 +588,8 @@ class ImageSearchEngine:
         try:
             os.rename(old_path, new_path)
             conn = sqlite3.connect(self.config.db_path); cursor = conn.cursor()
-            cursor.execute("UPDATE images SET file_path = ?, filename = ? WHERE file_path = ?", (new_path, new_name, old_path))
+            # [關鍵修復 3] 改為更新 files 表
+            cursor.execute("UPDATE files SET file_path = ?, filename = ? WHERE file_path = ?", (new_path, new_name, old_path))
             conn.commit(); conn.close()
             for item in self.data_store:
                 if item["path"] == old_path:
@@ -596,8 +605,16 @@ class ImageSearchEngine:
         results = []; query_lower = query.lower()
         try:
             with torch.no_grad():
-                inputs = self.tokenizer(query, padding=True, truncation=True, return_tensors="pt").to(self.device)
-                text_features = self.model.encode_text(inputs.input_ids)
+                # [關鍵修復 2] 根據不同種類的 Tokenizer 餵入不同的格式
+                if getattr(self, 'is_hf_tokenizer', True):
+                    # RoBERTa 專用處理方式
+                    inputs = self.tokenizer(query, padding=True, truncation=True, return_tensors="pt").to(self.device)
+                    text_features = self.model.encode_text(inputs.input_ids)
+                else:
+                    # 標準 CLIP 專用處理方式 (例如 ViT-H-14, ViT-B-32)
+                    text_tokens = self.tokenizer([query]).to(self.device)
+                    text_features = self.model.encode_text(text_tokens)
+                
                 text_features /= text_features.norm(dim=-1, keepdim=True)
                 text_features = text_features.to(self.stored_embeddings.dtype)
             
@@ -674,43 +691,44 @@ class IndexerWorker(QThread):
         self.folders = [f["path"] if isinstance(f, dict) else f for f in raw_folders]
 
     def run(self):
-        # --- 階段 1: 快速掃描 ---
+        # --- 階段 1: 智慧掃描 ---
         self.status_update.emit("Scanning for file changes...")
         try:
-            new_files, deleted_count = self.service.scan_for_new_files(self.folders)
-            self.scan_finished.emit(len(new_files), deleted_count)
+            files_full, files_emb_only, deleted_count = self.service.scan_for_new_files(self.folders)
+            self.scan_finished.emit(len(files_full) + len(files_emb_only), deleted_count)
         except Exception as e:
             print(f"Scan Error: {e}")
             self.status_update.emit("Scan failed.")
             return
 
-        # 若無新檔案，直接結束
-        if not new_files:
+        # 若無需要處理的檔案，直接結束
+        if not files_full and not files_emb_only:
             self.status_update.emit("No new images found.")
             self.all_finished.emit()
             return
 
-        # --- [關鍵修復] 等待主程式的 AI 引擎就緒 ---
+        # --- 等待主程式的 AI 引擎就緒 ---
         self.status_update.emit("Waiting for main AI Engine to initialize...")
         while not (self.main_window.engine and self.main_window.engine.is_ready):
-            time.sleep(1) # 每秒檢查一次，確保不會搶佔 VRAM
+            time.sleep(1) 
 
-        # --- 階段 2: AI 處理 (耗時) ---
-        self.status_update.emit(f"Indexing {len(new_files)} new images (AI)...")
+        # --- 階段 2: 雙軌 AI 處理 ---
+        total_tasks = len(files_full) + len(files_emb_only)
+        self.status_update.emit(f"Indexing {total_tasks} images...")
         
         def callback(current, total, msg):
             self.progress_update.emit(current, total)
-            self.status_update.emit(f"AI Processing: {current}/{total}")
+            self.status_update.emit(msg)
 
         try:
-            # 借用已經載入到顯示卡的主模型
             shared_model = self.main_window.engine.model
             shared_preprocess = self.main_window.engine.preprocess
 
+            # [關鍵] 傳入雙軌參數
             self.service.run_ai_processing(
-                new_files, 
+                files_full, files_emb_only,
                 progress_callback=callback,
-                shared_model=shared_model,          # 傳入共用模型
+                shared_model=shared_model,          
                 shared_preprocess=shared_preprocess
             )
             self.status_update.emit("Indexing completed.")
@@ -2279,9 +2297,14 @@ class SettingsDialog(QDialog):
             # 2. 從資料庫 (SQL) 刪除快取
             if self.main_window.engine:
                 try:
+                    # 開啟外鍵約束 (確保 CASCADE 聯動刪除生效)
                     conn = sqlite3.connect(self.main_window.config.db_path)
+                    conn.execute("PRAGMA foreign_keys = ON;") 
                     cursor = conn.cursor()
-                    cursor.execute("DELETE FROM images WHERE folder_path = ?", (path,))
+                    
+                    # [關鍵修復] 改為刪除 files 表，底層的 embeddings 會自動被 ON DELETE CASCADE 清理得乾乾淨淨！
+                    cursor.execute("DELETE FROM files WHERE folder_path = ?", (path,))
+                    
                     conn.commit()
                     conn.close()
                     self.main_window.engine.load_data_from_db() # 重新整理記憶體資料
@@ -2308,14 +2331,131 @@ class SettingsDialog(QDialog):
             self.refresh_folder_list()
             self.main_window.refresh_sidebar()
 
-    # --- 以下保留原本的假 UI ---
+    # ==========================================
+    # AI 引擎與 GPU 檢測邏輯
+    # ==========================================
     def init_page_ai(self):
         page, layout = self._create_page_container("🧠 AI 引擎設定 (AI Engine)")
-        combo_clip = QComboBox(); combo_clip.setFixedHeight(35); combo_clip.addItems(["重型模型 (High Accuracy - 5GB)", "輕型模型 (High Performance - 1GB)"])
-        layout.addWidget(QLabel("1. 語意模型 (CLIP) 選擇：")); layout.addWidget(combo_clip)
-        combo_ocr = QComboBox(); combo_ocr.setFixedHeight(35); combo_ocr.addItems(["純 CPU 模式 (預設/推薦)", "GPU 加速模式 (需 CUDA 環境)"])
-        layout.addWidget(QLabel("2. 文字辨識 (OCR) 引擎：")); layout.addWidget(combo_ocr)
-        layout.addStretch(1); self.stack.addWidget(page)
+        
+        # 定義官方推薦模型字典
+        self.ai_models = {
+            "🟢 標準模式 (ViT-B-32) - 速度極快": {"model": "ViT-B-32", "pre": "laion2b_s34b_b79k"},
+            "🔵 精準模式 (ViT-H-14) - 準確度高": {"model": "ViT-H-14", "pre": "laion2b_s32b_b79k"},
+            "🟣 多語系模式 (xlm-roberta) - 支援中文": {"model": "xlm-roberta-large-ViT-H-14", "pre": "frozen_laion5b_s13b_b90k"}
+        }
+        
+        # 1. AI 模型選擇
+        layout.addWidget(QLabel("1. 語意模型 (CLIP) 選擇："))
+        self.combo_clip = QComboBox()
+        self.combo_clip.setFixedHeight(35)
+        self.combo_clip.addItems(list(self.ai_models.keys()))
+        
+        # 尋找當前設定並選中
+        current_model = self.main_window.config.get("model_name")
+        for text, params in self.ai_models.items():
+            if params["model"] == current_model:
+                self.combo_clip.setCurrentText(text)
+                break
+                
+        self.combo_clip.currentTextChanged.connect(self.on_ai_model_changed)
+        layout.addWidget(self.combo_clip)
+        
+        # 動態顯示該模型的索引狀態
+        self.lbl_model_stats = QLabel("")
+        self.lbl_model_stats.setStyleSheet("color: #aaa; font-size: 13px; margin-bottom: 10px; padding-left: 5px;")
+        layout.addWidget(self.lbl_model_stats)
+        self.on_ai_model_changed(self.combo_clip.currentText()) # 初始化文字
+        
+        # 2. OCR 引擎選擇
+        layout.addWidget(QLabel("2. 文字辨識 (OCR) 引擎："))
+        self.combo_ocr = QComboBox()
+        self.combo_ocr.setFixedHeight(35)
+        self.combo_ocr.addItems(["純 CPU 模式 (預設/高相容性)", "GPU 加速模式 (極速/需 CUDA 環境)"])
+        
+        is_gpu = self.main_window.config.get("use_gpu_ocr")
+        self.combo_ocr.setCurrentIndex(1 if is_gpu else 0)
+        layout.addWidget(self.combo_ocr)
+        
+        # 3. 儲存按鈕
+        layout.addStretch(1)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch(1)
+        self.btn_save_ai = QPushButton("套用 AI 設定並重新啟動")
+        self.btn_save_ai.setFixedHeight(40)
+        self.btn_save_ai.setStyleSheet("""
+            QPushButton { background-color: #005fb8; border-radius: 6px; font-weight: bold; font-size: 14px; padding: 0px 20px;}
+            QPushButton:hover { background-color: #0078d4; }
+        """)
+        self.btn_save_ai.clicked.connect(self.on_save_ai_settings)
+        btn_layout.addWidget(self.btn_save_ai)
+        layout.addLayout(btn_layout)
+        
+        self.stack.addWidget(page)
+
+    def on_ai_model_changed(self, selected_text):
+        """當切換模型選單時，動態查詢資料庫統計"""
+        target_model = self.ai_models[selected_text]["model"]
+        total_indexed = 0
+        try:
+            conn = sqlite3.connect(self.main_window.config.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT SUM(image_count) FROM model_stats WHERE model_name = ?", (target_model,))
+            res = cursor.fetchone()
+            if res and res[0]: total_indexed = res[0]
+            conn.close()
+        except: pass
+        
+        if total_indexed > 0:
+            self.lbl_model_stats.setText(f"📊 狀態：此模型已成功建立 <b>{total_indexed}</b> 張圖片的索引。<br>切換後即可立刻搜尋。")
+        else:
+            self.lbl_model_stats.setText(f"⚠️ 狀態：此模型目前 <b>0</b> 張索引。<br>套用後，請至左側側邊欄點擊「⟳ 重新整理」來產生專屬索引。")
+
+    def check_gpu_environment(self):
+        """三道關卡深度檢查 GPU 環境"""
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            # 關卡 1: 檢查 PyTorch 與 CUDA 驅動
+            if not torch.cuda.is_available():
+                return False, "您的設備未安裝 NVIDIA 顯示卡，或系統未安裝相應的 CUDA 驅動程式。"
+            
+            # 關卡 2: 檢查 PaddlePaddle 是否支援 GPU
+            try:
+                import paddle
+                if not paddle.device.is_compiled_with_cuda():
+                    return False, "您的 Python 環境安裝的是「純 CPU 版」的 PaddlePaddle 套件。請解除安裝後，重新安裝 paddlepaddle-gpu 版。"
+            except ImportError:
+                return False, "無法載入 paddle 套件，請確認安裝是否完整。"
+                
+            return True, "✅ GPU 檢測通過！"
+        except Exception as e:
+            return False, f"未知錯誤: {e}"
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def on_save_ai_settings(self):
+        # 1. 取得選擇的模型
+        selected_text = self.combo_clip.currentText()
+        model_data = self.ai_models[selected_text]
+        new_model = model_data["model"]
+        new_pre = model_data["pre"]
+        
+        # 2. 處理 GPU 設定與檢測
+        wants_gpu = (self.combo_ocr.currentIndex() == 1)
+        if wants_gpu:
+            passed, msg = self.check_gpu_environment()
+            if not passed:
+                QMessageBox.critical(self, "GPU 檢測失敗", f"<b>無法啟用 GPU 加速模式。</b><br><br>原因：{msg}<br><br>系統將自動為您切換回純 CPU 模式。")
+                self.combo_ocr.setCurrentIndex(0)
+                return # 擋下儲存，讓使用者確認
+        
+        # 3. 寫入 Config (使用新增的 set 方法)
+        self.main_window.config.set("model_name", new_model)
+        self.main_window.config.set("pretrained", new_pre)
+        self.main_window.config.set("use_gpu_ocr", wants_gpu)
+        
+        # 4. 提示重啟
+        QMessageBox.information(self, "設定已儲存", "AI 引擎設定已更新！\n\n程式將會關閉，請您手動重新啟動以載入新模型。")
+        QApplication.quit() # 強制關閉程式
 
     def init_page_appearance(self):
         page, layout = self._create_page_container("🖥️ 介面與顯示 (Appearance)")
