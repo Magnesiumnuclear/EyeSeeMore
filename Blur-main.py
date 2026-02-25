@@ -1220,6 +1220,20 @@ class SidebarWidget(QFrame):
         self.btn_settings.setFixedHeight(60)
         self.btn_settings.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_settings.clicked.connect(self.settings_requested.emit)
+
+        # [關鍵修正] 將表情符號畫成固定大小的圖示 (QIcon)，解決縮放問題
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setFont(QFont("Segoe UI Emoji", 18))
+        painter.setPen(QColor("#cccccc")) # 讓齒輪顏色與文字一致
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "⚙️")
+        painter.end()
+        
+        self.btn_settings.setIcon(QIcon(pixmap))
+        self.btn_settings.setIconSize(QSize(24, 24)) # 強制鎖定圖示大小
+
         self.layout.addWidget(self.btn_settings)
 
         # [新增] 連接重新整理訊號
@@ -1254,7 +1268,7 @@ class SidebarWidget(QFrame):
                 QPushButton#Row1 { text-align: left; padding-left: 18px; border-left: 3px solid transparent; }
             """)
             # [新增] 展開時顯示文字
-            self.btn_settings.setText("  ⚙️ 設定 (Settings)")
+            self.btn_settings.setText("  設定 (Settings)")
             self.btn_settings.setStyleSheet(base_style + """
                 QPushButton#Row1 { text-align: left; padding-left: 18px; border-left: 3px solid transparent; font-size: 15px;}
             """)
@@ -1264,7 +1278,7 @@ class SidebarWidget(QFrame):
                 QPushButton#Row1 { text-align: center; padding-left: 0px; border-left: 3px solid transparent; }
             """)
             # [新增] 收合時只顯示齒輪置中
-            self.btn_settings.setText("⚙️")
+            self.btn_settings.setText("")
             self.btn_settings.setStyleSheet(base_style + """
                 QPushButton#Row1 { text-align: center; padding-left: 0px; border-left: 3px solid transparent; font-size: 22px;}
             """)
