@@ -12,6 +12,7 @@ from transformers import AutoTokenizer
 from datetime import datetime
 from collections import OrderedDict
 from indexer import IndexerService
+import re
 
 # [New] 引入 OpenCV (給 Grad-CAM 用)
 import cv2
@@ -1980,11 +1981,29 @@ class MainWindow(QMainWindow):
         q = self.input.text().strip()
         if not q or not self.engine: return
         
+        # ==========================================
+        # [新增] 語言防呆機制：檢查中文與模型的相容性
+        # ==========================================
+        has_chinese = bool(re.search(r'[\u4e00-\u9fff]', q))
+        
+        # 如果包含中文，且當前不是使用多語系模型 (is_hf_tokenizer 為 False)
+        if has_chinese and not getattr(self.engine, 'is_hf_tokenizer', True):
+            QMessageBox.warning(
+                self, 
+                "不支援的語言", 
+                "您目前使用的 AI 模型僅支援「英文」搜尋。\n\n"
+                "💡 若要使用中文搜尋，請至左下角「⚙️ 設定」中，將 AI 引擎切換為「🟣 多語系模式 (xlm-roberta)」。"
+            )
+            return  # 強制擋下這次搜尋，保護引擎不崩潰
+        # ==========================================
+        
         self.add_to_history(q)
         self.history_list.hide()
         self.progress.show()
         self.progress.setRange(0, 0)
         self.status.setText("Searching...")
+        
+        # ... 下方的程式碼保持不變 ...
         
         limit = self.combo_limit.currentText()
         k = 100000 if limit == "All" else int(limit)
