@@ -26,7 +26,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QLabel, QScrollArea, QComboBox, QProgressBar, QFrame,
                              QListWidget, QListWidgetItem, QSizePolicy, QMenu, QMessageBox,
                              QGraphicsDropShadowEffect, QCheckBox, QInputDialog, QDialog,
-                             QStyledItemDelegate, QStyle, QFileIconProvider, QAbstractItemView, QListView)
+                             QStyledItemDelegate, QStyle, QFileIconProvider, QAbstractItemView, QListView,
+                             QRadioButton, QGroupBox, QStackedWidget) # 新增這三個
 from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QPoint, QRect, QRectF, QSize, QEvent, 
                           QFileInfo, QTimer, QAbstractListModel, QRunnable, QThreadPool, QObject, QModelIndex)
 from PyQt6.QtGui import (QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, 
@@ -42,7 +43,7 @@ WINDOW_TITLE = "Local AI Search (High Performance)"
 # ==========================================
 WIN11_STYLESHEET = """
 QMainWindow { background-color: #1e1e1e; }
-QWidget { color: #ffffff; font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; font-size: 14px; }
+QWidget { color: #ffffff; font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; font-size: 10pt; }
 QLineEdit { background-color: #2d2d2d; border: 1px solid #3e3e3e; border-bottom: 1px solid #505050; border-radius: 4px; padding: 10px 12px; color: #ffffff; font-size: 15px; selection-background-color: #005fb8; }
 QLineEdit:focus { border-bottom: 2px solid #60cdff; background-color: #323232; }
 QComboBox { background-color: #2d2d2d; border: 1px solid #3e3e3e; border-radius: 4px; padding: 6px 10px; min-width: 80px; }
@@ -76,6 +77,40 @@ QScrollBar:vertical { border: none; background: #2b2b2b; width: 8px; margin: 0px
 QScrollBar::handle:vertical { background: #555; min-height: 20px; border-radius: 4px; }
 QScrollBar::add-line:vertical { height: 0px; subcontrol-position: bottom; subcontrol-origin: margin; }
 QScrollBar::sub-line:vertical { height: 0px; subcontrol-position: top; subcontrol-origin: margin; }
+/* --- 新增設定面板樣式 --- */
+QGroupBox {
+    border: 1px solid #454545;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding-top: 20px;
+    font-weight: bold;
+    color: #e0e0e0;
+    font-size: 10pt;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 5px;
+    left: 10px;
+}
+QRadioButton {
+    color: #cccccc;
+    spacing: 8px;
+}
+QRadioButton::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    border: 2px solid #555;
+    background-color: #2d2d2d;
+}
+QRadioButton::indicator:checked {
+    border: 5px solid #60cdff;
+    background-color: #1e1e1e;
+}
+QRadioButton:hover {
+    color: #ffffff;
+}
 """
 
 # ==========================================
@@ -1101,7 +1136,8 @@ class SidebarWidget(QFrame):
     folder_selected = pyqtSignal(str) 
     toggled = pyqtSignal(bool)
     add_folder_requested = pyqtSignal()
-    refresh_requested = pyqtSignal() # [新增]
+    refresh_requested = pyqtSignal()
+    settings_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1173,6 +1209,19 @@ class SidebarWidget(QFrame):
         self.hover_menu.folder_clicked.connect(self.on_sub_folder_clicked)
         self.hover_menu.add_clicked.connect(self.add_folder_requested.emit)
         
+        # ==========================================
+        # [新增] 側邊欄底部的設定入口
+        # ==========================================
+        self.layout.addStretch(1) # 這個伸縮空間會把下面的設定按鈕「推」到最底端
+        
+        self.btn_settings = QPushButton()
+        self.btn_settings.setObjectName("Row1") # 共用 Hover 亮條樣式
+        self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_settings.setFixedHeight(60)
+        self.btn_settings.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_settings.clicked.connect(self.settings_requested.emit)
+        self.layout.addWidget(self.btn_settings)
+
         # [新增] 連接重新整理訊號
         self.hover_menu.refresh_clicked.connect(self.refresh_requested.emit)
         
@@ -1204,10 +1253,20 @@ class SidebarWidget(QFrame):
             self.btn_all_images.setStyleSheet(base_style + """
                 QPushButton#Row1 { text-align: left; padding-left: 18px; border-left: 3px solid transparent; }
             """)
+            # [新增] 展開時顯示文字
+            self.btn_settings.setText("  ⚙️ 設定 (Settings)")
+            self.btn_settings.setStyleSheet(base_style + """
+                QPushButton#Row1 { text-align: left; padding-left: 18px; border-left: 3px solid transparent; font-size: 15px;}
+            """)
         else:
             self.btn_all_images.setText("")
             self.btn_all_images.setStyleSheet(base_style + """
                 QPushButton#Row1 { text-align: center; padding-left: 0px; border-left: 3px solid transparent; }
+            """)
+            # [新增] 收合時只顯示齒輪置中
+            self.btn_settings.setText("⚙️")
+            self.btn_settings.setStyleSheet(base_style + """
+                QPushButton#Row1 { text-align: center; padding-left: 0px; border-left: 3px solid transparent; font-size: 22px;}
             """)
 
     def on_row1_clicked(self):
@@ -1342,6 +1401,10 @@ class MainWindow(QMainWindow):
         current_stylesheet = self.styleSheet()
         self.setStyleSheet(current_stylesheet + scrollbar_stylesheet)
 
+    def show_settings_dialog(self):
+        dialog = SettingsDialog(self)
+        dialog.exec()
+
     def init_ui(self):
         # ... (前段 layout 設定保持不變) ...
         central = QWidget()
@@ -1359,6 +1422,8 @@ class MainWindow(QMainWindow):
 
         #連接側邊欄的重新整理訊號
         self.sidebar.refresh_requested.connect(self.on_refresh_clicked)
+
+        self.sidebar.settings_requested.connect(self.show_settings_dialog)
 
         main_layout.addWidget(self.sidebar)
         
@@ -1914,6 +1979,233 @@ class MainWindow(QMainWindow):
 
     def on_finished(self, elapsed, total): self.progress.hide(); self.status.setText(f"Found {total} items ({elapsed:.2f}s)")
 
+class OnboardingDialog(QDialog):
+    """首次開啟的引導面板"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("歡迎使用 Local AI Search")
+        self.setFixedSize(550, 480)
+        self.setStyleSheet("background-color: #1e1e1e;")
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+
+        # 標題
+        title = QLabel("初始化設定")
+        title.setStyleSheet("color: white; font-size: 24px; font-weight: bold;")
+        layout.addWidget(title)
+
+        subtitle = QLabel("請選擇適合您電腦硬體的運作模式。您隨時可以在「設定」中更改。")
+        subtitle.setStyleSheet("color: #aaa; font-size: 14px;")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        # 區塊 A: AI 模型
+        group_ai = QGroupBox("區塊 A：AI 語意模型選擇 (CLIP)")
+        layout_ai = QVBoxLayout(group_ai)
+        layout_ai.setSpacing(12)
+        
+        self.rb_ai_heavy = QRadioButton("重型模型 (High Accuracy)")
+        self.rb_ai_heavy.setChecked(True) # 預設
+        lbl_heavy_desc = QLabel("精準度最高，需下載約 5GB 模型檔，適合硬碟空間充足者。")
+        lbl_heavy_desc.setStyleSheet("color: #888; font-size: 12px; margin-left: 26px;")
+        
+        self.rb_ai_light = QRadioButton("輕型模型 (High Performance)")
+        lbl_light_desc = QLabel("速度最快，需下載約 1GB 模型檔，適合一般電腦。")
+        lbl_light_desc.setStyleSheet("color: #888; font-size: 12px; margin-left: 26px;")
+        
+        layout_ai.addWidget(self.rb_ai_heavy)
+        layout_ai.addWidget(lbl_heavy_desc)
+        layout_ai.addWidget(self.rb_ai_light)
+        layout_ai.addWidget(lbl_light_desc)
+        layout.addWidget(group_ai)
+
+        # 區塊 B: OCR 引擎
+        group_ocr = QGroupBox("區塊 B：文字辨識引擎 (OCR)")
+        layout_ocr = QVBoxLayout(group_ocr)
+        layout_ocr.setSpacing(12)
+        
+        self.rb_ocr_cpu = QRadioButton("純 CPU 模式 (預設/推薦)")
+        self.rb_ocr_cpu.setChecked(True)
+        lbl_cpu_desc = QLabel("高相容性，任何電腦皆可流暢執行。")
+        lbl_cpu_desc.setStyleSheet("color: #888; font-size: 12px; margin-left: 26px;")
+        
+        self.rb_ocr_gpu = QRadioButton("GPU 加速模式")
+        lbl_gpu_desc = QLabel("⚠️ 警告：極速模式。僅限配備 NVIDIA 顯示卡並已安裝 CUDA 環境的專業使用者選擇。環境不符將導致軟體閃退。")
+        lbl_gpu_desc.setStyleSheet("color: #ff6b6b; font-size: 12px; margin-left: 26px;")
+        lbl_gpu_desc.setWordWrap(True)
+        
+        layout_ocr.addWidget(self.rb_ocr_cpu)
+        layout_ocr.addWidget(lbl_cpu_desc)
+        layout_ocr.addWidget(self.rb_ocr_gpu)
+        layout_ocr.addWidget(lbl_gpu_desc)
+        layout.addWidget(group_ocr)
+
+        layout.addStretch(1)
+
+        # 底部按鈕
+        btn_finish = QPushButton("完成設定並開始使用")
+        btn_finish.setFixedHeight(45)
+        btn_finish.setStyleSheet("""
+            QPushButton { background-color: #005fb8; color: white; font-weight: bold; font-size: 16px; border-radius: 6px; }
+            QPushButton:hover { background-color: #0078d4; }
+        """)
+        btn_finish.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_finish.clicked.connect(self.accept) # 關閉對話框
+        layout.addWidget(btn_finish)
+
+class SettingsDialog(QDialog):
+    """常駐的主設定面板"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("設定 (Settings)")
+        self.resize(800, 600)
+        self.setStyleSheet("background-color: #1e1e1e;")
+
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(15)
+
+        # 左側：導覽選單 (Tab 列表)
+        self.nav_list = QListWidget()
+        self.nav_list.setFixedWidth(200)
+        self.nav_list.setStyleSheet("""
+            QListWidget { border: none; background-color: #252525; border-radius: 8px; padding: 10px 0px; }
+            QListWidget::item { color: #ccc; padding: 12px 15px; font-size: 15px; border-radius: 0px; margin: 2px 10px; }
+            QListWidget::item:hover { background-color: #333; border-radius: 6px; }
+            QListWidget::item:selected { background-color: #383838; color: white; font-weight: bold; border-left: 4px solid #60cdff; border-radius: 6px; }
+        """)
+        
+        tabs = ["📁 資料夾管理", "🧠 AI 引擎設定", "🖥️ 介面與顯示", "ℹ️ 關於與說明"]
+        for tab in tabs:
+            self.nav_list.addItem(tab)
+            
+        main_layout.addWidget(self.nav_list)
+
+        # 右側：內容區塊切換 (Stacked Widget)
+        self.stack = QStackedWidget()
+        self.stack.setStyleSheet("background-color: #2b2b2b; border-radius: 8px;")
+        main_layout.addWidget(self.stack, stretch=1)
+
+        # 連動左側點擊與右側切換
+        self.nav_list.currentRowChanged.connect(self.stack.setCurrentIndex)
+
+        # --- 建立各個分頁 (目前純 UI) ---
+        self.init_page_folders()
+        self.init_page_ai()
+        self.init_page_appearance()
+        self.init_page_about()
+        
+        # 預設選中第一頁
+        self.nav_list.setCurrentRow(0)
+
+    def _create_page_container(self, title_text):
+        """輔助函式：建立每頁的基底容器與標題"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(15)
+        
+        title = QLabel(title_text)
+        title.setStyleSheet("color: white; font-size: 22px; font-weight: bold;")
+        layout.addWidget(title)
+        
+        # 分隔線
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet("border: 1px solid #444;")
+        layout.addWidget(line)
+        
+        return page, layout
+
+    def init_page_folders(self):
+        page, layout = self._create_page_container("📁 資料夾管理 (Folders)")
+        
+        # 資料夾列表
+        folder_list = QListWidget()
+        folder_list.addItem("C:\\Users\\Pictures\\Wallpapers (包含 1,204 張圖片)")
+        folder_list.addItem("D:\\Downloads\\Memes (包含 85 張圖片)")
+        layout.addWidget(folder_list)
+        
+        # 按鈕列
+        btn_layout = QHBoxLayout()
+        btn_add = QPushButton("+ 新增資料夾")
+        btn_del = QPushButton("- 移除選取")
+        btn_add.setFixedHeight(35)
+        btn_del.setFixedHeight(35)
+        btn_layout.addWidget(btn_add)
+        btn_layout.addWidget(btn_del)
+        btn_layout.addStretch(1)
+        layout.addLayout(btn_layout)
+        
+        self.stack.addWidget(page)
+
+    def init_page_ai(self):
+        page, layout = self._create_page_container("🧠 AI 引擎設定 (AI Engine)")
+        
+        # 直接拿 Onboarding 的概念來用
+        lbl = QLabel("在此切換您的底層運算模型，切換後需重新啟動軟體。")
+        lbl.setStyleSheet("color: #aaa;")
+        layout.addWidget(lbl)
+        
+        combo_clip = QComboBox()
+        combo_clip.setFixedHeight(35)
+        combo_clip.addItems(["重型模型 (High Accuracy - 5GB)", "輕型模型 (High Performance - 1GB)"])
+        layout.addWidget(QLabel("1. 語意模型 (CLIP) 選擇："))
+        layout.addWidget(combo_clip)
+        
+        combo_ocr = QComboBox()
+        combo_ocr.setFixedHeight(35)
+        combo_ocr.addItems(["純 CPU 模式 (預設/推薦)", "GPU 加速模式 (需 CUDA 環境)"])
+        layout.addWidget(QLabel("2. 文字辨識 (OCR) 引擎："))
+        layout.addWidget(combo_ocr)
+        
+        layout.addStretch(1)
+        self.stack.addWidget(page)
+
+    def init_page_appearance(self):
+        page, layout = self._create_page_container("🖥️ 介面與顯示 (Appearance)")
+        
+        combo_size = QComboBox()
+        combo_size.setFixedHeight(35)
+        combo_size.addItems(["大圖示 (預設)", "中圖示", "小圖示"])
+        layout.addWidget(QLabel("預設圖片顯示大小："))
+        layout.addWidget(combo_size)
+        
+        theme_chk = QCheckBox("啟用暗黑模式 (Dark Mode)")
+        theme_chk.setChecked(True)
+        theme_chk.setEnabled(False) # 暫時鎖定，因為目前只有暗黑模式
+        layout.addWidget(theme_chk)
+        
+        layout.addStretch(1)
+        self.stack.addWidget(page)
+
+    def init_page_about(self):
+        page, layout = self._create_page_container("ℹ️ 關於與說明 (Help & About)")
+        
+        info = QLabel("""
+        <h3>Local AI Search v1.0.0</h3>
+        <p>基於 OpenCLIP 與 PaddleOCR 的本地端圖片搜尋引擎。</p>
+        <br>
+        <b>⌨️ 快捷鍵 (Shortcuts):</b>
+        <ul>
+            <li><b>W, A, S, D</b> 或 <b>方向鍵</b>：在圖片清單中移動選取。</li>
+            <li><b>Space (空白鍵)</b>：快速放大預覽選取的圖片。</li>
+            <li><b>Shift (按住)</b>：在預覽模式下，顯示 OCR 辨識到的文字紅框位置。</li>
+            <li><b>Enter</b>：在搜尋框輸入完畢後執行搜尋。</li>
+        </ul>
+        <br>
+        <b>💡 搜尋技巧:</b>
+        <p>您可以輸入具體的物品（如「白貓」、「咖啡杯」），或是抽象的氛圍（如「賽博龐克」、「下雨的夜晚」）。</p>
+        """)
+        info.setStyleSheet("color: #ccc; font-size: 14px; line-height: 1.5;")
+        info.setTextFormat(Qt.TextFormat.RichText)
+        info.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(info)
+        
+        self.stack.addWidget(page)
+
 if __name__ == "__main__":
     # 1. 初始化 ConfigManager (這會自動建立 config.json 如果不存在)
     app_config = ConfigManager()
@@ -1927,7 +2219,14 @@ if __name__ == "__main__":
         
     app = QApplication(sys.argv)
     app.setStyleSheet(WIN11_STYLESHEET)
+
+    is_first_run = not app_config.get("source_folders")
     
+    if is_first_run:
+        # [新增] 在顯示主視窗前，強制彈出引導面板
+        onboarding = OnboardingDialog()
+        onboarding.exec() # 會卡在這裡直到使用者點擊「完成設定並開始使用」
+
     # 2. 將 config 傳入主視窗
     w = MainWindow(app_config) 
     w.show()
