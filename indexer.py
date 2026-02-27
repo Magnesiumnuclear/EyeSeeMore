@@ -76,6 +76,9 @@ class IndexerService:
     #  功能 1: 智慧掃描與分類 (支援 3 軌道任務)
     # ==========================================
     def scan_for_new_files(self, source_folders_config):
+        """
+        掃描磁碟，區分需要「完整掃描」、「僅算向量」與「精準補算 OCR」的檔案。
+        """
         if not source_folders_config:
             return [], [], [], 0, {}
 
@@ -85,29 +88,33 @@ class IndexerService:
         disk_paths = set()
         
         for f_conf in source_folders_config:
-            folder = f_conf["path"]
+            folder = os.path.normpath(f_conf["path"])
             use_ocr = f_conf.get("use_ocr", True)
-            folder_ocr_map[os.path.normpath(folder)] = use_ocr
+            folder_ocr_map[folder] = use_ocr
             
             if not os.path.exists(folder): continue
             for root, _, files in os.walk(folder):
                 for file in files:
                     if os.path.splitext(file)[1].lower() in valid_extensions:
-                        full_path = os.path.abspath(os.path.join(root, file))
+                        full_path = os.path.normpath(os.path.join(root, file))
                         disk_paths.add(full_path)
 
         conn = self.init_db()
         cursor = conn.cursor()
         
         cursor.execute("SELECT file_path FROM files")
-        db_paths = set(row[0] for row in cursor.fetchall())
+        db_paths = set(os.path.normpath(row[0]) for row in cursor.fetchall())
         
-        cursor.execute("SELECT f.file_path FROM files f JOIN embeddings e ON f.id = e.file_id WHERE e.model_name = ?", (self.model_name,))
-        db_paths_with_emb = set(row[0] for row in cursor.fetchall())
+        cursor.execute("""
+            SELECT f.file_path FROM files f
+            JOIN embeddings e ON f.id = e.file_id
+            WHERE e.model_name = ?
+        """, (self.model_name,))
+        db_paths_with_emb = set(os.path.normpath(row[0]) for row in cursor.fetchall())
         
         # 找出從未執行過 OCR (ocr_text IS NULL) 的圖片
         cursor.execute("SELECT file_path FROM files WHERE ocr_text IS NULL")
-        db_paths_null_ocr = set(row[0] for row in cursor.fetchall())
+        db_paths_null_ocr = set(os.path.normpath(row[0]) for row in cursor.fetchall())
         
         # 處理刪除
         to_delete = db_paths - disk_paths
@@ -131,10 +138,8 @@ class IndexerService:
         potential_ocr_paths = (disk_paths & db_paths) & db_paths_null_ocr
         files_ocr_only = []
         for p in potential_ocr_paths:
-            for folder_path, use_ocr in folder_ocr_map.items():
-                if p.startswith(folder_path) and use_ocr:
-                    files_ocr_only.append(p)
-                    break
+            if self._get_folder_ocr_setting(p, folder_ocr_map):
+                files_ocr_only.append(p)
         
         self.update_folder_stats(conn)
         conn.close()
@@ -142,14 +147,23 @@ class IndexerService:
         return files_full, files_emb_only, files_ocr_only, deleted_count, folder_ocr_map
 
     def _get_folder_ocr_setting(self, path, folder_ocr_map):
-        for folder_path, use_ocr in folder_ocr_map.items():
-            if path.startswith(folder_path): return use_ocr
-        return False
+        """輔助函式：根據圖片路徑判斷其所屬資料夾的 OCR 設定"""
+        path_norm = os.path.normpath(path)
+        matched_folder = ""
+        use_ocr = False
+        for folder_path, setting in folder_ocr_map.items():
+            if path_norm.startswith(folder_path) and len(folder_path) > len(matched_folder):
+                matched_folder = folder_path
+                use_ocr = setting
+        return use_ocr
 
     # ==========================================
     #  功能 2: 三軌 AI 處理
     # ==========================================
     def run_ai_processing(self, files_full, files_emb_only, files_ocr_only, folder_ocr_map, progress_callback=None, shared_model=None, shared_preprocess=None):
+        """
+        三軌道 AI 處理引擎
+        """
         if not files_full and not files_emb_only and not files_ocr_only:
             return
 
@@ -193,14 +207,14 @@ class IndexerService:
                     processed_img = preprocess(img).unsqueeze(0)
                     
                     use_ocr = self._get_folder_ocr_setting(path, folder_ocr_map)
-                    ocr_text_final = None # 預設 NULL
-                    ocr_data_final = None # 預設 NULL
+                    ocr_text_final = None # [關鍵修正] 預設為 NULL (未處理)
+                    ocr_data_final = None 
                     
                     if use_ocr and ocr_engine:
                         ocr_result = ocr_engine.ocr(path, cls=False)
-                        detected_text_list = []
-                        json_data_list = []
                         if ocr_result and ocr_result[0]:
+                            detected_text_list = []
+                            json_data_list = []
                             for line in ocr_result[0]:
                                 box, (text, conf) = line[0], line[1]
                                 detected_text_list.append(text)
@@ -208,7 +222,7 @@ class IndexerService:
                             ocr_text_final = " ".join(detected_text_list)
                             ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
                         else:
-                            ocr_text_final = "[NONE]" # 有找過但沒字
+                            ocr_text_final = "[NONE]" # [關鍵修正] 有找過但沒字
                             ocr_data_final = "[]"
                     
                     batch_images.append(processed_img)
@@ -235,7 +249,6 @@ class IndexerService:
             current_progress += len(batch_paths)
 
         # --- 軌道 B: 切換模型補算 (光速 CLIP) ---
-        # (這裡保持原本的程式碼，因為它很長，為了確保完整性，我重寫精簡版)
         for i in range(0, len(files_emb_only), BATCH_SIZE):
             batch_paths = files_emb_only[i : i + BATCH_SIZE]
             batch_images = []; valid_paths = []
@@ -266,7 +279,7 @@ class IndexerService:
             update_data = []
             for path in batch_paths:
                 try:
-                    ocr_text_final = "[NONE]"
+                    ocr_text_final = "[NONE]" # 預設標記為找過但沒字
                     ocr_data_final = "[]"
                     if ocr_engine:
                         ocr_result = ocr_engine.ocr(path, cls=False)
@@ -284,6 +297,7 @@ class IndexerService:
             
             if update_data:
                 try:
+                    # [關鍵更新] 將計算出的結果更新回 DB，把原本的 NULL 覆蓋掉
                     cursor.executemany('UPDATE files SET ocr_text=?, ocr_data=? WHERE file_path=?', update_data)
                     conn.commit()
                 except sqlite3.Error as e: print(f"Update OCR Error: {e}")
