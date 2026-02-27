@@ -688,56 +688,41 @@ class IndexerWorker(QThread):
             pretrained_name=config.get("pretrained"),
             use_gpu_ocr=config.get("use_gpu_ocr") # <--- [新增] 將 GPU 設定傳遞給底層引擎
         )
-        # [關鍵修正] 從設定的新格式 [{"path":...}] 中提取出純路徑字串
-        raw_folders = config.get("source_folders")
-        self.folders = [f["path"] if isinstance(f, dict) else f for f in raw_folders]
+        #直接傳遞包含 use_ocr 屬性的完整字典列表！
+        self.folders = config.get("source_folders")
 
     def run(self):
         # --- 階段 1: 智慧掃描 ---
         self.status_update.emit("Scanning for file changes...")
         try:
-            files_full, files_emb_only, deleted_count = self.service.scan_for_new_files(self.folders)
-            self.scan_finished.emit(len(files_full) + len(files_emb_only), deleted_count)
+            # [修正] 接收新的回傳值
+            files_full, files_emb_only, files_ocr_only, deleted_count, folder_ocr_map = self.service.scan_for_new_files(self.folders)
+            self.scan_finished.emit(len(files_full) + len(files_emb_only) + len(files_ocr_only), deleted_count)
         except Exception as e:
-            print(f"Scan Error: {e}")
-            self.status_update.emit("Scan failed.")
-            return
+            print(f"Scan Error: {e}"); self.status_update.emit("Scan failed."); return
 
-        # 若無需要處理的檔案，直接結束
-        if not files_full and not files_emb_only:
-            self.status_update.emit("No new images found.")
-            self.all_finished.emit()
-            return
+        if not files_full and not files_emb_only and not files_ocr_only:
+            self.status_update.emit("No new images found."); self.all_finished.emit(); return
 
-        # --- 等待主程式的 AI 引擎就緒 ---
         self.status_update.emit("Waiting for main AI Engine to initialize...")
-        while not (self.main_window.engine and self.main_window.engine.is_ready):
-            time.sleep(1) 
+        while not (self.main_window.engine and self.main_window.engine.is_ready): time.sleep(1) 
 
-        # --- 階段 2: 雙軌 AI 處理 ---
-        total_tasks = len(files_full) + len(files_emb_only)
+        total_tasks = len(files_full) + len(files_emb_only) + len(files_ocr_only)
         self.status_update.emit(f"Indexing {total_tasks} images...")
-        
         def callback(current, total, msg):
-            self.progress_update.emit(current, total)
-            self.status_update.emit(msg)
+            self.progress_update.emit(current, total); self.status_update.emit(msg)
 
         try:
             shared_model = self.main_window.engine.model
             shared_preprocess = self.main_window.engine.preprocess
-
-            # [關鍵] 傳入雙軌參數
+            # [修正] 傳入雙軌參數與 mapping
             self.service.run_ai_processing(
-                files_full, files_emb_only,
-                progress_callback=callback,
-                shared_model=shared_model,          
-                shared_preprocess=shared_preprocess
+                files_full, files_emb_only, files_ocr_only, folder_ocr_map,
+                progress_callback=callback, shared_model=shared_model, shared_preprocess=shared_preprocess
             )
-            self.status_update.emit("Indexing completed.")
-            self.all_finished.emit()
+            self.status_update.emit("Indexing completed."); self.all_finished.emit()
         except Exception as e:
-            print(f"Indexing Error: {e}")
-            self.status_update.emit("Indexing Error.")
+            print(f"Indexing Error: {e}"); self.status_update.emit("Indexing Error.")
 
 class SearchWorker(QThread):
     batch_ready = pyqtSignal(list) 
@@ -1581,17 +1566,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Busy", "Indexing is already in progress.")
             return
 
-    # 2. 確認有資料夾可以掃描 (提取純路徑)
         raw_folders = self.config.get("source_folders")
-        current_folders = [f["path"] if isinstance(f, dict) else f for f in raw_folders]
-        if not current_folders:
+        if not raw_folders:
             QMessageBox.information(self, "No Folders", "No source folders configured.")
             return
 
-        # 3. 確保 Worker 設定是最新的
-        self.indexer_worker.folders = current_folders
+        # 直接將完整的設定字典交給 Worker
+        self.indexer_worker.folders = raw_folders
         
-        # 4. 啟動 Worker
         self.status.setText("Rescanning folders...")
         self.indexer_worker.start()
 
@@ -2052,121 +2034,85 @@ class MainWindow(QMainWindow):
 
 class OnboardingDialog(QDialog):
     """首次開啟的引導面板"""
-    def __init__(self, parent=None):
+    def __init__(self, config, parent=None):
         super().__init__(parent)
+        self.config = config # 接收設定庫
         self.setWindowTitle("歡迎使用 Local AI Search")
         self.setFixedSize(550, 480)
         self.setStyleSheet("background-color: #1e1e1e;")
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(20)
-
-        # 標題
-        title = QLabel("初始化設定")
-        title.setStyleSheet("color: white; font-size: 24px; font-weight: bold;")
+        layout.setContentsMargins(30, 30, 30, 30); layout.setSpacing(20)
+        
+        title = QLabel("初始化設定"); title.setStyleSheet("color: white; font-size: 24px; font-weight: bold;")
         layout.addWidget(title)
+        
+        # 區塊 A: OCR 開關 (條件分流)
+        group_ocr_main = QGroupBox("步驟一：圖片文字辨識 (OCR) 需求")
+        layout_ocr_main = QVBoxLayout(group_ocr_main)
+        self.chk_enable_ocr = QCheckBox("啟用文字辨識 (支援從圖片中搜尋字元，首次啟動將下載語言包)")
+        self.chk_enable_ocr.setChecked(True)
+        self.chk_enable_ocr.setStyleSheet("font-size: 14px; font-weight: bold; color: #60cdff;")
+        layout_ocr_main.addWidget(self.chk_enable_ocr)
+        layout.addWidget(group_ocr_main)
 
-        subtitle = QLabel("請選擇適合您電腦硬體的運作模式。您隨時可以在「設定」中更改。")
-        subtitle.setStyleSheet("color: #aaa; font-size: 14px;")
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
-
-        # 區塊 A: AI 模型
-        group_ai = QGroupBox("區塊 A：AI 語意模型選擇 (CLIP)")
-        layout_ai = QVBoxLayout(group_ai)
-        layout_ai.setSpacing(12)
+        # 區塊 B: OCR 硬體 (動態隱藏)
+        self.ocr_hw_widget = QWidget()
+        layout_ocr_hw = QVBoxLayout(self.ocr_hw_widget); layout_ocr_hw.setContentsMargins(0,0,0,0)
+        group_hw = QGroupBox("步驟二：選擇 OCR 運算硬體 (若無 NVIDIA 顯卡請選 CPU)")
+        layout_hw = QVBoxLayout(group_hw); layout_hw.setSpacing(12)
         
-        self.rb_ai_heavy = QRadioButton("重型模型 (High Accuracy)")
-        self.rb_ai_heavy.setChecked(True) # 預設
-        lbl_heavy_desc = QLabel("精準度最高，需下載約 5GB 模型檔，適合硬碟空間充足者。")
-        lbl_heavy_desc.setStyleSheet("color: #888; font-size: 12px; margin-left: 26px;")
-        
-        self.rb_ai_light = QRadioButton("輕型模型 (High Performance)")
-        lbl_light_desc = QLabel("速度最快，需下載約 1GB 模型檔，適合一般電腦。")
-        lbl_light_desc.setStyleSheet("color: #888; font-size: 12px; margin-left: 26px;")
-        
-        layout_ai.addWidget(self.rb_ai_heavy)
-        layout_ai.addWidget(lbl_heavy_desc)
-        layout_ai.addWidget(self.rb_ai_light)
-        layout_ai.addWidget(lbl_light_desc)
-        layout.addWidget(group_ai)
-
-        # 區塊 B: OCR 引擎
-        group_ocr = QGroupBox("區塊 B：文字辨識引擎 (OCR)")
-        layout_ocr = QVBoxLayout(group_ocr)
-        layout_ocr.setSpacing(12)
-        
-        self.rb_ocr_cpu = QRadioButton("純 CPU 模式 (預設/推薦)")
+        self.rb_ocr_cpu = QRadioButton("純 CPU 模式 (預設/相容性最高)")
         self.rb_ocr_cpu.setChecked(True)
-        lbl_cpu_desc = QLabel("高相容性，任何電腦皆可流暢執行。")
-        lbl_cpu_desc.setStyleSheet("color: #888; font-size: 12px; margin-left: 26px;")
+        self.rb_ocr_gpu = QRadioButton("GPU 加速模式 (僅限配備 CUDA 環境的專業使用者)")
+        self.rb_ocr_gpu.setStyleSheet("color: #ff6b6b;")
+        layout_hw.addWidget(self.rb_ocr_cpu); layout_hw.addWidget(self.rb_ocr_gpu)
+        layout_ocr_hw.addWidget(group_hw)
+        layout.addWidget(self.ocr_hw_widget)
         
-        self.rb_ocr_gpu = QRadioButton("GPU 加速模式")
-        lbl_gpu_desc = QLabel("⚠️ 警告：極速模式。僅限配備 NVIDIA 顯示卡並已安裝 CUDA 環境的專業使用者選擇。環境不符將導致軟體閃退。")
-        lbl_gpu_desc.setStyleSheet("color: #ff6b6b; font-size: 12px; margin-left: 26px;")
-        lbl_gpu_desc.setWordWrap(True)
-        
-        layout_ocr.addWidget(self.rb_ocr_cpu)
-        layout_ocr.addWidget(lbl_cpu_desc)
-        layout_ocr.addWidget(self.rb_ocr_gpu)
-        layout_ocr.addWidget(lbl_gpu_desc)
-        layout.addWidget(group_ocr)
+        self.chk_enable_ocr.toggled.connect(self.ocr_hw_widget.setVisible)
 
         layout.addStretch(1)
-
-        # 底部按鈕
         btn_finish = QPushButton("完成設定並開始使用")
         btn_finish.setFixedHeight(45)
-        btn_finish.setStyleSheet("""
-            QPushButton { background-color: #005fb8; color: white; font-weight: bold; font-size: 16px; border-radius: 6px; }
-            QPushButton:hover { background-color: #0078d4; }
-        """)
-        btn_finish.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_finish.clicked.connect(self.accept) # 關閉對話框
+        btn_finish.setStyleSheet("QPushButton { background-color: #005fb8; color: white; font-weight: bold; font-size: 16px; border-radius: 6px; } QPushButton:hover { background-color: #0078d4; }")
+        btn_finish.clicked.connect(self.accept) 
         layout.addWidget(btn_finish)
+
+    def accept(self):
+        self.config.set("use_ocr", self.chk_enable_ocr.isChecked())
+        self.config.set("use_gpu_ocr", self.rb_ocr_gpu.isChecked())
+        super().accept()
 
 class TransparentDragListWidget(QListWidget):
     """自訂的 ListWidget，用於在拖曳時產生半透明的視覺效果"""
     def startDrag(self, supportedActions):
         item = self.currentItem()
-        if not item:
-            return super().startDrag(supportedActions)
-
-        # 1. 建立拖曳物件與資料
+        if not item: return super().startDrag(supportedActions)
         drag = QDrag(self)
         mimeData = self.model().mimeData(self.selectedIndexes())
         drag.setMimeData(mimeData)
-
-        # 2. 取得該項目的原始截圖
         rect = self.visualItemRect(item)
         pixmap = QPixmap(rect.size())
         pixmap.fill(Qt.GlobalColor.transparent)
         self.render(pixmap, QPoint(), QRegion(rect))
-
-        # 3. 建立新的半透明截圖
         alpha_pixmap = QPixmap(pixmap.size())
         alpha_pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(alpha_pixmap)
-        painter.setOpacity(0.5)  # ★ 這裡設定透明度 (0.5 代表 50% 半透明)
+        painter.setOpacity(0.5)
         painter.drawPixmap(0, 0, pixmap)
         painter.end()
-
         drag.setPixmap(alpha_pixmap)
-
-        # 4. 計算滑鼠抓取點的相對位置，讓拖曳手感更自然
         mouse_pos = self.viewport().mapFromGlobal(QCursor.pos())
         hotspot = mouse_pos - rect.topLeft()
         drag.setHotSpot(hotspot)
-
-        # 5. 執行拖曳
         drag.exec(supportedActions, Qt.DropAction.MoveAction)
 
 class SettingsDialog(QDialog):
     """常駐的主設定面板"""
-    def __init__(self, main_window): # [修改] 接收 main_window
+    def __init__(self, main_window):
         super().__init__(main_window)
-        self.main_window = main_window # 取得主視窗的資源 (config, engine 等)
+        self.main_window = main_window 
         self.setWindowTitle("設定 (Settings)")
         self.resize(800, 600)
         self.setStyleSheet("background-color: #1e1e1e;")
@@ -2213,9 +2159,6 @@ class SettingsDialog(QDialog):
         layout.addWidget(line)
         return page, layout
 
-    # ==========================================
-    # 資料夾管理核心邏輯
-    # ==========================================
     def init_page_folders(self):
         page, layout = self._create_page_container("📁 資料夾管理 (Folders)")
         
@@ -2225,8 +2168,6 @@ class SettingsDialog(QDialog):
         
         self.folder_list = TransparentDragListWidget()
         self.folder_list.setStyleSheet("QListWidget { font-size: 14px; } QListWidget::item { padding: 12px; }")
-        
-        # [關鍵] 開啟拖曳排序功能 (Drag & Drop)
         self.folder_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.folder_list.model().rowsMoved.connect(self.on_folder_order_changed)
         layout.addWidget(self.folder_list)
@@ -2234,30 +2175,21 @@ class SettingsDialog(QDialog):
         btn_layout = QHBoxLayout()
         self.btn_add = QPushButton("+ 新增資料夾")
         self.btn_edit = QPushButton("✏️ 編輯圖示")
+        self.btn_toggle_ocr = QPushButton("🔄 切換 OCR (ON/OFF)") 
         self.btn_del = QPushButton("- 移除選取")
         
-        self.btn_add.setFixedHeight(35)
-        self.btn_edit.setFixedHeight(35)
-        self.btn_del.setFixedHeight(35)
-        # 定義統一的按鈕樣式
-        base_btn_style = """
-            QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; }
-            QPushButton:hover { background-color: #60cdff; color: #111; }
-        """
+        base_btn_style = "QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; padding: 6px; } QPushButton:hover { background-color: #60cdff; color: #111; }"
         self.btn_add.setStyleSheet(base_btn_style)
         self.btn_edit.setStyleSheet(base_btn_style)
-        self.btn_del.setStyleSheet("""
-            QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; }
-            QPushButton:hover { background-color: #ff4747; color: white; border-color: #ff4747; }
-        """)
+        self.btn_toggle_ocr.setStyleSheet(base_btn_style)
+        self.btn_del.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; padding: 6px; } QPushButton:hover { background-color: #ff4747; color: white; border-color: #ff4747; }")
         
         self.btn_add.clicked.connect(self.on_add_folder)
         self.btn_edit.clicked.connect(self.on_edit_icon)
+        self.btn_toggle_ocr.clicked.connect(self.on_toggle_ocr) 
         self.btn_del.clicked.connect(self.on_remove_folder)
         
-        btn_layout.addWidget(self.btn_add)
-        btn_layout.addWidget(self.btn_edit)
-        btn_layout.addWidget(self.btn_del)
+        btn_layout.addWidget(self.btn_add); btn_layout.addWidget(self.btn_edit); btn_layout.addWidget(self.btn_toggle_ocr); btn_layout.addWidget(self.btn_del)
         btn_layout.addStretch(1)
         layout.addLayout(btn_layout)
         
@@ -2267,8 +2199,6 @@ class SettingsDialog(QDialog):
     def refresh_folder_list(self):
         self.folder_list.clear()
         config_folders = self.main_window.config.get("source_folders")
-        
-        # 取得 SQL 中的圖片數量統計
         stats = []
         if self.main_window.engine:
             stats = self.main_window.engine.get_folder_stats()
@@ -2277,20 +2207,43 @@ class SettingsDialog(QDialog):
         for f in config_folders:
             path = f["path"]
             icon = f.get("icon", "")
+            use_ocr = f.get("use_ocr", True)
             count = stats_dict.get(os.path.normpath(path), 0)
             
+            ocr_state = "✅ ON" if use_ocr else "❌ OFF"
             display_icon = f"[{icon}]" if icon else "[🔢]"
-            item = QListWidgetItem(f"{display_icon}  {path}   ({count} 張圖片)")
-            item.setData(Qt.ItemDataRole.UserRole, path) # 把路徑偷偷藏在 Item 裡
+            item = QListWidgetItem(f"{display_icon}  {path}   ({count} 張圖片)   [OCR: {ocr_state}]")
+            item.setData(Qt.ItemDataRole.UserRole, path) 
             self.folder_list.addItem(item)
 
+    def on_toggle_ocr(self):
+        item = self.folder_list.currentItem()
+        if not item: return
+        path = item.data(Qt.ItemDataRole.UserRole)
+        config_folders = self.main_window.config.get("source_folders")
+        
+        current_state = True
+        for f in config_folders:
+            if os.path.normpath(f["path"]) == os.path.normpath(path):
+                current_state = f.get("use_ocr", True)
+                break
+                
+        new_state = not current_state
+        self.main_window.config.update_folder_ocr(path, new_state)
+        self.refresh_folder_list()
+        
+        if new_state:
+            QMessageBox.information(self, "OCR 已啟用", 
+                f"已為資料夾開啟 OCR。\n\n"
+                "💡 若這是您第一次啟用 OCR，系統將在背景自動下載語言包。\n"
+                "請在關閉設定面板後，點擊左側「⟳」重新整理，系統將精準補算缺失的文字紀錄！")
+
     def on_folder_order_changed(self):
-        """拖曳放開後觸發，儲存新排序"""
         ordered_paths = []
         for i in range(self.folder_list.count()):
             ordered_paths.append(self.folder_list.item(i).data(Qt.ItemDataRole.UserRole))
         self.main_window.config.update_folder_order(ordered_paths)
-        self.main_window.refresh_sidebar() # 通知主畫面更新側邊欄
+        self.main_window.refresh_sidebar() 
 
     def on_add_folder(self):
         from PyQt6.QtWidgets import QFileDialog
@@ -2299,7 +2252,7 @@ class SettingsDialog(QDialog):
             if self.main_window.config.add_source_folder(folder):
                 self.refresh_folder_list()
                 self.main_window.refresh_sidebar()
-                QMessageBox.information(self, "Success", "加入成功！關閉設定面板後請點擊側邊欄的「⟳」按鈕進行掃描。")
+                QMessageBox.information(self, "Success", "加入成功！請點擊側邊欄的「⟳」按鈕進行掃描。")
             else:
                 QMessageBox.warning(self, "重複", "此資料夾已經存在。")
 
@@ -2308,29 +2261,21 @@ class SettingsDialog(QDialog):
         if not item: return
         
         path = item.data(Qt.ItemDataRole.UserRole)
-        reply = QMessageBox.question(self, '確認移除', f"確定要移除此資料夾的索引嗎？\n\n{path}\n\n(這只會從軟體中移除，不會刪除您電腦裡的實體照片)", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(self, '確認移除', f"確定要移除此資料夾的索引嗎？\n\n{path}\n\n(這只會從軟體中移除，不會刪除電腦裡的實體照片)", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         
         if reply == QMessageBox.StandardButton.Yes:
-            # 1. 從 config 移除
             self.main_window.config.remove_source_folder(path)
-            
-            # 2. 從資料庫 (SQL) 刪除快取
             if self.main_window.engine:
                 try:
-                    # 開啟外鍵約束 (確保 CASCADE 聯動刪除生效)
                     conn = sqlite3.connect(self.main_window.config.db_path)
                     conn.execute("PRAGMA foreign_keys = ON;") 
                     cursor = conn.cursor()
-                    
-                    # [關鍵修復] 改為刪除 files 表，底層的 embeddings 會自動被 ON DELETE CASCADE 清理得乾乾淨淨！
                     cursor.execute("DELETE FROM files WHERE folder_path = ?", (path,))
-                    
                     conn.commit()
                     conn.close()
-                    self.main_window.engine.load_data_from_db() # 重新整理記憶體資料
+                    self.main_window.engine.load_data_from_db() 
                 except Exception as e:
                     print(f"Delete DB error: {e}")
-            
             self.refresh_folder_list()
             self.main_window.refresh_sidebar()
 
@@ -2339,38 +2284,28 @@ class SettingsDialog(QDialog):
         if not item: return
         path = item.data(Qt.ItemDataRole.UserRole)
         
-        # 跳出輸入框
         icon, ok = QInputDialog.getText(self, "編輯圖示", "請輸入 1 個 Emoji (或最多 2 個英數字)：\n建議按 Win + . 叫出表情符號小鍵盤")
         if ok:
             icon = icon.strip()
-            # 防呆：避免輸入太長導致選單方塊爆掉 (Emoji 算多字元，所以抓 4 個長度緩衝)
-            if len(icon) > 4:
-                icon = icon[:4]
-                
+            if len(icon) > 4: icon = icon[:4]
             self.main_window.config.update_folder_icon(path, icon)
             self.refresh_folder_list()
             self.main_window.refresh_sidebar()
 
-    # ==========================================
-    # AI 引擎與 GPU 檢測邏輯
-    # ==========================================
     def init_page_ai(self):
         page, layout = self._create_page_container("🧠 AI 引擎設定 (AI Engine)")
         
-        # 定義官方推薦模型字典
         self.ai_models = {
             "🟢 標準模式 (ViT-B-32) - 速度極快": {"model": "ViT-B-32", "pre": "laion2b_s34b_b79k"},
             "🔵 精準模式 (ViT-H-14) - 準確度高": {"model": "ViT-H-14", "pre": "laion2b_s32b_b79k"},
             "🟣 多語系模式 (xlm-roberta) - 支援中文": {"model": "xlm-roberta-large-ViT-H-14", "pre": "frozen_laion5b_s13b_b90k"}
         }
         
-        # 1. AI 模型選擇
         layout.addWidget(QLabel("1. 語意模型 (CLIP) 選擇："))
         self.combo_clip = QComboBox()
         self.combo_clip.setFixedHeight(35)
         self.combo_clip.addItems(list(self.ai_models.keys()))
         
-        # 尋找當前設定並選中
         current_model = self.main_window.config.get("model_name")
         for text, params in self.ai_models.items():
             if params["model"] == current_model:
@@ -2380,13 +2315,11 @@ class SettingsDialog(QDialog):
         self.combo_clip.currentTextChanged.connect(self.on_ai_model_changed)
         layout.addWidget(self.combo_clip)
         
-        # 動態顯示該模型的索引狀態
         self.lbl_model_stats = QLabel("")
         self.lbl_model_stats.setStyleSheet("color: #aaa; font-size: 13px; margin-bottom: 10px; padding-left: 5px;")
         layout.addWidget(self.lbl_model_stats)
-        self.on_ai_model_changed(self.combo_clip.currentText()) # 初始化文字
+        self.on_ai_model_changed(self.combo_clip.currentText()) 
         
-        # 2. OCR 引擎選擇
         layout.addWidget(QLabel("2. 文字辨識 (OCR) 引擎："))
         self.combo_ocr = QComboBox()
         self.combo_ocr.setFixedHeight(35)
@@ -2394,20 +2327,14 @@ class SettingsDialog(QDialog):
         
         is_gpu = self.main_window.config.get("use_gpu_ocr")
         self.combo_ocr.setCurrentIndex(1 if is_gpu else 0)
-        
-        # [新增] 綁定下拉選單的切換事件
         self.combo_ocr.currentIndexChanged.connect(self.on_ocr_mode_changed)
         layout.addWidget(self.combo_ocr)
         
-        # [新增] 顯示 OCR 狀態的動態標籤
         self.lbl_ocr_stats = QLabel("")
         self.lbl_ocr_stats.setStyleSheet("color: #aaa; font-size: 13px; margin-bottom: 10px; padding-left: 5px;")
         layout.addWidget(self.lbl_ocr_stats)
-        
-        # [新增] 介面初始化時，先手動觸發一次狀態更新
         self.on_ocr_mode_changed(self.combo_ocr.currentIndex())
         
-        # 3. 儲存按鈕
         layout.addStretch(1)
         btn_layout = QHBoxLayout()
         btn_layout.addStretch(1)
@@ -2424,25 +2351,20 @@ class SettingsDialog(QDialog):
         self.stack.addWidget(page)
 
     def on_ocr_mode_changed(self, index):
-        """當切換 OCR 模式時，動態檢查 CUDA 支援並顯示狀態"""
         wants_gpu = (index == 1)
-        # 抓取目前 config 中真正套用的設定
         current_active_gpu = self.main_window.config.get("use_gpu_ocr")
         is_active = (wants_gpu == current_active_gpu)
         
-        # 判斷是否為目前運作中的設定
         if is_active:
             tag = "<span style='color: #4caf50; font-size: 14px;'><b>[✅ 目前運作中]</b></span>"
         else:
             tag = "<span style='color: #ff9800; font-size: 14px;'><b>[👀 僅檢視狀態 (尚未套用)]</b></span>"
             
         if wants_gpu:
-            # 呼叫您原本寫好的超強 GPU 檢測函式
             passed, msg = self.check_gpu_environment()
             if passed:
                 desc = "🚀 狀態：已成功偵測到 CUDA 環境，支援 GPU 極速辨識！"
             else:
-                # 偵測失敗，把標籤變成紅色的警告
                 tag = "<span style='color: #ff4747; font-size: 14px;'><b>[⚠️ 環境不支援]</b></span>"
                 desc = f"❌ 狀態：{msg}<br>（若您強制儲存，系統將會自動為您降級為 CPU 模式以防止崩潰）"
         else:
@@ -2451,10 +2373,7 @@ class SettingsDialog(QDialog):
         self.lbl_ocr_stats.setText(f"{tag}<br>{desc}")
 
     def on_ai_model_changed(self, selected_text):
-        """當切換模型選單時，動態查詢資料庫統計與狀態"""
         target_model = self.ai_models[selected_text]["model"]
-        
-        # [新增] 抓取目前「真正正在運作」的模型
         current_active_model = self.main_window.config.get("model_name")
         is_active = (target_model == current_active_model)
         
@@ -2468,18 +2387,13 @@ class SettingsDialog(QDialog):
             conn.close()
         except: pass
         
-        # ==========================================
-        # [新增] 根據是否為目前模型，給予不同的視覺與文字提示
-        # ==========================================
         if is_active:
-            # 綠色標籤代表使用中
             tag = "<span style='color: #4caf50; font-size: 14px;'><b>[✅ 目前運作中的模型]</b></span>"
             if total_indexed > 0:
                 desc = f"📊 狀態：已為 <b>{total_indexed}</b> 張圖片建立索引，可正常搜尋。"
             else:
                 desc = f"⚠️ 狀態：目前 <b>0</b> 張索引。<br>請關閉設定面板，點擊左側「⟳」按鈕來產生專屬索引。"
         else:
-            # 橘黃色標籤代表只是在偷看狀態，還沒套用
             tag = "<span style='color: #ff9800; font-size: 14px;'><b>[👀 僅檢視狀態 (尚未套用)]</b></span>"
             if total_indexed > 0:
                 desc = f"📊 狀態：此備用模型庫內已有 <b>{total_indexed}</b> 張圖片的索引。<br>點擊下方「套用並重啟」後即可無縫切換使用。"
@@ -2489,14 +2403,11 @@ class SettingsDialog(QDialog):
         self.lbl_model_stats.setText(f"{tag}<br>{desc}")
 
     def check_gpu_environment(self):
-        """三道關卡深度檢查 GPU 環境"""
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            # 關卡 1: 檢查 PyTorch 與 CUDA 驅動
             if not torch.cuda.is_available():
                 return False, "您的設備未安裝 NVIDIA 顯示卡，或系統未安裝相應的 CUDA 驅動程式。"
             
-            # 關卡 2: 檢查 PaddlePaddle 是否支援 GPU
             try:
                 import paddle
                 if not paddle.device.is_compiled_with_cuda():
@@ -2511,29 +2422,25 @@ class SettingsDialog(QDialog):
             QApplication.restoreOverrideCursor()
 
     def on_save_ai_settings(self):
-        # 1. 取得選擇的模型
         selected_text = self.combo_clip.currentText()
         model_data = self.ai_models[selected_text]
         new_model = model_data["model"]
         new_pre = model_data["pre"]
         
-        # 2. 處理 GPU 設定與檢測
         wants_gpu = (self.combo_ocr.currentIndex() == 1)
         if wants_gpu:
             passed, msg = self.check_gpu_environment()
             if not passed:
                 QMessageBox.critical(self, "GPU 檢測失敗", f"<b>無法啟用 GPU 加速模式。</b><br><br>原因：{msg}<br><br>系統將自動為您切換回純 CPU 模式。")
                 self.combo_ocr.setCurrentIndex(0)
-                return # 擋下儲存，讓使用者確認
+                return 
         
-        # 3. 寫入 Config (使用新增的 set 方法)
         self.main_window.config.set("model_name", new_model)
         self.main_window.config.set("pretrained", new_pre)
         self.main_window.config.set("use_gpu_ocr", wants_gpu)
         
-        # 4. 提示重啟
         QMessageBox.information(self, "設定已儲存", "AI 引擎設定已更新！\n\n程式將會關閉，請您手動重新啟動以載入新模型。")
-        QApplication.quit() # 強制關閉程式
+        QApplication.quit() 
 
     def init_page_appearance(self):
         page, layout = self._create_page_container("🖥️ 介面與顯示 (Appearance)")
@@ -2546,12 +2453,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel("Local AI Search v1.0.0")); layout.addStretch(1); self.stack.addWidget(page)
 
 if __name__ == "__main__":
-    # 1. 初始化 ConfigManager (這會自動建立 config.json 如果不存在)
     app_config = ConfigManager()
-
-    # (可選) 檢查是否為第一次執行，如果是，可以在這裡跳出提示
-    if not app_config.get("source_folders"):
-        print("提示：目前沒有設定圖片來源資料夾，請在 config.json 中設定或之後透過介面新增。")
 
     if hasattr(Qt.ApplicationAttribute, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
@@ -2562,11 +2464,9 @@ if __name__ == "__main__":
     is_first_run = not app_config.get("source_folders")
     
     if is_first_run:
-        # [新增] 在顯示主視窗前，強制彈出引導面板
-        onboarding = OnboardingDialog()
-        onboarding.exec() # 會卡在這裡直到使用者點擊「完成設定並開始使用」
+        onboarding = OnboardingDialog(app_config)
+        onboarding.exec() 
 
-    # 2. 將 config 傳入主視窗
     w = MainWindow(app_config) 
     w.show()
     sys.exit(app.exec())

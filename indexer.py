@@ -73,44 +73,43 @@ class IndexerService:
         return conn
 
     # ==========================================
-    #  功能 1: 智慧掃描與分類
+    #  功能 1: 智慧掃描與分類 (支援 3 軌道任務)
     # ==========================================
-    def scan_for_new_files(self, source_folders):
-        """
-        掃描磁碟，區分需要「完整掃描」與「僅算向量」的檔案。
-        :return: (files_full: list, files_emb_only: list, deleted_count: int)
-        """
-        if not source_folders:
-            return [], [], 0
+    def scan_for_new_files(self, source_folders_config):
+        if not source_folders_config:
+            return [], [], [], 0, {}
 
-        conn = self.init_db()
-        cursor = conn.cursor()
-        
-        # 1. 取得 DB 內所有的實體檔案路徑
-        cursor.execute("SELECT file_path FROM files")
-        db_paths = set(row[0] for row in cursor.fetchall())
-        
-        # 2. 取得「當前模型」已經算過向量的檔案路徑
-        cursor.execute("""
-            SELECT f.file_path FROM files f
-            JOIN embeddings e ON f.id = e.file_id
-            WHERE e.model_name = ?
-        """, (self.model_name,))
-        db_paths_with_emb = set(row[0] for row in cursor.fetchall())
-        
-        # 3. 掃描實體硬碟
+        # 建立快速查詢表 (路徑 -> 是否使用 OCR)
+        folder_ocr_map = {}
         valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
         disk_paths = set()
         
-        for folder in source_folders:
+        for f_conf in source_folders_config:
+            folder = f_conf["path"]
+            use_ocr = f_conf.get("use_ocr", True)
+            folder_ocr_map[os.path.normpath(folder)] = use_ocr
+            
             if not os.path.exists(folder): continue
             for root, _, files in os.walk(folder):
                 for file in files:
                     if os.path.splitext(file)[1].lower() in valid_extensions:
                         full_path = os.path.abspath(os.path.join(root, file))
                         disk_paths.add(full_path)
+
+        conn = self.init_db()
+        cursor = conn.cursor()
         
-        # 4. 處理刪除 (硬碟已經沒有的圖，從 files 表刪除，對應的向量會自動被 CASCADE 清除)
+        cursor.execute("SELECT file_path FROM files")
+        db_paths = set(row[0] for row in cursor.fetchall())
+        
+        cursor.execute("SELECT f.file_path FROM files f JOIN embeddings e ON f.id = e.file_id WHERE e.model_name = ?", (self.model_name,))
+        db_paths_with_emb = set(row[0] for row in cursor.fetchall())
+        
+        # 找出從未執行過 OCR (ocr_text IS NULL) 的圖片
+        cursor.execute("SELECT file_path FROM files WHERE ocr_text IS NULL")
+        db_paths_null_ocr = set(row[0] for row in cursor.fetchall())
+        
+        # 處理刪除
         to_delete = db_paths - disk_paths
         deleted_count = len(to_delete)
         if to_delete:
@@ -122,176 +121,174 @@ class IndexerService:
                 cursor.execute(f"DELETE FROM files WHERE file_path IN ({placeholders})", batch)
             conn.commit()
             
-        # 5. 情境一：全新圖片 (硬碟有，但 DB files 裡面完全沒有) -> 需要跑 OCR + CLIP
+        # 軌道 A：全新圖片
         files_full = list(disk_paths - db_paths)
         
-        # 6. 情境二：切換模型 (硬碟有，DB files 也有 OCR 了，但當前模型沒算過) -> 只要跑 CLIP
+        # 軌道 B：僅補算 CLIP 向量
         files_emb_only = list((disk_paths & db_paths) - db_paths_with_emb)
         
-        # 更新目前模型的統計
+        # 軌道 C：精準補算 OCR (硬碟有、資料庫有、OCR 為 NULL，且該資料夾現在設定為 ON)
+        potential_ocr_paths = (disk_paths & db_paths) & db_paths_null_ocr
+        files_ocr_only = []
+        for p in potential_ocr_paths:
+            for folder_path, use_ocr in folder_ocr_map.items():
+                if p.startswith(folder_path) and use_ocr:
+                    files_ocr_only.append(p)
+                    break
+        
         self.update_folder_stats(conn)
         conn.close()
         
-        return files_full, files_emb_only, deleted_count
+        return files_full, files_emb_only, files_ocr_only, deleted_count, folder_ocr_map
+
+    def _get_folder_ocr_setting(self, path, folder_ocr_map):
+        for folder_path, use_ocr in folder_ocr_map.items():
+            if path.startswith(folder_path): return use_ocr
+        return False
 
     # ==========================================
-    #  功能 2: 雙軌 AI 處理
+    #  功能 2: 三軌 AI 處理
     # ==========================================
-    def run_ai_processing(self, files_full, files_emb_only, progress_callback=None, shared_model=None, shared_preprocess=None):
-        """
-        對指定檔案執行 AI 索引 (分為完整處理與僅補算特徵)
-        """
-        if not files_full and not files_emb_only:
+    def run_ai_processing(self, files_full, files_emb_only, files_ocr_only, folder_ocr_map, progress_callback=None, shared_model=None, shared_preprocess=None):
+        if not files_full and not files_emb_only and not files_ocr_only:
             return
 
-        conn = self._get_conn() # 這裡也要用 _get_conn 確保外鍵開啟
+        conn = self._get_conn() 
         cursor = conn.cursor()
-        
-        total_files = len(files_full) + len(files_emb_only)
+        total_files = len(files_full) + len(files_emb_only) + len(files_ocr_only)
         current_progress = 0
         
-        # 載入模型 (如果只有 files_emb_only，OCR 就不需要載入，省資源！)
+        # 判斷是否需要喚醒 OCR 引擎 (省記憶體關鍵)
+        need_ocr = bool(files_ocr_only)
+        if not need_ocr:
+            for f in files_full:
+                if self._get_folder_ocr_setting(f, folder_ocr_map):
+                    need_ocr = True
+                    break
+                    
         try:
             if progress_callback: progress_callback(0, total_files, "Loading AI Models...")
-            
             if shared_model and shared_preprocess:
                 print("[Indexer] Using shared OpenCLIP model from main engine.")
                 model = shared_model
                 preprocess = shared_preprocess
-                ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False, use_gpu=self.use_gpu_ocr) if files_full else None
+                ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False, use_gpu=self.use_gpu_ocr) if need_ocr else None
             else:
-                model, preprocess, ocr_engine = self.load_ai_models(need_ocr=bool(files_full))
-                
+                model, preprocess, ocr_engine = self.load_ai_models(need_ocr=need_ocr)
         except Exception as e:
-            print(f"Model Load Failed: {e}")
-            conn.close()
-            return
+            print(f"Model Load Failed: {e}"); conn.close(); return
 
         BATCH_SIZE = 4
         
-        # ---------------------------------------------------------
-        #  階段 A: 完整處理全新圖片 (OCR + CLIP)
-        # ---------------------------------------------------------
+        # --- 軌道 A: 全新圖片 (OCR + CLIP) ---
         for i in range(0, len(files_full), BATCH_SIZE):
             batch_paths = files_full[i : i + BATCH_SIZE]
             batch_images = []
             files_insert_data = []
-            
-            if progress_callback: progress_callback(current_progress, total_files, f"Full AI (OCR+CLIP): {current_progress}/{total_files}...")
+            if progress_callback: progress_callback(current_progress, total_files, f"Full AI: {current_progress}/{total_files}...")
 
             for path in batch_paths:
                 try:
                     img = Image.open(path).convert('RGB')
                     processed_img = preprocess(img).unsqueeze(0)
                     
-                    # 跑 OCR
-                    ocr_text_final = ""
-                    ocr_data_final = "[]"
-                    if ocr_engine:
+                    use_ocr = self._get_folder_ocr_setting(path, folder_ocr_map)
+                    ocr_text_final = None # 預設 NULL
+                    ocr_data_final = None # 預設 NULL
+                    
+                    if use_ocr and ocr_engine:
                         ocr_result = ocr_engine.ocr(path, cls=False)
                         detected_text_list = []
                         json_data_list = []
                         if ocr_result and ocr_result[0]:
                             for line in ocr_result[0]:
                                 box, (text, conf) = line[0], line[1]
-                                clean_box = [[int(pt[0]), int(pt[1])] for pt in box]
                                 detected_text_list.append(text)
-                                json_data_list.append({"box": clean_box, "text": text, "conf": round(float(conf), 4)})
-                        ocr_text_final = " ".join(detected_text_list)
-                        ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
+                                json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
+                            ocr_text_final = " ".join(detected_text_list)
+                            ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
+                        else:
+                            ocr_text_final = "[NONE]" # 有找過但沒字
+                            ocr_data_final = "[]"
                     
                     batch_images.append(processed_img)
-                    files_insert_data.append((
-                        path, os.path.basename(path), os.path.dirname(path), 
-                        os.path.getmtime(path), ocr_text_final, ocr_data_final
-                    ))
-                except Exception as e:
-                    print(f"Skipping {path}: {e}")
-                    continue
+                    files_insert_data.append((path, os.path.basename(path), os.path.dirname(path), os.path.getmtime(path), ocr_text_final, ocr_data_final))
+                except Exception as e: continue
 
-            if not batch_images: 
-                current_progress += len(batch_paths)
-                continue
+            if batch_images:
+                try:
+                    cursor.executemany('INSERT OR IGNORE INTO files (file_path, filename, folder_path, mtime, ocr_text, ocr_data) VALUES (?, ?, ?, ?, ?, ?)', files_insert_data)
+                    conn.commit()
+                except sqlite3.Error as e: print(f"DB Error: {e}")
 
-            # 1. 寫入 files 表
-            try:
-                cursor.executemany('''
-                    INSERT OR IGNORE INTO files (file_path, filename, folder_path, mtime, ocr_text, ocr_data)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', files_insert_data)
-                conn.commit()
-            except sqlite3.Error as e: print(f"DB Insert files Error: {e}")
-
-            # 2. 跑 CLIP 算向量
-            embeddings_list = self._compute_clip(model, batch_images)
-            
-            # 3. 從 DB 查回剛才寫入的 file_id
-            paths_tuple = tuple(p[0] for p in files_insert_data)
-            placeholders = ','.join(['?'] * len(paths_tuple))
-            cursor.execute(f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders})", paths_tuple)
-            id_map = {row[0]: row[1] for row in cursor.fetchall()}
-            
-            # 4. 寫入 embeddings 表
-            emb_insert_data = []
-            for idx, item in enumerate(files_insert_data):
-                path = item[0]
-                file_id = id_map.get(path)
-                if file_id is not None:
-                    emb_insert_data.append((file_id, self.model_name, embeddings_list[idx]))
-            
-            try:
-                cursor.executemany('INSERT OR IGNORE INTO embeddings (file_id, model_name, embedding) VALUES (?, ?, ?)', emb_insert_data)
-                conn.commit()
-            except sqlite3.Error: pass
-
+                embeddings_list = self._compute_clip(model, batch_images)
+                paths_tuple = tuple(p[0] for p in files_insert_data)
+                placeholders = ','.join(['?'] * len(paths_tuple))
+                cursor.execute(f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders})", paths_tuple)
+                id_map = {row[0]: row[1] for row in cursor.fetchall()}
+                
+                emb_insert_data = [(id_map.get(item[0]), self.model_name, embeddings_list[idx]) for idx, item in enumerate(files_insert_data) if id_map.get(item[0]) is not None]
+                try:
+                    cursor.executemany('INSERT OR IGNORE INTO embeddings (file_id, model_name, embedding) VALUES (?, ?, ?)', emb_insert_data)
+                    conn.commit()
+                except sqlite3.Error: pass
             current_progress += len(batch_paths)
 
-        # ---------------------------------------------------------
-        #  階段 B: 僅補算切換模型的向量 (光速 CLIP)
-        # ---------------------------------------------------------
+        # --- 軌道 B: 切換模型補算 (光速 CLIP) ---
+        # (這裡保持原本的程式碼，因為它很長，為了確保完整性，我重寫精簡版)
         for i in range(0, len(files_emb_only), BATCH_SIZE):
             batch_paths = files_emb_only[i : i + BATCH_SIZE]
-            batch_images = []
-            valid_paths = []
-            
-            if progress_callback: progress_callback(current_progress, total_files, f"Fast CLIP (No OCR): {current_progress}/{total_files}...")
-
+            batch_images = []; valid_paths = []
+            if progress_callback: progress_callback(current_progress, total_files, f"Fast CLIP: {current_progress}/{total_files}...")
             for path in batch_paths:
                 try:
                     img = Image.open(path).convert('RGB')
-                    processed_img = preprocess(img).unsqueeze(0)
-                    batch_images.append(processed_img)
-                    valid_paths.append(path)
-                except Exception as e: continue
+                    batch_images.append(preprocess(img).unsqueeze(0)); valid_paths.append(path)
+                except Exception: continue
 
-            if not batch_images: 
-                current_progress += len(batch_paths)
-                continue
-
-            # 1. 跑 CLIP 算向量
-            embeddings_list = self._compute_clip(model, batch_images)
-            
-            # 2. 查回 file_id (因為它們已經在 files 表裡了)
-            paths_tuple = tuple(valid_paths)
-            placeholders = ','.join(['?'] * len(paths_tuple))
-            cursor.execute(f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders})", paths_tuple)
-            id_map = {row[0]: row[1] for row in cursor.fetchall()}
-            
-            # 3. 寫入 embeddings 表
-            emb_insert_data = []
-            for idx, path in enumerate(valid_paths):
-                file_id = id_map.get(path)
-                if file_id is not None:
-                    emb_insert_data.append((file_id, self.model_name, embeddings_list[idx]))
-            
-            try:
-                cursor.executemany('INSERT OR IGNORE INTO embeddings (file_id, model_name, embedding) VALUES (?, ?, ?)', emb_insert_data)
-                conn.commit()
-            except sqlite3.Error: pass
-
+            if batch_images:
+                embeddings_list = self._compute_clip(model, batch_images)
+                paths_tuple = tuple(valid_paths)
+                placeholders = ','.join(['?'] * len(paths_tuple))
+                cursor.execute(f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders})", paths_tuple)
+                id_map = {row[0]: row[1] for row in cursor.fetchall()}
+                emb_insert_data = [(id_map.get(p), self.model_name, embeddings_list[idx]) for idx, p in enumerate(valid_paths) if id_map.get(p) is not None]
+                try:
+                    cursor.executemany('INSERT OR IGNORE INTO embeddings (file_id, model_name, embedding) VALUES (?, ?, ?)', emb_insert_data)
+                    conn.commit()
+                except sqlite3.Error: pass
             current_progress += len(batch_paths)
 
-        # 最後更新一次統計
+        # --- 軌道 C: 精準補算文字 (OCR Only) ---
+        for i in range(0, len(files_ocr_only), BATCH_SIZE):
+            batch_paths = files_ocr_only[i : i + BATCH_SIZE]
+            if progress_callback: progress_callback(current_progress, total_files, f"Backfill OCR: {current_progress}/{total_files}...")
+            update_data = []
+            for path in batch_paths:
+                try:
+                    ocr_text_final = "[NONE]"
+                    ocr_data_final = "[]"
+                    if ocr_engine:
+                        ocr_result = ocr_engine.ocr(path, cls=False)
+                        if ocr_result and ocr_result[0]:
+                            detected_text_list = []
+                            json_data_list = []
+                            for line in ocr_result[0]:
+                                box, (text, conf) = line[0], line[1]
+                                detected_text_list.append(text)
+                                json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
+                            ocr_text_final = " ".join(detected_text_list)
+                            ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
+                    update_data.append((ocr_text_final, ocr_data_final, path))
+                except Exception as e: print(f"Skipping OCR {path}: {e}")
+            
+            if update_data:
+                try:
+                    cursor.executemany('UPDATE files SET ocr_text=?, ocr_data=? WHERE file_path=?', update_data)
+                    conn.commit()
+                except sqlite3.Error as e: print(f"Update OCR Error: {e}")
+            current_progress += len(batch_paths)
+
         self.update_folder_stats(conn)
         conn.close()
 

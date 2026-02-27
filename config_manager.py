@@ -27,12 +27,15 @@ class ConfigManager:
                     if k not in loaded:
                         loaded[k] = v
                 
-                # [向下相容無痛轉移] 將舊的字串列表轉為新的物件列表
+                # [向下相容無痛轉移] 將舊的字串列表轉為新的物件列表，並預設帶上 global 的 use_ocr 屬性
                 new_folders = []
                 for item in loaded.get("source_folders", []):
                     if isinstance(item, str):
-                        new_folders.append({"path": item, "icon": ""})
+                        new_folders.append({"path": item, "icon": "", "use_ocr": loaded.get("use_ocr", True)})
                     else:
+                        # 確保現有物件也補上 use_ocr 屬性
+                        if "use_ocr" not in item:
+                            item["use_ocr"] = loaded.get("use_ocr", True)
                         new_folders.append(item)
                 loaded["source_folders"] = new_folders
                 
@@ -63,9 +66,19 @@ class ConfigManager:
         current = self.config.get("source_folders", [])
         if any(os.path.normpath(f["path"]) == folder_path for f in current):
             return False
-        current.append({"path": folder_path, "icon": ""})
+        # 新增時預設跟隨全域設定
+        current.append({"path": folder_path, "icon": "", "use_ocr": self.config.get("use_ocr", True)})
         self.set("source_folders", current)
         return True
+
+    # [新增] 用於動態切換單一資料夾的 OCR 狀態
+    def update_folder_ocr(self, folder_path, use_ocr):
+        folder_path = os.path.normpath(folder_path)
+        for f in self.config.get("source_folders", []):
+            if os.path.normpath(f["path"]) == folder_path:
+                f["use_ocr"] = use_ocr
+                break
+        self.save_config()
 
     def remove_source_folder(self, folder_path):
         folder_path = os.path.normpath(folder_path)
