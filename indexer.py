@@ -188,7 +188,7 @@ class IndexerService:
                     ocr_text_final = ""
                     ocr_data_final = "[]"
                     if ocr_engine:
-                        ocr_result = ocr_engine.ocr(path, cls=True)
+                        ocr_result = ocr_engine.ocr(path, cls=False)
                         detected_text_list = []
                         json_data_list = []
                         if ocr_result and ocr_result[0]:
@@ -313,6 +313,11 @@ class IndexerService:
         )
         model.eval()
         ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False, use_gpu=self.use_gpu_ocr) if need_ocr else None
+
+        # [新增] 攔截日誌：強制將 ppocr 的日誌層級設為 ERROR，這樣 WARNING 就不會顯示了
+        if ocr_engine:
+            logging.getLogger("ppocr").setLevel(logging.ERROR)
+
         return model, preprocess, ocr_engine
 
     def update_folder_stats(self, conn):
