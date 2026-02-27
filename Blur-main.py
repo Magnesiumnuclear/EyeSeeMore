@@ -2394,7 +2394,18 @@ class SettingsDialog(QDialog):
         
         is_gpu = self.main_window.config.get("use_gpu_ocr")
         self.combo_ocr.setCurrentIndex(1 if is_gpu else 0)
+        
+        # [新增] 綁定下拉選單的切換事件
+        self.combo_ocr.currentIndexChanged.connect(self.on_ocr_mode_changed)
         layout.addWidget(self.combo_ocr)
+        
+        # [新增] 顯示 OCR 狀態的動態標籤
+        self.lbl_ocr_stats = QLabel("")
+        self.lbl_ocr_stats.setStyleSheet("color: #aaa; font-size: 13px; margin-bottom: 10px; padding-left: 5px;")
+        layout.addWidget(self.lbl_ocr_stats)
+        
+        # [新增] 介面初始化時，先手動觸發一次狀態更新
+        self.on_ocr_mode_changed(self.combo_ocr.currentIndex())
         
         # 3. 儲存按鈕
         layout.addStretch(1)
@@ -2411,6 +2422,33 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn_layout)
         
         self.stack.addWidget(page)
+
+    def on_ocr_mode_changed(self, index):
+        """當切換 OCR 模式時，動態檢查 CUDA 支援並顯示狀態"""
+        wants_gpu = (index == 1)
+        # 抓取目前 config 中真正套用的設定
+        current_active_gpu = self.main_window.config.get("use_gpu_ocr")
+        is_active = (wants_gpu == current_active_gpu)
+        
+        # 判斷是否為目前運作中的設定
+        if is_active:
+            tag = "<span style='color: #4caf50; font-size: 14px;'><b>[✅ 目前運作中]</b></span>"
+        else:
+            tag = "<span style='color: #ff9800; font-size: 14px;'><b>[👀 僅檢視狀態 (尚未套用)]</b></span>"
+            
+        if wants_gpu:
+            # 呼叫您原本寫好的超強 GPU 檢測函式
+            passed, msg = self.check_gpu_environment()
+            if passed:
+                desc = "🚀 狀態：已成功偵測到 CUDA 環境，支援 GPU 極速辨識！"
+            else:
+                # 偵測失敗，把標籤變成紅色的警告
+                tag = "<span style='color: #ff4747; font-size: 14px;'><b>[⚠️ 環境不支援]</b></span>"
+                desc = f"❌ 狀態：{msg}<br>（若您強制儲存，系統將會自動為您降級為 CPU 模式以防止崩潰）"
+        else:
+            desc = "💻 狀態：純 CPU 模式，相容性最高，不消耗顯示卡資源。"
+            
+        self.lbl_ocr_stats.setText(f"{tag}<br>{desc}")
 
     def on_ai_model_changed(self, selected_text):
         """當切換模型選單時，動態查詢資料庫統計與狀態"""
