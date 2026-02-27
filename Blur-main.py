@@ -685,7 +685,8 @@ class IndexerWorker(QThread):
         self.service = IndexerService(
             db_path=config.db_path,
             model_name=config.get("model_name"),
-            pretrained_name=config.get("pretrained")
+            pretrained_name=config.get("pretrained"),
+            use_gpu_ocr=config.get("use_gpu_ocr") # <--- [新增] 將 GPU 設定傳遞給底層引擎
         )
         # [關鍵修正] 從設定的新格式 [{"path":...}] 中提取出純路徑字串
         raw_folders = config.get("source_folders")

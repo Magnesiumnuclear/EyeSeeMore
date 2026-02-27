@@ -10,10 +10,11 @@ import datetime
 from paddleocr import PaddleOCR
 
 class IndexerService:
-    def __init__(self, db_path, model_name='xlm-roberta-large-ViT-H-14', pretrained_name='frozen_laion5b_s13b_b90k'):
+    def __init__(self, db_path, model_name='xlm-roberta-large-ViT-H-14', pretrained_name='frozen_laion5b_s13b_b90k', use_gpu_ocr=False):
         self.db_path = db_path
         self.model_name = model_name
         self.pretrained_name = pretrained_name
+        self.use_gpu_ocr = bool(use_gpu_ocr) # <--- 儲存使用者的 GPU 設定
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         logging.getLogger("ppocr").setLevel(logging.ERROR)
@@ -157,7 +158,7 @@ class IndexerService:
                 print("[Indexer] Using shared OpenCLIP model from main engine.")
                 model = shared_model
                 preprocess = shared_preprocess
-                ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False) if files_full else None
+                ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False, use_gpu=self.use_gpu_ocr) if files_full else None
             else:
                 model, preprocess, ocr_engine = self.load_ai_models(need_ocr=bool(files_full))
                 
@@ -311,7 +312,7 @@ class IndexerService:
             self.model_name, pretrained=self.pretrained_name, device=self.device
         )
         model.eval()
-        ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False) if need_ocr else None
+        ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False, use_gpu=self.use_gpu_ocr) if need_ocr else None
         return model, preprocess, ocr_engine
 
     def update_folder_stats(self, conn):
