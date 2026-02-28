@@ -1,4 +1,7 @@
 import os
+# [新增] 在最頂端限制 Paddle 的記憶體貪婪策略 (Auto Growth)
+os.environ["FLAGS_allocator_strategy"] = "auto_growth"
+
 import sqlite3
 import torch
 from PIL import Image
@@ -17,6 +20,19 @@ class IndexerService:
         self.use_gpu_ocr = bool(use_gpu_ocr) # <--- 儲存使用者的 GPU 設定
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
+        # ==========================================
+        # [關鍵修復] 根據使用者設定，提前攔截 Paddle 的全域硬體佔用
+        # ==========================================
+        try:
+            import paddle
+            if not self.use_gpu_ocr:
+                paddle.device.set_device('cpu') # 強制將 Paddle 全域設為 CPU，完全釋放 VRAM
+            else:
+                paddle.device.set_device('gpu') # 使用 GPU 時，配合頂部的 auto_growth 也能避免一次佔滿
+        except Exception as e:
+            pass
+        # ==========================================
+
         logging.getLogger("ppocr").setLevel(logging.ERROR)
 
     def _get_conn(self):
@@ -48,7 +64,6 @@ class IndexerService:
         ''')
         
         # 表 B: embeddings (AI 模型特徵區 - 綁定 files 的 id)
-        # ON DELETE CASCADE 代表：當 files 裡的一筆資料被刪除，這裡對應的所有模型向量都會自動蒸發
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS embeddings (
             file_id INTEGER,
@@ -207,7 +222,7 @@ class IndexerService:
                     processed_img = preprocess(img).unsqueeze(0)
                     
                     use_ocr = self._get_folder_ocr_setting(path, folder_ocr_map)
-                    ocr_text_final = None # [關鍵修正] 預設為 NULL (未處理)
+                    ocr_text_final = None 
                     ocr_data_final = None 
                     
                     if use_ocr and ocr_engine:
@@ -222,7 +237,7 @@ class IndexerService:
                             ocr_text_final = " ".join(detected_text_list)
                             ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
                         else:
-                            ocr_text_final = "[NONE]" # [關鍵修正] 有找過但沒字
+                            ocr_text_final = "[NONE]"
                             ocr_data_final = "[]"
                     
                     batch_images.append(processed_img)
@@ -279,7 +294,7 @@ class IndexerService:
             update_data = []
             for path in batch_paths:
                 try:
-                    ocr_text_final = "[NONE]" # 預設標記為找過但沒字
+                    ocr_text_final = "[NONE]"
                     ocr_data_final = "[]"
                     if ocr_engine:
                         ocr_result = ocr_engine.ocr(path, cls=False)
@@ -297,7 +312,6 @@ class IndexerService:
             
             if update_data:
                 try:
-                    # [關鍵更新] 將計算出的結果更新回 DB，把原本的 NULL 覆蓋掉
                     cursor.executemany('UPDATE files SET ocr_text=?, ocr_data=? WHERE file_path=?', update_data)
                     conn.commit()
                 except sqlite3.Error as e: print(f"Update OCR Error: {e}")
@@ -325,7 +339,6 @@ class IndexerService:
         model.eval()
         ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False, use_gpu=self.use_gpu_ocr) if need_ocr else None
 
-        # [新增] 攔截日誌：強制將 ppocr 的日誌層級設為 ERROR，這樣 WARNING 就不會顯示了
         if ocr_engine:
             logging.getLogger("ppocr").setLevel(logging.ERROR)
 

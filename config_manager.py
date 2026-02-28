@@ -12,7 +12,8 @@ class ConfigManager:
             "model_name": "xlm-roberta-large-ViT-H-14",
             "pretrained": "frozen_laion5b_s13b_b90k",
             "search_limit": 50,
-            "use_ocr": True
+            "use_ocr": True,
+            "use_gpu_ocr": False # [新增] 補上預設值，明確界定初始狀態為 CPU
         }
         self.config = self.load_config()
 
