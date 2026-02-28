@@ -1,6 +1,7 @@
 import os
 # 在最頂端限制 Paddle 的記憶體貪婪策略 (Auto Growth)
-os.environ["FLAGS_allocator_strategy"] = "auto_growth"
+#os.environ["FLAGS_allocator_strategy"] = "auto_growth"
+#from paddleocr import PaddleOCR
 
 import sqlite3
 import torch
@@ -10,7 +11,8 @@ import numpy as np
 import logging
 import json
 import datetime
-from paddleocr import PaddleOCR
+
+from onnx_ocr import ONNXOCR
 
 # ==========================================
 # [新增] 效能監控「總開關」與動態工具
@@ -47,17 +49,8 @@ class IndexerService:
         perf_print(f"[系統硬體] AI 初始化檢查")
         perf_print(f"{'='*50}")
         
-        try:
-            import paddle
-            if not self.use_gpu_ocr:
-                paddle.device.set_device('cpu')
-            else:
-                paddle.device.set_device('gpu')
-            
-            actual_paddle_device = paddle.device.get_device()
-            perf_print(f"[OCR  設備] 使用者設定: {'GPU' if self.use_gpu_ocr else 'CPU'} | 實際綁定: {actual_paddle_device.upper()}")
-        except Exception as e:
-            perf_print(f"[OCR  設備] Paddle 環境檢查失敗: {e}")
+        # ONNX Runtime 設備狀態印出
+        perf_print(f"[OCR  設備] 使用者設定: {'GPU' if self.use_gpu_ocr else 'CPU'} (ONNX Runtime)")
 
         perf_print(f"[CLIP 設備] 系統支援最高硬體: {self.device.upper()}")
         perf_print(f"{'='*50}\n")
@@ -177,14 +170,15 @@ class IndexerService:
                     break
                     
         try:
-            if progress_callback: progress_callback(0, total_files, "Loading AI Models...")
+            # 如果主程式有傳遞載入好的 CLIP 模型，就直接共用，避免重複佔用顯存
             if shared_model and shared_preprocess:
-                print("[Indexer] Using shared OpenCLIP model from main engine.")
+                perf_print("[Indexer] Using shared OpenCLIP model from main engine.")
                 model = shared_model
                 preprocess = shared_preprocess
-                ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False, use_gpu=self.use_gpu_ocr) if need_ocr else None
+                ocr_engine = ONNXOCR(lang='ch', use_gpu=self.use_gpu_ocr) if need_ocr else None
             else:
-                model, preprocess, ocr_engine = self.load_ai_models(need_ocr=need_ocr)
+                # 否則就自己載入一套新的
+                model, preprocess, ocr_engine = self.load_ai_models(need_ocr)
         except Exception as e:
             print(f"Model Load Failed: {e}"); conn.close(); return
 
@@ -345,8 +339,8 @@ class IndexerService:
         # [修改] 使用 perf_print
         perf_print(f"[CLIP 權重] 實際分配位置: {str(actual_clip_device).upper()}")
 
-        ocr_engine = PaddleOCR(use_angle_cls=False, lang='ch', show_log=False, use_gpu=self.use_gpu_ocr) if need_ocr else None
-        if ocr_engine: logging.getLogger("ppocr").setLevel(logging.ERROR)
+        ocr_engine = ONNXOCR(lang='ch', use_gpu=self.use_gpu_ocr) if need_ocr else None
+        # (ONNXOCR 預設就很安靜，不需要特別設定 logging level)
 
         return model, preprocess, ocr_engine
 
