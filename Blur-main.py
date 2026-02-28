@@ -12,6 +12,7 @@ from transformers import AutoTokenizer
 from datetime import datetime
 from collections import OrderedDict
 from indexer import IndexerService
+import unicodedata
 import re
 
 # [New] 引入 OpenCV (給 Grad-CAM 用)
@@ -2212,11 +2213,16 @@ class SettingsDialog(QDialog):
         layout.addWidget(lbl_hint)
         
         self.folder_list = TransparentDragListWidget()
-        self.folder_list.setStyleSheet("QListWidget { font-size: 15px; outline: none; } QListWidget::item { padding: 14px 10px; border-bottom: 1px solid #333; }")
+        # [修改] 恢復為漂亮的原生字型，由底層 Layout 負責對齊
+        self.folder_list.setStyleSheet("""
+            QListWidget { outline: none; } 
+            QListWidget::item { border-bottom: 1px solid #333; }
+            QListWidget::item:hover { background-color: #333333; }
+            QListWidget::item:selected { background-color: #383838; border-left: 4px solid #60cdff; }
+        """)
         self.folder_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.folder_list.model().rowsMoved.connect(self.on_folder_order_changed)
         
-        # [新增] 啟用右鍵自訂選單
         self.folder_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.folder_list.customContextMenuRequested.connect(self.show_folder_context_menu)
         
@@ -2255,21 +2261,56 @@ class SettingsDialog(QDialog):
             enabled_langs = f.get("enabled_langs", [])
             count = stats_dict.get(os.path.normpath(path), 0)
             
-            # 組合語系標籤字串，例如 [CH][JP]
-            lang_tags = "".join([f"[{lang.upper()}]" for lang in enabled_langs])
-            if not lang_tags:
-                lang_tags = "[無 OCR]"
-                
             display_icon = f"[{icon}]" if icon else f"[{i}]"
-            base_name = os.path.basename(path) # 只取最尾端資料夾名稱
+            base_name = os.path.basename(path)
             
-            # 新版乾淨的文字顯示
-            display_text = f"{display_icon}   {base_name}   ({count})   {lang_tags}"
+            # 1. 建立底層的 List Item
+            item = QListWidgetItem()
+            item.setToolTip(path) 
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            item.setSizeHint(QSize(0, 48)) # 設定固定的完美行高
             
-            item = QListWidgetItem(display_text)
-            item.setToolTip(path) # 把完整路徑藏在提示框裡
-            item.setData(Qt.ItemDataRole.UserRole, path) 
+            # 2. 建立自訂的列元件 (Row Widget)
+            row_widget = QWidget()
+            # 💡 讓滑鼠點擊「穿透」這個 Widget，右鍵選單跟拖曳排序才能正常運作
+            row_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            
+            # 3. 使用水平佈局 (QHBoxLayout) 達成像檔案總管一樣的欄位對齊
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(15, 0, 20, 0) # 左、上、右、下 邊距
+            row_layout.setSpacing(10)
+            
+            # --- 欄位 A: 資料夾名稱 (加上 stretch=1 讓它像彈簧一樣佔滿剩餘空間) ---
+            lbl_name = QLabel(f"{display_icon}   {base_name}")
+            lbl_name.setStyleSheet("font-size: 15px; font-weight: 500; background: transparent;")
+            row_layout.addWidget(lbl_name, stretch=1)
+            
+            # --- 欄位 B: 圖片數量 (固定寬度，靠右對齊) ---
+            lbl_count = QLabel(f"({count})")
+            lbl_count.setFixedWidth(60)
+            lbl_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            lbl_count.setStyleSheet("color: #aaaaaa; background: transparent;")
+            row_layout.addWidget(lbl_count)
+            
+            # 與標籤區保持一段距離
+            row_layout.addSpacing(20)
+            
+            # --- 欄位 C, D, E: 語系標籤 (固定寬度，確保直向對齊) ---
+            for lang_code, display_text in [("ch", "CH"), ("jp", "JP"), ("kr", "KR")]:
+                is_active = lang_code in enabled_langs
+                lbl_tag = QLabel(f"[{display_text}]" if is_active else "")
+                lbl_tag.setFixedWidth(40)  # 鎖死標籤寬度
+                lbl_tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                
+                if is_active:
+                    # 給啟用的標籤漂亮的顏色
+                    lbl_tag.setStyleSheet("color: #60cdff; font-weight: bold; font-size: 13px; background: transparent;")
+                
+                row_layout.addWidget(lbl_tag)
+                
+            # 將我們做好的列元件塞進清單中
             self.folder_list.addItem(item)
+            self.folder_list.setItemWidget(item, row_widget)
 
     def show_folder_context_menu(self, pos):
         item = self.folder_list.itemAt(pos)
