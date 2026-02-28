@@ -13,7 +13,14 @@ class ConfigManager:
             "pretrained": "frozen_laion5b_s13b_b90k",
             "search_limit": 50,
             "use_ocr": True,
-            "use_gpu_ocr": False # [新增] 補上預設值，明確界定初始狀態為 CPU
+            "use_gpu_ocr": False,
+            "ui_state": {
+                "window_width": 1280,
+                "window_height": 900,
+                "is_maximized": False,
+                "sidebar_expanded": True,
+                "view_mode": "large"
+            } # [新增] 補上預設值，明確界定初始狀態為 CPU
         }
         self.config = self.load_config()
 
@@ -55,7 +62,7 @@ class ConfigManager:
             print(f"[Config] Save error: {e}")
             return self.config
 
-    def get(self, key):
+    def get(self, key, default=None):
         return self.config.get(key, self.default_config.get(key))
 
     def set(self, key, value):

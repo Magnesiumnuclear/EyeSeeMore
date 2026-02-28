@@ -1332,8 +1332,10 @@ class MainWindow(QMainWindow):
         
         self.config = config
         self.setWindowTitle(WINDOW_TITLE)
-        self.resize(1280, 900)
+        
+
         self.engine = None
+
         self.search_history = [] 
         self.current_selected_path = None
         
@@ -1489,6 +1491,7 @@ class MainWindow(QMainWindow):
         # ... (中間搜尋區 search_container 設定保持不變) ...
         search_container = QWidget()
         search_container.setFixedWidth(500)
+        search_container.setMinimumWidth(200)
         search_layout = QHBoxLayout(search_container)
         search_layout.setContentsMargins(0, 0, 0, 0)
         search_layout.setSpacing(10)
@@ -1527,6 +1530,25 @@ class MainWindow(QMainWindow):
         
         self.list_view.setModel(self.model)
         self.list_view.setItemDelegate(self.delegate)
+
+        # ==========================================
+        # [新增] 套用儲存的顯示模式與側邊欄狀態
+        # ==========================================
+        ui_state = self.config.get("ui_state", {})
+        
+        # 套用顯示模式 (大中小)
+        saved_mode = ui_state.get("view_mode", "large")
+        if saved_mode != "large":
+            self.change_view_mode(saved_mode)
+
+        # 套用側邊欄狀態 (收合或展開)
+        saved_expanded = ui_state.get("sidebar_expanded", True)
+        if not saved_expanded:
+            self.sidebar.toggle_sidebar() # 初始化時收合側邊欄
+
+        self.resize(ui_state.get("window_width", 1280), ui_state.get("window_height", 900))
+        if ui_state.get("is_maximized", False):
+            self.showMaximized()
         
         self.list_view.clicked.connect(self.on_item_clicked)
         self.list_view.doubleClicked.connect(self.on_item_double_clicked)
@@ -2030,6 +2052,29 @@ class MainWindow(QMainWindow):
         # 延遲觸發，確保 Qt 的幾何運算已經完成
         QTimer.singleShot(10, self.adjust_layout)
 
+    # [新增] 攔截視窗關閉事件，儲存 UI 狀態
+    def closeEvent(self, event):
+        is_max = self.isMaximized()
+        
+        # 如果視窗被最大化，我們存 normalGeometry 的大小，這樣下次打開縮小時才不會變成 0x0
+        if is_max:
+            rect = self.normalGeometry()
+            w, h = rect.width(), rect.height()
+        else:
+            w, h = self.width(), self.height()
+            
+        ui_state = {
+            "window_width": w,
+            "window_height": h,
+            "is_maximized": is_max,
+            "sidebar_expanded": self.sidebar.is_expanded,
+            "view_mode": getattr(self, 'current_view_mode', 'large')
+        }
+        
+        # 寫入設定檔
+        self.config.set("ui_state", ui_state)
+        super().closeEvent(event)
+
     def on_finished(self, elapsed, total): self.progress.hide(); self.status.setText(f"Found {total} items ({elapsed:.2f}s)")
 
 class OnboardingDialog(QDialog):
@@ -2444,9 +2489,30 @@ class SettingsDialog(QDialog):
 
     def init_page_appearance(self):
         page, layout = self._create_page_container("🖥️ 介面與顯示 (Appearance)")
-        combo_size = QComboBox(); combo_size.setFixedHeight(35); combo_size.addItems(["大圖示 (預設)", "中圖示", "小圖示"])
-        layout.addWidget(QLabel("預設圖片顯示大小：")); layout.addWidget(combo_size)
-        layout.addStretch(1); self.stack.addWidget(page)
+        
+        layout.addWidget(QLabel("預設圖片顯示大小："))
+        self.combo_size = QComboBox()
+        self.combo_size.setFixedHeight(35)
+        self.combo_size.addItems(["超大圖示 (Extra Large)", "大圖示 (Large)", "中圖示 (Medium)"])
+        
+        # [新增] 讀取目前的顯示模式並設定為選中狀態
+        mode_map = {"xl": 0, "large": 1, "medium": 2}
+        current_mode = self.main_window.current_view_mode
+        self.combo_size.setCurrentIndex(mode_map.get(current_mode, 1))
+        
+        # [新增] 連接切換事件，即時套用
+        self.combo_size.currentIndexChanged.connect(self.on_view_mode_changed)
+        
+        layout.addWidget(self.combo_size)
+        layout.addStretch(1)
+        self.stack.addWidget(page)
+
+    # [新增] 下拉選單改變時，直接呼叫主視窗的切換功能
+    def on_view_mode_changed(self, index):
+        # 將 index (0,1,2) 轉回對應的字串代號
+        mode_map = {0: "xl", 1: "large", 2: "medium"}
+        selected_mode = mode_map.get(index, "large")
+        self.main_window.change_view_mode(selected_mode)
 
     def init_page_about(self):
         page, layout = self._create_page_container("ℹ️ 關於與說明 (Help & About)")
