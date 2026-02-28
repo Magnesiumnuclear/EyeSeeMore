@@ -2207,34 +2207,34 @@ class SettingsDialog(QDialog):
     def init_page_folders(self):
         page, layout = self._create_page_container("📁 資料夾管理 (Folders)")
         
-        lbl_hint = QLabel("提示：您可以直接「上下拖曳」列表中的項目來改變側邊欄的按鈕排序。")
-        lbl_hint.setStyleSheet("color: #aaa; font-size: 12px;")
+        lbl_hint = QLabel("提示：拖曳列表項目可改變排序。在項目上「點擊右鍵」可設定語系標記與圖示。")
+        lbl_hint.setStyleSheet("color: #aaa; font-size: 13px;")
         layout.addWidget(lbl_hint)
         
         self.folder_list = TransparentDragListWidget()
-        self.folder_list.setStyleSheet("QListWidget { font-size: 14px; } QListWidget::item { padding: 12px; }")
+        self.folder_list.setStyleSheet("QListWidget { font-size: 15px; outline: none; } QListWidget::item { padding: 14px 10px; border-bottom: 1px solid #333; }")
         self.folder_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.folder_list.model().rowsMoved.connect(self.on_folder_order_changed)
+        
+        # [新增] 啟用右鍵自訂選單
+        self.folder_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.folder_list.customContextMenuRequested.connect(self.show_folder_context_menu)
+        
         layout.addWidget(self.folder_list)
         
         btn_layout = QHBoxLayout()
         self.btn_add = QPushButton("+ 新增資料夾")
-        self.btn_edit = QPushButton("✏️ 編輯圖示")
-        self.btn_toggle_ocr = QPushButton("🔄 切換 OCR (ON/OFF)") 
         self.btn_del = QPushButton("- 移除選取")
         
-        base_btn_style = "QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; padding: 6px; } QPushButton:hover { background-color: #60cdff; color: #111; }"
+        base_btn_style = "QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; padding: 6px 15px; font-size: 14px;} QPushButton:hover { background-color: #60cdff; color: #111; }"
         self.btn_add.setStyleSheet(base_btn_style)
-        self.btn_edit.setStyleSheet(base_btn_style)
-        self.btn_toggle_ocr.setStyleSheet(base_btn_style)
-        self.btn_del.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; padding: 6px; } QPushButton:hover { background-color: #ff4747; color: white; border-color: #ff4747; }")
+        self.btn_del.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; padding: 6px 15px; font-size: 14px;} QPushButton:hover { background-color: #ff4747; color: white; border-color: #ff4747; }")
         
         self.btn_add.clicked.connect(self.on_add_folder)
-        self.btn_edit.clicked.connect(self.on_edit_icon)
-        self.btn_toggle_ocr.clicked.connect(self.on_toggle_ocr) 
         self.btn_del.clicked.connect(self.on_remove_folder)
         
-        btn_layout.addWidget(self.btn_add); btn_layout.addWidget(self.btn_edit); btn_layout.addWidget(self.btn_toggle_ocr); btn_layout.addWidget(self.btn_del)
+        btn_layout.addWidget(self.btn_add)
+        btn_layout.addWidget(self.btn_del)
         btn_layout.addStretch(1)
         layout.addLayout(btn_layout)
         
@@ -2249,39 +2249,69 @@ class SettingsDialog(QDialog):
             stats = self.main_window.engine.get_folder_stats()
         stats_dict = {os.path.normpath(p): c for p, c in stats}
         
-        for f in config_folders:
+        for i, f in enumerate(config_folders, 1):
             path = f["path"]
             icon = f.get("icon", "")
-            use_ocr = f.get("use_ocr", True)
+            enabled_langs = f.get("enabled_langs", [])
             count = stats_dict.get(os.path.normpath(path), 0)
             
-            ocr_state = "✅ ON" if use_ocr else "❌ OFF"
-            display_icon = f"[{icon}]" if icon else "[🔢]"
-            item = QListWidgetItem(f"{display_icon}  {path}   ({count} 張圖片)   [OCR: {ocr_state}]")
+            # 組合語系標籤字串，例如 [CH][JP]
+            lang_tags = "".join([f"[{lang.upper()}]" for lang in enabled_langs])
+            if not lang_tags:
+                lang_tags = "[無 OCR]"
+                
+            display_icon = f"[{icon}]" if icon else f"[{i}]"
+            base_name = os.path.basename(path) # 只取最尾端資料夾名稱
+            
+            # 新版乾淨的文字顯示
+            display_text = f"{display_icon}   {base_name}   ({count})   {lang_tags}"
+            
+            item = QListWidgetItem(display_text)
+            item.setToolTip(path) # 把完整路徑藏在提示框裡
             item.setData(Qt.ItemDataRole.UserRole, path) 
             self.folder_list.addItem(item)
 
-    def on_toggle_ocr(self):
-        item = self.folder_list.currentItem()
+    def show_folder_context_menu(self, pos):
+        item = self.folder_list.itemAt(pos)
         if not item: return
+        
         path = item.data(Qt.ItemDataRole.UserRole)
         config_folders = self.main_window.config.get("source_folders")
         
-        current_state = True
+        # 找出該資料夾目前啟用的語系
+        current_langs = []
         for f in config_folders:
             if os.path.normpath(f["path"]) == os.path.normpath(path):
-                current_state = f.get("use_ocr", True)
+                current_langs = f.get("enabled_langs", [])
                 break
                 
-        new_state = not current_state
-        self.main_window.config.update_folder_ocr(path, new_state)
-        self.refresh_folder_list()
+        menu = QMenu(self)
+        menu.setStyleSheet("QMenu { font-size: 14px; } QMenu::item { padding: 8px 30px; }")
         
-        if new_state:
-            QMessageBox.information(self, "OCR 已啟用", 
-                f"已為資料夾開啟 OCR。\n\n"
-                "💡 若這是您第一次啟用 OCR，系統將在背景自動下載語言包。\n"
-                "請在關閉設定面板後，點擊左側「⟳」重新整理，系統將精準補算缺失的文字紀錄！")
+        # 1. 編輯圖示
+        action_edit = QAction("✏️ 編輯圖示", self)
+        action_edit.triggered.connect(self.on_edit_icon)
+        menu.addAction(action_edit)
+        
+        menu.addSeparator()
+        
+        # 2~4. 多語系標記切換
+        langs_map = [("ch", "中文"), ("jp", "日文"), ("kr", "韓文")]
+        for lang_code, lang_name in langs_map:
+            if lang_code in current_langs:
+                action_lang = QAction(f"❌ 取消 {lang_name} OCR 標記", self)
+            else:
+                action_lang = QAction(f"✅ 添加 {lang_name} OCR 標記", self)
+            
+            # 使用 lambda 捕捉當下的變數
+            action_lang.triggered.connect(lambda checked, p=path, l=lang_code: self.on_toggle_lang(p, l))
+            menu.addAction(action_lang)
+            
+        menu.exec(self.folder_list.mapToGlobal(pos))
+
+    def on_toggle_lang(self, path, lang_code):
+        self.main_window.config.toggle_folder_lang(path, lang_code)
+        self.refresh_folder_list()
 
     def on_folder_order_changed(self):
         ordered_paths = []
