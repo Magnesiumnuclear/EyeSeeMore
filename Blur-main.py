@@ -2456,15 +2456,55 @@ class SettingsDialog(QDialog):
             else:
                 action_lang = QAction(f"✅ 添加 {lang_name} OCR 標記", self)
             
-            # 使用 lambda 捕捉當下的變數
-            action_lang.triggered.connect(lambda checked, p=path, l=lang_code: self.on_toggle_lang(p, l))
+            # [修改] 將 lang_name (n=lang_name) 也傳遞給後面的判斷函式
+            action_lang.triggered.connect(lambda checked, p=path, l=lang_code, n=lang_name: self.on_toggle_lang(p, l, n))
             menu.addAction(action_lang)
             
         menu.exec(self.folder_list.mapToGlobal(pos))
 
-    def on_toggle_lang(self, path, lang_code):
+    def on_toggle_lang(self, path, lang_code, lang_name):
+        # 1. 先找出該資料夾目前的狀態
+        config_folders = self.main_window.config.get("source_folders")
+        current_langs = []
+        for f in config_folders:
+            if os.path.normpath(f["path"]) == os.path.normpath(path):
+                current_langs = f.get("enabled_langs", [])
+                break
+        
+        # 2. 如果使用者想「添加」標記，我們需要檢查實體模型檔案是否存在
+        is_adding = lang_code not in current_langs
+        if is_adding:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            models_dir = os.path.join(base_dir, "models", "ocr")
+            rec_path = os.path.join(models_dir, lang_code, "rec.onnx")
+            dict_path = os.path.join(models_dir, lang_code, "dict.txt")
+            
+            is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
+            
+            # 3. 若未安裝，觸發「跨頁面跳轉引導」
+            if not is_installed:
+                reply = QMessageBox.question(
+                    self, 
+                    "語言包未安裝", 
+                    f"尚未安裝【{lang_name}】語言包。\n\n是否前往「AI 引擎設定」進行下載？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                
+                if reply == QMessageBox.StandardButton.Yes:
+                    # 跳轉至 AI 引擎設定 (左側導覽列的第 2 個項目，index 為 1)
+                    self.nav_list.setCurrentRow(1)
+                    # 切換至 OCR 文字辨識分頁 (頂部標籤的第 2 個分頁，index 為 1)
+                    self.ai_tabs.setCurrentIndex(1)
+                
+                # 擋下標記添加動作，維持原樣
+                return 
+
+        # 4. 正常切換標記並更新畫面
         self.main_window.config.toggle_folder_lang(path, lang_code)
         self.refresh_folder_list()
+        
+        # 5. [關鍵連動] 由於資料夾標記改變了，順便更新 AI 頁面的「運行中/已安裝」狀態
+        self.refresh_ocr_status()
 
     def on_folder_order_changed(self):
         ordered_paths = []
