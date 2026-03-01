@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QListWidget, QListWidgetItem, QSizePolicy, QMenu, QMessageBox,
                              QGraphicsDropShadowEffect, QCheckBox, QInputDialog, QDialog,
                              QStyledItemDelegate, QStyle, QFileIconProvider, QAbstractItemView, QListView,
-                             QRadioButton, QGroupBox, QStackedWidget) # 新增這三個
+                             QRadioButton, QGroupBox, QStackedWidget, QTabWidget)
 from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QPoint, QRect, QRectF, QSize, QEvent, 
                           QFileInfo, QTimer, QAbstractListModel, QRunnable, QThreadPool, QObject, QModelIndex)
 from PyQt6.QtGui import (QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, 
@@ -39,7 +39,16 @@ from PyQt6.QtGui import (QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeyS
 THUMBNAIL_SIZE = (220, 180)
 CARD_SIZE = (240, 290) 
 MIN_SPACING = 24       
-WINDOW_TITLE = "Local AI Search (High Performance)"
+WINDOW_TITLE = "EyeSeeMore-(Alpha)"
+
+
+#EyeSeeMore 
+#的核心靈魂在於其諧音：「I see more (我看見更多)」。
+#它代表著即便圖片的檔名是毫無意義的亂碼，軟體依然能穿透表象，看見圖片真正的意涵與內含的文字。
+#核心設計哲學：回歸圖像本質
+#無視亂碼檔名：打破「檔名即搜尋關鍵字」的傳統限制，即便圖片檔名是隨機生成的字串，系統也能精準命中。
+#「看」而非「讀」：傳統軟體是在「讀」標籤，EyeSeeMore 則是透過視覺模型在「看」內容，提取抽象的語義特徵。
+
 
 # ==========================================
 #  樣式表
@@ -2411,152 +2420,156 @@ class SettingsDialog(QDialog):
     def init_page_ai(self):
         page, layout = self._create_page_container("🧠 AI 引擎設定 (AI Engine)")
         
-        self.ai_models = {
-            "🟢 標準模式 (ViT-B-32) - 速度極快": {"model": "ViT-B-32", "pre": "laion2b_s34b_b79k"},
-            "🔵 精準模式 (ViT-H-14) - 準確度高": {"model": "ViT-H-14", "pre": "laion2b_s32b_b79k"},
-            "🟣 多語系模式 (xlm-roberta) - 支援中文": {"model": "xlm-roberta-large-ViT-H-14", "pre": "frozen_laion5b_s13b_b90k"}
-        }
+        self.ai_tabs = QTabWidget()
+        self.ai_tabs.setStyleSheet("""
+            QTabWidget::pane { border: 1px solid #454545; border-radius: 4px; top: -1px; background-color: #2b2b2b; }
+            QTabBar::tab { background: #252525; color: #aaa; border: 1px solid #454545; padding: 10px 20px; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; font-size: 14px; font-weight: bold; }
+            QTabBar::tab:selected { background: #2b2b2b; color: #60cdff; border-bottom-color: #2b2b2b; }
+            QTabBar::tab:hover:!selected { background: #333333; color: #fff; }
+        """)
         
-        layout.addWidget(QLabel("1. 語意模型 (CLIP) 選擇："))
-        self.combo_clip = QComboBox()
-        self.combo_clip.setFixedHeight(35)
-        self.combo_clip.addItems(list(self.ai_models.keys()))
+        # ==========================================
+        #  分頁 1：CLIP 語意搜尋 (擴充商店樣式)
+        # ==========================================
+        tab_clip = QWidget()
+        clip_layout = QVBoxLayout(tab_clip)
+        clip_layout.setContentsMargins(20, 20, 20, 20)
+        clip_layout.setSpacing(15)
+        
+        group_clip = QGroupBox("語意搜尋模型 (Semantic Models)")
+        clip_list_layout = QVBoxLayout(group_clip)
+        clip_list_layout.setSpacing(10)
         
         current_model = self.main_window.config.get("model_name")
-        for text, params in self.ai_models.items():
-            if params["model"] == current_model:
-                self.combo_clip.setCurrentText(text)
-                break
+        
+        # 預先定義好的 CLIP 模型清單
+        mock_clips = [
+            {"name": "🟢 標準模式 (ViT-B-32)", "id": "ViT-B-32", "pre": "laion2b_s34b_b79k", "desc": "速度極快，佔用極低"},
+            {"name": "🔵 精準模式 (ViT-H-14)", "id": "ViT-H-14", "pre": "laion2b_s32b_b79k", "desc": "準確度高，細節辨識佳"},
+            {"name": "🟣 多語系模式 (xlm-roberta)", "id": "xlm-roberta-large-ViT-H-14", "pre": "frozen_laion5b_s13b_b90k", "desc": "支援中文等多國語言搜尋"}
+        ]
+        
+        for item in mock_clips:
+            row = QHBoxLayout()
+            
+            # 模型名稱與描述
+            lbl_name = QLabel(f"{item['name']}<br><span style='color:#888; font-size:12px;'>{item['desc']}</span>")
+            lbl_name.setFixedWidth(240)
+            lbl_name.setTextFormat(Qt.TextFormat.RichText)
+            
+            # 狀態與按鈕邏輯判斷
+            is_active = (item['id'] == current_model)
+            if is_active:
+                status_text = "✅ 已加載 (運作中)"
+                status_color = "#4caf50"
+                btn_text = "目前使用中"
+                btn_enabled = False
+            else:
+                # 這裡目前模擬為皆已安裝，之後可以加入檢查權重檔是否存在的邏輯來顯示「未安裝」
+                status_text = "💾 已安裝 (備用)"
+                status_color = "#aaaaaa"
+                btn_text = "切換並重啟"
+                btn_enabled = True
                 
-        self.combo_clip.currentTextChanged.connect(self.on_ai_model_changed)
-        layout.addWidget(self.combo_clip)
+            lbl_status = QLabel(status_text)
+            lbl_status.setStyleSheet(f"color: {status_color}; font-size: 13px; font-weight: bold;")
+            
+            btn_action = QPushButton(btn_text)
+            btn_action.setFixedWidth(100)
+            btn_action.setEnabled(btn_enabled)
+            
+            if btn_enabled:
+                btn_action.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; padding: 6px; color: #eee; } QPushButton:hover { background-color: #005fb8; color: #fff; border-color: #005fb8; }")
+                # 綁定切換模型的事件
+                btn_action.clicked.connect(lambda checked, m_id=item['id'], m_pre=item['pre']: self.on_switch_clip_model(m_id, m_pre))
+            else:
+                btn_action.setStyleSheet("QPushButton { background-color: #222; border: 1px solid #333; border-radius: 4px; padding: 6px; color: #555; }")
+            
+            row.addWidget(lbl_name)
+            row.addWidget(lbl_status)
+            row.addStretch(1)
+            row.addWidget(btn_action)
+            clip_list_layout.addLayout(row)
+            
+            # 分隔線
+            line = QFrame()
+            line.setFrameShape(QFrame.Shape.HLine)
+            line.setStyleSheet("border-top: 1px solid #444;")
+            clip_list_layout.addWidget(line)
+            
+        clip_layout.addWidget(group_clip)
+        clip_layout.addStretch(1)
+        self.ai_tabs.addTab(tab_clip, "CLIP 語意模型")
         
-        self.lbl_model_stats = QLabel("")
-        self.lbl_model_stats.setStyleSheet("color: #aaa; font-size: 13px; margin-bottom: 10px; padding-left: 5px;")
-        layout.addWidget(self.lbl_model_stats)
-        self.on_ai_model_changed(self.combo_clip.currentText()) 
+        # ==========================================
+        #  分頁 2：OCR 文字辨識 (已移除 CPU/GPU 選項)
+        # ==========================================
+        tab_ocr = QWidget()
+        ocr_layout = QVBoxLayout(tab_ocr)
+        ocr_layout.setContentsMargins(20, 20, 20, 20)
+        ocr_layout.setSpacing(15)
         
-        layout.addWidget(QLabel("2. 文字辨識 (OCR) 引擎："))
-        self.combo_ocr = QComboBox()
-        self.combo_ocr.setFixedHeight(35)
-        self.combo_ocr.addItems(["純 CPU 模式 (預設/高相容性)", "GPU 加速模式 (極速/需 CUDA 環境)"])
+        group_lang = QGroupBox("語系擴充包 (Language Packs)")
+        lang_layout = QVBoxLayout(group_lang)
+        lang_layout.setSpacing(10)
         
-        is_gpu = self.main_window.config.get("use_gpu_ocr")
-        self.combo_ocr.setCurrentIndex(1 if is_gpu else 0)
-        self.combo_ocr.currentIndexChanged.connect(self.on_ocr_mode_changed)
-        layout.addWidget(self.combo_ocr)
+        # 模擬的語系列表資料
+        mock_langs = [
+            ("🇨🇳 中文 (通用)", "✅ 已加載 (準備就緒)", "#4caf50", "運作中", False),
+            ("🇯🇵 日文 (日本語)", "💾 已安裝 (未啟用)", "#aaaaaa", "套用", True),
+            ("🇰🇷 韓文 (한국어)", "📥 未安裝 (約 15MB)", "#ff9800", "下載", True),
+            ("🇬🇧 英文 (English)", "📥 未安裝 (約 15MB)", "#ff9800", "下載", True)
+        ]
         
-        self.lbl_ocr_stats = QLabel("")
-        self.lbl_ocr_stats.setStyleSheet("color: #aaa; font-size: 13px; margin-bottom: 10px; padding-left: 5px;")
-        layout.addWidget(self.lbl_ocr_stats)
-        self.on_ocr_mode_changed(self.combo_ocr.currentIndex())
+        for name, status, color, btn_text, btn_enabled in mock_langs:
+            row = QHBoxLayout()
+            lbl_name = QLabel(name)
+            lbl_name.setFixedWidth(160)
+            lbl_name.setStyleSheet("font-size: 14px; font-weight: bold;")
+            
+            lbl_status = QLabel(status)
+            lbl_status.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
+            
+            btn_action = QPushButton(btn_text)
+            btn_action.setFixedWidth(90)
+            btn_action.setEnabled(btn_enabled)
+            
+            if btn_enabled:
+                btn_action.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; padding: 6px; color: #eee; } QPushButton:hover { background-color: #4caf50; color: #fff; border-color: #4caf50; }")
+            else:
+                btn_action.setStyleSheet("QPushButton { background-color: #222; border: 1px solid #333; border-radius: 4px; padding: 6px; color: #555; }")
+            
+            row.addWidget(lbl_name)
+            row.addWidget(lbl_status)
+            row.addStretch(1)
+            row.addWidget(btn_action)
+            lang_layout.addLayout(row)
+            
+            # 分隔線
+            line = QFrame()
+            line.setFrameShape(QFrame.Shape.HLine)
+            line.setStyleSheet("border-top: 1px solid #444;")
+            lang_layout.addWidget(line)
+            
+        ocr_layout.addWidget(group_lang)
+        ocr_layout.addStretch(1)
+        self.ai_tabs.addTab(tab_ocr, "OCR 文字辨識")
         
-        layout.addStretch(1)
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch(1)
-        self.btn_save_ai = QPushButton("套用 AI 設定並重新啟動")
-        self.btn_save_ai.setFixedHeight(40)
-        self.btn_save_ai.setStyleSheet("""
-            QPushButton { background-color: #005fb8; border-radius: 6px; font-weight: bold; font-size: 14px; padding: 0px 20px;}
-            QPushButton:hover { background-color: #0078d4; }
-        """)
-        self.btn_save_ai.clicked.connect(self.on_save_ai_settings)
-        btn_layout.addWidget(self.btn_save_ai)
-        layout.addLayout(btn_layout)
-        
+        layout.addWidget(self.ai_tabs, stretch=1)
         self.stack.addWidget(page)
 
-    def on_ocr_mode_changed(self, index):
-        wants_gpu = (index == 1)
-        current_active_gpu = self.main_window.config.get("use_gpu_ocr")
-        is_active = (wants_gpu == current_active_gpu)
+    def on_switch_clip_model(self, model_id, pretrained):
+        # 將設定寫入 config.json
+        self.main_window.config.set("model_name", model_id)
+        self.main_window.config.set("pretrained", pretrained)
         
-        if is_active:
-            tag = "<span style='color: #4caf50; font-size: 14px;'><b>[✅ 目前運作中]</b></span>"
-        else:
-            tag = "<span style='color: #ff9800; font-size: 14px;'><b>[👀 僅檢視狀態 (尚未套用)]</b></span>"
-            
-        if wants_gpu:
-            passed, msg = self.check_gpu_environment()
-            if passed:
-                desc = "🚀 狀態：已成功偵測到 CUDA 環境，支援 GPU 極速辨識！"
-            else:
-                tag = "<span style='color: #ff4747; font-size: 14px;'><b>[⚠️ 環境不支援]</b></span>"
-                desc = f"❌ 狀態：{msg}<br>（若您強制儲存，系統將會自動為您降級為 CPU 模式以防止崩潰）"
-        else:
-            desc = "💻 狀態：純 CPU 模式，相容性最高，不消耗顯示卡資源。"
-            
-        self.lbl_ocr_stats.setText(f"{tag}<br>{desc}")
-
-    def on_ai_model_changed(self, selected_text):
-        target_model = self.ai_models[selected_text]["model"]
-        current_active_model = self.main_window.config.get("model_name")
-        is_active = (target_model == current_active_model)
-        
-        total_indexed = 0
-        try:
-            conn = sqlite3.connect(self.main_window.config.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT SUM(image_count) FROM model_stats WHERE model_name = ?", (target_model,))
-            res = cursor.fetchone()
-            if res and res[0]: total_indexed = res[0]
-            conn.close()
-        except: pass
-        
-        if is_active:
-            tag = "<span style='color: #4caf50; font-size: 14px;'><b>[✅ 目前運作中的模型]</b></span>"
-            if total_indexed > 0:
-                desc = f"📊 狀態：已為 <b>{total_indexed}</b> 張圖片建立索引，可正常搜尋。"
-            else:
-                desc = f"⚠️ 狀態：目前 <b>0</b> 張索引。<br>請關閉設定面板，點擊左側「⟳」按鈕來產生專屬索引。"
-        else:
-            tag = "<span style='color: #ff9800; font-size: 14px;'><b>[👀 僅檢視狀態 (尚未套用)]</b></span>"
-            if total_indexed > 0:
-                desc = f"📊 狀態：此備用模型庫內已有 <b>{total_indexed}</b> 張圖片的索引。<br>點擊下方「套用並重啟」後即可無縫切換使用。"
-            else:
-                desc = f"⚠️ 狀態：此備用模型目前 <b>0</b> 張索引。<br>點擊下方「套用並重啟」後，需重新執行「⟳」掃描。"
-                
-        self.lbl_model_stats.setText(f"{tag}<br>{desc}")
-
-    def check_gpu_environment(self):
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            if not torch.cuda.is_available():
-                return False, "您的設備未安裝 NVIDIA 顯示卡，或系統未安裝相應的 CUDA 驅動程式。"
-            
-            try:
-                import paddle
-                if not paddle.device.is_compiled_with_cuda():
-                    return False, "您的 Python 環境安裝的是「純 CPU 版」的 PaddlePaddle 套件。請解除安裝後，重新安裝 paddlepaddle-gpu 版。"
-            except ImportError:
-                return False, "無法載入 paddle 套件，請確認安裝是否完整。"
-                
-            return True, "✅ GPU 檢測通過！"
-        except Exception as e:
-            return False, f"未知錯誤: {e}"
-        finally:
-            QApplication.restoreOverrideCursor()
-
-    def on_save_ai_settings(self):
-        selected_text = self.combo_clip.currentText()
-        model_data = self.ai_models[selected_text]
-        new_model = model_data["model"]
-        new_pre = model_data["pre"]
-        
-        wants_gpu = (self.combo_ocr.currentIndex() == 1)
-        if wants_gpu:
-            passed, msg = self.check_gpu_environment()
-            if not passed:
-                QMessageBox.critical(self, "GPU 檢測失敗", f"<b>無法啟用 GPU 加速模式。</b><br><br>原因：{msg}<br><br>系統將自動為您切換回純 CPU 模式。")
-                self.combo_ocr.setCurrentIndex(0)
-                return 
-        
-        self.main_window.config.set("model_name", new_model)
-        self.main_window.config.set("pretrained", new_pre)
-        self.main_window.config.set("use_gpu_ocr", wants_gpu)
-        
-        QMessageBox.information(self, "設定已儲存", "AI 引擎設定已更新！\n\n程式將會關閉，請您手動重新啟動以載入新模型。")
-        QApplication.quit() 
+        # 由於 CLIP 模型過大，必須重啟程式來釋放並重新佔用顯存
+        QMessageBox.information(
+            self, 
+            "設定已儲存", 
+            "AI 模型已切換！\n\n為了確保記憶體安全釋放，程式將會關閉，請您手動重新啟動。"
+        )
+        QApplication.quit()
 
     def init_page_appearance(self):
         page, layout = self._create_page_container("🖥️ 介面與顯示 (Appearance)")
@@ -2587,7 +2600,7 @@ class SettingsDialog(QDialog):
 
     def init_page_about(self):
         page, layout = self._create_page_container("ℹ️ 關於與說明 (Help & About)")
-        layout.addWidget(QLabel("Local AI Search v1.0.0")); layout.addStretch(1); self.stack.addWidget(page)
+        layout.addWidget(QLabel("V0.5.0-alpha")); layout.addStretch(1); self.stack.addWidget(page)
 
 if __name__ == "__main__":
     app_config = ConfigManager()
