@@ -15,6 +15,11 @@ from indexer import IndexerService
 import unicodedata
 import re
 
+import urllib.request
+import tarfile
+import subprocess
+import shutil
+
 # [New] 引入 OpenCV (給 Grad-CAM 用)
 import cv2
 
@@ -756,6 +761,104 @@ class SearchWorker(QThread):
             
         self.batch_ready.emit(raw_results)
         self.finished_search.emit(time.time() - start_time, len(raw_results))
+
+class OCRDownloadWorker(QThread):
+    progress_update = pyqtSignal(int, str)
+    finished_signal = pyqtSignal(bool, str, str) # success, lang_code, message
+    
+    def __init__(self, lang_code):
+        super().__init__()
+        self.lang_code = lang_code
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.models_dir = os.path.join(self.base_dir, "models", "ocr")
+        self.temp_dir = os.path.join(self.base_dir, "temp_paddle_models")
+        
+    def run(self):
+        try:
+            # 確保目錄存在
+            os.makedirs(self.temp_dir, exist_ok=True)
+            lang_dir = os.path.join(self.models_dir, self.lang_code)
+            common_dir = os.path.join(self.models_dir, "common")
+            os.makedirs(lang_dir, exist_ok=True)
+            os.makedirs(common_dir, exist_ok=True)
+            
+            # 1. 定義 PaddleOCR 資源表
+            urls = {
+                "det": "https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_det_infer.tar",
+                "ch": "https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_infer.tar",
+                "jp": "https://paddleocr.bj.bcebos.com/PP-OCRv4/multilingual/japan_PP-OCRv4_rec_infer.tar",
+                "kr": "https://paddleocr.bj.bcebos.com/PP-OCRv4/multilingual/korean_PP-OCRv4_rec_infer.tar",
+                "en": "https://paddleocr.bj.bcebos.com/PP-OCRv4/english/en_PP-OCRv4_rec_infer.tar"
+            }
+            dicts = {
+                "ch": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt",
+                "jp": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/dict/japan_dict.txt",
+                "kr": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/dict/korean_dict.txt",
+                "en": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/en_dict.txt"
+            }
+            
+            # 進度回報回呼函式
+            def dl_hook(count, block_size, total_size, prefix):
+                if total_size > 0:
+                    percent = int(count * block_size * 100 / total_size)
+                    percent = min(percent, 100)
+                    self.progress_update.emit(percent, f"{prefix} ({percent}%)")
+                    
+            # 2. 檢查並下載通用偵測模型 (Det)
+            det_onnx = os.path.join(common_dir, "det.onnx")
+            if not os.path.exists(det_onnx):
+                det_tar = os.path.join(self.temp_dir, "det.tar")
+                self.progress_update.emit(0, "下載通用偵測模型...")
+                urllib.request.urlretrieve(urls["det"], det_tar, reporthook=lambda c, b, t: dl_hook(c, b, t, "下載通用偵測模型"))
+                
+                self.progress_update.emit(100, "解壓縮偵測模型...")
+                with tarfile.open(det_tar, "r") as tar: tar.extractall(path=self.temp_dir)
+                
+                self.progress_update.emit(100, "轉換偵測模型為 ONNX...")
+                self.convert_to_onnx(os.path.join(self.temp_dir, "ch_PP-OCRv4_det_infer"), det_onnx)
+                
+            # 3. 下載並轉換目標語言的辨識模型 (Rec)
+            rec_tar = os.path.join(self.temp_dir, f"{self.lang_code}_rec.tar")
+            self.progress_update.emit(0, f"下載 {self.lang_code.upper()} 辨識模型...")
+            urllib.request.urlretrieve(urls[self.lang_code], rec_tar, reporthook=lambda c, b, t: dl_hook(c, b, t, f"下載 {self.lang_code.upper()} 辨識模型"))
+            
+            self.progress_update.emit(100, "解壓縮辨識模型...")
+            with tarfile.open(rec_tar, "r") as tar: tar.extractall(path=self.temp_dir)
+            
+            self.progress_update.emit(100, "轉換辨識模型為 ONNX...")
+            extracted_folder = urls[self.lang_code].split("/")[-1].replace(".tar", "")
+            rec_onnx = os.path.join(lang_dir, "rec.onnx")
+            self.convert_to_onnx(os.path.join(self.temp_dir, extracted_folder), rec_onnx)
+            
+            # 4. 下載字典檔
+            self.progress_update.emit(100, "下載字典檔...")
+            urllib.request.urlretrieve(dicts[self.lang_code], os.path.join(lang_dir, "dict.txt"))
+            
+            # 5. 清理與完成
+            self.progress_update.emit(100, "清理暫存檔案...")
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+            
+            self.finished_signal.emit(True, self.lang_code, "下載與轉換成功！可以開始使用了。")
+            
+        except Exception as e:
+            self.finished_signal.emit(False, self.lang_code, f"發生錯誤:\n{str(e)}")
+
+    def convert_to_onnx(self, model_dir, save_path):
+        import shutil
+        # 防呆機制：如果使用者沒安裝 paddle2onnx，自動幫他裝
+        if shutil.which("paddle2onnx") is None:
+            self.progress_update.emit(100, "正在安裝轉換依賴庫 (paddle2onnx)...")
+            import sys
+            subprocess.run([sys.executable, "-m", "pip", "install", "paddle2onnx", "paddlepaddle"], check=True)
+            
+        cmd = [
+            "paddle2onnx", "--model_dir", model_dir,
+            "--model_filename", "inference.pdmodel",
+            "--params_filename", "inference.pdiparams",
+            "--save_file", save_path,
+            "--opset_version", "11", "--enable_onnx_checker", "True"
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 # ==========================================
 #  UI 元件
@@ -2420,6 +2523,41 @@ class SettingsDialog(QDialog):
     def init_page_ai(self):
         page, layout = self._create_page_container("🧠 AI 引擎設定 (AI Engine)")
         
+        # [精髓] 將 _create_page_container 原本畫的靜態分隔線隱藏
+        line = layout.itemAt(1).widget()
+        if isinstance(line, QFrame):
+            line.hide()
+            
+        # [精髓] 建立我們的「變形進度條」與狀態文字
+        self.dl_status_container = QWidget()
+        dl_layout = QVBoxLayout(self.dl_status_container)
+        dl_layout.setContentsMargins(0, 0, 0, 0)
+        dl_layout.setSpacing(5)
+        
+        self.dl_status_label = QLabel("")
+        self.dl_status_label.setStyleSheet("color: #60cdff; font-size: 13px; font-weight: bold;")
+        self.dl_status_label.hide()
+        
+        self.dl_progress = QProgressBar()
+        self.dl_progress.setRange(0, 100)
+        self.dl_progress.setValue(0)
+        self.dl_progress.setTextVisible(False)
+        # 預設狀態：高度 2px，完美偽裝成一般的分隔線
+        self.dl_progress.setFixedHeight(2)
+        self.dl_progress.setStyleSheet("""
+            QProgressBar { border: none; background-color: #444; border-radius: 1px; }
+            QProgressBar::chunk { background-color: #60cdff; border-radius: 1px; }
+        """)
+        
+        dl_layout.addWidget(self.dl_status_label)
+        dl_layout.addWidget(self.dl_progress)
+        
+        # 插入到標題的正下方 (取代剛剛隱藏的線)
+        layout.insertWidget(1, self.dl_status_container)
+        
+        # ==========================================
+        #  分頁設定與 TabWidget 建立
+        # ==========================================
         self.ai_tabs = QTabWidget()
         self.ai_tabs.setStyleSheet("""
             QTabWidget::pane { border: 1px solid #454545; border-radius: 4px; top: -1px; background-color: #2b2b2b; }
@@ -2428,9 +2566,7 @@ class SettingsDialog(QDialog):
             QTabBar::tab:hover:!selected { background: #333333; color: #fff; }
         """)
         
-        # ==========================================
-        #  分頁 1：CLIP 語意搜尋 (擴充商店樣式)
-        # ==========================================
+        # --- 分頁 1：CLIP 語意搜尋 ---
         tab_clip = QWidget()
         clip_layout = QVBoxLayout(tab_clip)
         clip_layout.setContentsMargins(20, 20, 20, 20)
@@ -2441,8 +2577,6 @@ class SettingsDialog(QDialog):
         clip_list_layout.setSpacing(10)
         
         current_model = self.main_window.config.get("model_name")
-        
-        # 預先定義好的 CLIP 模型清單
         mock_clips = [
             {"name": "🟢 標準模式 (ViT-B-32)", "id": "ViT-B-32", "pre": "laion2b_s34b_b79k", "desc": "速度極快，佔用極低"},
             {"name": "🔵 精準模式 (ViT-H-14)", "id": "ViT-H-14", "pre": "laion2b_s32b_b79k", "desc": "準確度高，細節辨識佳"},
@@ -2451,25 +2585,15 @@ class SettingsDialog(QDialog):
         
         for item in mock_clips:
             row = QHBoxLayout()
-            
-            # 模型名稱與描述
             lbl_name = QLabel(f"{item['name']}<br><span style='color:#888; font-size:12px;'>{item['desc']}</span>")
             lbl_name.setFixedWidth(240)
             lbl_name.setTextFormat(Qt.TextFormat.RichText)
             
-            # 狀態與按鈕邏輯判斷
             is_active = (item['id'] == current_model)
             if is_active:
-                status_text = "✅ 已加載 (運作中)"
-                status_color = "#4caf50"
-                btn_text = "目前使用中"
-                btn_enabled = False
+                status_text, status_color, btn_text, btn_enabled = "✅ 運行中", "#4caf50", "目前使用中", False
             else:
-                # 這裡目前模擬為皆已安裝，之後可以加入檢查權重檔是否存在的邏輯來顯示「未安裝」
-                status_text = "💾 已安裝 (備用)"
-                status_color = "#aaaaaa"
-                btn_text = "切換並重啟"
-                btn_enabled = True
+                status_text, status_color, btn_text, btn_enabled = "💾 已安裝", "#aaaaaa", "切換並重啟", True
                 
             lbl_status = QLabel(status_text)
             lbl_status.setStyleSheet(f"color: {status_color}; font-size: 13px; font-weight: bold;")
@@ -2480,7 +2604,6 @@ class SettingsDialog(QDialog):
             
             if btn_enabled:
                 btn_action.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; padding: 6px; color: #eee; } QPushButton:hover { background-color: #005fb8; color: #fff; border-color: #005fb8; }")
-                # 綁定切換模型的事件
                 btn_action.clicked.connect(lambda checked, m_id=item['id'], m_pre=item['pre']: self.on_switch_clip_model(m_id, m_pre))
             else:
                 btn_action.setStyleSheet("QPushButton { background-color: #222; border: 1px solid #333; border-radius: 4px; padding: 6px; color: #555; }")
@@ -2491,37 +2614,74 @@ class SettingsDialog(QDialog):
             row.addWidget(btn_action)
             clip_list_layout.addLayout(row)
             
-            # 分隔線
-            line = QFrame()
-            line.setFrameShape(QFrame.Shape.HLine)
-            line.setStyleSheet("border-top: 1px solid #444;")
+            line = QFrame(); line.setFrameShape(QFrame.Shape.HLine); line.setStyleSheet("border-top: 1px solid #444;")
             clip_list_layout.addWidget(line)
             
         clip_layout.addWidget(group_clip)
         clip_layout.addStretch(1)
-        self.ai_tabs.addTab(tab_clip, "CLIP 語意模型")
+        self.ai_tabs.addTab(tab_clip, "👁️ CLIP 語意模型")
         
-        # ==========================================
-        #  分頁 2：OCR 文字辨識 (已移除 CPU/GPU 選項)
-        # ==========================================
+        # --- 分頁 2：OCR 文字辨識 ---
         tab_ocr = QWidget()
         ocr_layout = QVBoxLayout(tab_ocr)
         ocr_layout.setContentsMargins(20, 20, 20, 20)
         ocr_layout.setSpacing(15)
         
         group_lang = QGroupBox("語系擴充包 (Language Packs)")
-        lang_layout = QVBoxLayout(group_lang)
-        lang_layout.setSpacing(10)
+        self.lang_layout = QVBoxLayout(group_lang)
+        self.lang_layout.setSpacing(10)
         
-        # 模擬的語系列表資料
-        mock_langs = [
-            ("🇨🇳 中文 (通用)", "✅ 已加載 (準備就緒)", "#4caf50", "運作中", False),
-            ("🇯🇵 日文 (日本語)", "💾 已安裝 (未啟用)", "#aaaaaa", "套用", True),
-            ("🇰🇷 韓文 (한국어)", "📥 未安裝 (約 15MB)", "#ff9800", "下載", True),
-            ("🇬🇧 英文 (English)", "📥 未安裝 (約 15MB)", "#ff9800", "下載", True)
+        ocr_layout.addWidget(group_lang)
+        ocr_layout.addStretch(1)
+        self.ai_tabs.addTab(tab_ocr, "📝 OCR 文字辨識")
+        
+        layout.addWidget(self.ai_tabs, stretch=1)
+        self.stack.addWidget(page)
+        
+        # 呼叫動態生成 OCR 清單
+        self.lang_ui_elements = {}
+        self.refresh_ocr_status()
+
+    # ==========================================
+    #  OCR 動態狀態判斷與下載邏輯
+    # ==========================================
+    def refresh_ocr_status(self):
+        # 清空舊的 UI 重新繪製
+        while self.lang_layout.count():
+            item = self.lang_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+            
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        models_dir = os.path.join(base_dir, "models", "ocr")
+        
+        # 掃描資料夾標記，判斷誰在「運行中」
+        active_langs = set()
+        for f in self.main_window.config.get("source_folders", []):
+            active_langs.update(f.get("enabled_langs", []))
+            
+        langs = [
+            ("ch", "🇨🇳 中文 (通用)"),
+            ("jp", "🇯🇵 日文 (日本語)"),
+            ("kr", "🇰🇷 韓文 (한국어)"),
+            ("en", "🇬🇧 英文 (English)")
         ]
         
-        for name, status, color, btn_text, btn_enabled in mock_langs:
+        self.lang_ui_elements.clear()
+        
+        for lang_code, name in langs:
+            # 實體驗證：檢查 .onnx 跟 dict.txt 是否在硬碟裡
+            rec_path = os.path.join(models_dir, lang_code, "rec.onnx")
+            dict_path = os.path.join(models_dir, lang_code, "dict.txt")
+            is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
+            is_running = lang_code in active_langs
+            
+            if is_running and is_installed:
+                status, color, btn_text, btn_enabled = "✅ 運行中", "#4caf50", "已啟用", False
+            elif is_installed:
+                status, color, btn_text, btn_enabled = "💾 已安裝", "#aaaaaa", "套用", True
+            else:
+                status, color, btn_text, btn_enabled = "📥 未安裝", "#ff9800", "下載", True
+                
             row = QHBoxLayout()
             lbl_name = QLabel(name)
             lbl_name.setFixedWidth(160)
@@ -2534,8 +2694,13 @@ class SettingsDialog(QDialog):
             btn_action.setFixedWidth(90)
             btn_action.setEnabled(btn_enabled)
             
-            if btn_enabled:
+            # 按鈕行為綁定
+            if btn_enabled and not is_installed:
+                btn_action.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #ff9800; border-radius: 4px; padding: 6px; color: #eee; } QPushButton:hover { background-color: #ff9800; color: #fff; }")
+                btn_action.clicked.connect(lambda checked, l=lang_code: self.start_download_ocr(l))
+            elif btn_enabled and is_installed:
                 btn_action.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; padding: 6px; color: #eee; } QPushButton:hover { background-color: #4caf50; color: #fff; border-color: #4caf50; }")
+                btn_action.clicked.connect(lambda checked: QMessageBox.information(self, "提示", "此語言包已就緒！\n請至左側「資料夾管理」中，對目標資料夾點擊右鍵添加此標記即可套用。"))
             else:
                 btn_action.setStyleSheet("QPushButton { background-color: #222; border: 1px solid #333; border-radius: 4px; padding: 6px; color: #555; }")
             
@@ -2543,20 +2708,48 @@ class SettingsDialog(QDialog):
             row.addWidget(lbl_status)
             row.addStretch(1)
             row.addWidget(btn_action)
-            lang_layout.addLayout(row)
+            self.lang_layout.addLayout(row)
             
-            # 分隔線
-            line = QFrame()
-            line.setFrameShape(QFrame.Shape.HLine)
-            line.setStyleSheet("border-top: 1px solid #444;")
-            lang_layout.addWidget(line)
+            # 儲存引用以便下載時鎖定按鈕
+            self.lang_ui_elements[lang_code] = {"status": lbl_status, "btn": btn_action}
             
-        ocr_layout.addWidget(group_lang)
-        ocr_layout.addStretch(1)
-        self.ai_tabs.addTab(tab_ocr, "OCR 文字辨識")
+            line = QFrame(); line.setFrameShape(QFrame.Shape.HLine); line.setStyleSheet("border-top: 1px solid #444;")
+            self.lang_layout.addWidget(line)
+
+    def start_download_ocr(self, lang_code):
+        # 1. 變形：將 2px 的線展開為 12px 的進度條
+        self.dl_progress.setFixedHeight(12) 
+        self.dl_progress.setValue(0)
+        self.dl_status_label.setText(f"準備下載 {lang_code.upper()} 語言包...")
+        self.dl_status_label.show()
         
-        layout.addWidget(self.ai_tabs, stretch=1)
-        self.stack.addWidget(page)
+        # 2. 鎖定所有下載按鈕，防止重複點擊
+        for elems in self.lang_ui_elements.values():
+            elems["btn"].setEnabled(False)
+            
+        # 3. 啟動背景工作
+        self.dl_worker = OCRDownloadWorker(lang_code)
+        self.dl_worker.progress_update.connect(self.update_download_progress)
+        self.dl_worker.finished_signal.connect(self.on_download_finished)
+        self.dl_worker.start()
+
+    def update_download_progress(self, percent, msg):
+        self.dl_progress.setValue(percent)
+        self.dl_status_label.setText(msg)
+
+    def on_download_finished(self, success, lang_code, msg):
+        # 恢復變形：縮回 2px 的一般分隔線
+        self.dl_progress.setFixedHeight(2)
+        self.dl_progress.setValue(0)
+        self.dl_status_label.hide()
+        
+        if success:
+            QMessageBox.information(self, "下載成功", msg)
+        else:
+            QMessageBox.critical(self, "下載失敗", msg)
+            
+        # 重新掃描狀態並解鎖按鈕
+        self.refresh_ocr_status()
 
     def on_switch_clip_model(self, model_id, pretrained):
         # 將設定寫入 config.json
