@@ -83,8 +83,9 @@ class IndexerService:
         
         for f_conf in source_folders_config:
             folder = os.path.normpath(f_conf["path"])
-            use_ocr = f_conf.get("use_ocr", True)
-            folder_ocr_map[folder] = use_ocr
+            # [修改] 改為讀取 enabled_langs 陣列。若無則預設為空陣列(不跑OCR)
+            enabled_langs = f_conf.get("enabled_langs", [])
+            folder_ocr_map[folder] = enabled_langs
             
             if not os.path.exists(folder): continue
             for root, _, files in os.walk(folder):
@@ -109,7 +110,7 @@ class IndexerService:
         cursor.execute("SELECT file_path FROM files WHERE ocr_text IS NULL")
         db_paths_null_ocr = set(os.path.normpath(row[0]) for row in cursor.fetchall())
         
-        to_delete = db_paths - disk_paths
+        to_delete = db_paths - db_paths
         deleted_count = len(to_delete)
         if to_delete:
             to_delete_list = list(to_delete)
@@ -126,7 +127,8 @@ class IndexerService:
         potential_ocr_paths = (disk_paths & db_paths) & db_paths_null_ocr
         files_ocr_only = []
         for p in potential_ocr_paths:
-            if self._get_folder_ocr_setting(p, folder_ocr_map):
+            # [修改] 檢查該資料夾是否有啟用任何 OCR 語系 (陣列長度 > 0 才跑)
+            if len(self._get_folder_ocr_setting(p, folder_ocr_map)) > 0:
                 files_ocr_only.append(p)
         
         self.update_folder_stats(conn)
@@ -137,18 +139,15 @@ class IndexerService:
     def _get_folder_ocr_setting(self, path, folder_ocr_map):
         path_norm = os.path.normpath(path)
         matched_folder = ""
-        use_ocr = False
-        for folder_path, setting in folder_ocr_map.items():
+        enabled_langs = [] # 預設空陣列
+        for folder_path, langs in folder_ocr_map.items():
             if path_norm.startswith(folder_path) and len(folder_path) > len(matched_folder):
                 matched_folder = folder_path
-                use_ocr = setting
-        return use_ocr
+                enabled_langs = langs
+        return enabled_langs
 
-    # [修改] 使用我們自訂的 @optional_mem_profile 裝飾器
     @optional_mem_profile
     def run_ai_processing(self, files_full, files_emb_only, files_ocr_only, folder_ocr_map, progress_callback=None, shared_model=None, shared_preprocess=None):
-        """三軌道 AI 處理引擎"""
-        # [修改] 用 if 判斷來避免 psutil 去計算不需要的記憶體資訊
         if ENABLE_PROFILING:
             process = psutil.Process(os.getpid())
             start_mem = process.memory_info().rss / (1024 * 1024)
@@ -162,23 +161,32 @@ class IndexerService:
         total_files = len(files_full) + len(files_emb_only) + len(files_ocr_only)
         current_progress = 0
         
-        need_ocr = bool(files_ocr_only)
-        if not need_ocr:
-            for f in files_full:
-                if self._get_folder_ocr_setting(f, folder_ocr_map):
-                    need_ocr = True
-                    break
-                    
+        import gc
+        
+        # [修改 1] 收集本次掃描真正需要的語系
+        needed_langs = set()
+        for path in files_full + files_ocr_only:
+            langs = self._get_folder_ocr_setting(path, folder_ocr_map)
+            needed_langs.update(langs)
+            
         try:
-            # 如果主程式有傳遞載入好的 CLIP 模型，就直接共用，避免重複佔用顯存
+            # 載入 CLIP
             if shared_model and shared_preprocess:
                 perf_print("[Indexer] Using shared OpenCLIP model from main engine.")
                 model = shared_model
                 preprocess = shared_preprocess
-                ocr_engine = ONNXOCR(lang='ch', use_gpu=self.use_gpu_ocr) if need_ocr else None
             else:
-                # 否則就自己載入一套新的
-                model, preprocess, ocr_engine = self.load_ai_models(need_ocr)
+                model, preprocess, _ = self.load_ai_models(need_ocr=False)
+
+            # [修改 2] 動態載入需要的 OCR 模型 (可能同時載入中、日文)
+            ocr_engines = {}
+            for lang in needed_langs:
+                try:
+                    ocr_engines[lang] = ONNXOCR(lang=lang, use_gpu=self.use_gpu_ocr)
+                    perf_print(f"[ONNXOCR] 成功加載 '{lang}' 模型準備運算。")
+                except Exception as e:
+                    print(f"Skipping OCR lang '{lang}': {e}")
+
         except Exception as e:
             print(f"Model Load Failed: {e}"); conn.close(); return
 
@@ -196,24 +204,25 @@ class IndexerService:
                     img = Image.open(path).convert('RGB')
                     processed_img = preprocess(img).unsqueeze(0)
                     
-                    use_ocr = self._get_folder_ocr_setting(path, folder_ocr_map)
-                    ocr_text_final = None 
-                    ocr_data_final = None 
+                    langs = self._get_folder_ocr_setting(path, folder_ocr_map)
+                    ocr_text_final = "[NONE]" 
+                    ocr_data_final = "[]"
                     
-                    if use_ocr and ocr_engine:
-                        ocr_result = ocr_engine.ocr(path, cls=False)
-                        if ocr_result and ocr_result[0]:
-                            detected_text_list = []
-                            json_data_list = []
-                            for line in ocr_result[0]:
-                                box, (text, conf) = line[0], line[1]
-                                detected_text_list.append(text)
-                                json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
-                            ocr_text_final = " ".join(detected_text_list)
-                            ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
-                        else:
-                            ocr_text_final = "[NONE]"
-                            ocr_data_final = "[]"
+                    # [修改 3] 有標記才跑 OCR
+                    if langs:
+                        # 暫時取列表中的第一個標記作為主要辨識語言 (如 'ch' 或 'jp')
+                        target_lang = langs[0] 
+                        if target_lang in ocr_engines:
+                            ocr_result = ocr_engines[target_lang].ocr(path, cls=False)
+                            if ocr_result and ocr_result[0]:
+                                detected_text_list = []
+                                json_data_list = []
+                                for line in ocr_result[0]:
+                                    box, (text, conf) = line[0], line[1]
+                                    detected_text_list.append(text)
+                                    json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
+                                ocr_text_final = " ".join(detected_text_list)
+                                ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
                     
                     batch_images.append(processed_img)
                     files_insert_data.append((path, os.path.basename(path), os.path.dirname(path), os.path.getmtime(path), ocr_text_final, ocr_data_final))
@@ -269,19 +278,23 @@ class IndexerService:
             update_data = []
             for path in batch_paths:
                 try:
+                    langs = self._get_folder_ocr_setting(path, folder_ocr_map)
                     ocr_text_final = "[NONE]"
                     ocr_data_final = "[]"
-                    if ocr_engine:
-                        ocr_result = ocr_engine.ocr(path, cls=False)
-                        if ocr_result and ocr_result[0]:
-                            detected_text_list = []
-                            json_data_list = []
-                            for line in ocr_result[0]:
-                                box, (text, conf) = line[0], line[1]
-                                detected_text_list.append(text)
-                                json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
-                            ocr_text_final = " ".join(detected_text_list)
-                            ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
+                    
+                    if langs:
+                        target_lang = langs[0]
+                        if target_lang in ocr_engines:
+                            ocr_result = ocr_engines[target_lang].ocr(path, cls=False)
+                            if ocr_result and ocr_result[0]:
+                                detected_text_list = []
+                                json_data_list = []
+                                for line in ocr_result[0]:
+                                    box, (text, conf) = line[0], line[1]
+                                    detected_text_list.append(text)
+                                    json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
+                                ocr_text_final = " ".join(detected_text_list)
+                                ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
                     update_data.append((ocr_text_final, ocr_data_final, path))
                 except Exception as e: print(f"Skipping OCR {path}: {e}")
             
@@ -295,7 +308,13 @@ class IndexerService:
         self.update_folder_stats(conn)
         conn.close()
 
-        # [修改] 關閉效能開關時，這裡也不會執行
+        # ==========================================
+        # [修改 4] 任務結束，強制銷毀所有 OCR 引擎釋放 VRAM
+        # ==========================================
+        ocr_engines.clear()
+        gc.collect()
+        perf_print("[Indexer] OCR 任務結束，模型實例已銷毀，VRAM 釋放完畢。")
+
         if ENABLE_PROFILING:
             end_mem = process.memory_info().rss / (1024 * 1024)
             perf_print(f"[系統資源] 處理結束後，程式佔用 RAM: {end_mem:.2f} MB (變化: {end_mem - start_mem:+.2f} MB)\n")

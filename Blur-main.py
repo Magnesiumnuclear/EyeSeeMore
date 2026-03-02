@@ -538,29 +538,39 @@ class ImageSearchEngine:
         conn = sqlite3.connect(self.config.db_path)
         cursor = conn.cursor()
         try:
-            # [關鍵修復 1] 聯合查詢 (JOIN)：只撈取「當前模型」的特徵向量，並結合共用的實體檔案資料
             current_model = self.config.get("model_name")
+            
+            # [關鍵修復] 聯合查詢：正確撈取 ocr_results 子表，並將多國語言的文字與紅框完美串接
             cursor.execute("""
-                SELECT f.file_path, e.embedding, f.ocr_text, f.ocr_data, f.mtime 
+                SELECT f.file_path, e.embedding, f.mtime, 
+                       GROUP_CONCAT(o.ocr_text, ' '), 
+                       '[' || GROUP_CONCAT(o.ocr_data, ',') || ']' 
                 FROM files f
                 JOIN embeddings e ON f.id = e.file_id
+                LEFT JOIN ocr_results o ON f.id = o.file_id
                 WHERE e.model_name = ?
+                GROUP BY f.id
             """, (current_model,))
             rows = cursor.fetchall()
             
             self.data_store = [] 
             embeddings_list = []
             
-            for path, blob, ocr_text, ocr_data_json, mtime in rows:
+            for path, blob, mtime, combined_text, combined_data_json in rows:
                 if not os.path.exists(path): continue 
                 
                 emb_array = np.frombuffer(blob, dtype=np.float32)
                 embeddings_list.append(emb_array)
-                text_content = ocr_text if ocr_text else ""
+                text_content = combined_text if combined_text else ""
                 
                 ocr_boxes = []
-                if ocr_data_json:
-                    try: ocr_boxes = json.loads(ocr_data_json)
+                if combined_data_json and combined_data_json != "[]":
+                    try:
+                        # 處理組合後的多語系 JSON 陣列
+                        parsed_lists = json.loads(combined_data_json)
+                        for sublist in parsed_lists:
+                            if isinstance(sublist, list):
+                                ocr_boxes.extend(sublist)
                     except: pass
 
                 self.data_store.append({
