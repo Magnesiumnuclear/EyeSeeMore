@@ -39,7 +39,11 @@ class ONNXOCR:
 
     def ocr(self, img_path, cls=False):
         """模擬 PaddleOCR 的 ocr 介面"""
-        img = cv2.imread(img_path)
+        
+        # [關鍵修復] 繞過 cv2.imread 不支援中文路徑的問題
+        # 舊程式碼: img = cv2.imread(img_path)
+        img = cv2.imdecode(np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+        
         if img is None:
             return None
 

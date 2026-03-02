@@ -67,15 +67,24 @@ class IndexerService:
         if db_dir and not os.path.exists(db_dir): os.makedirs(db_dir)
         conn = self._get_conn()
         cursor = conn.cursor()
+        
+        # 1. 建立主檔案表
         cursor.execute('''CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT UNIQUE, filename TEXT, folder_path TEXT, mtime REAL, ocr_text TEXT, ocr_data TEXT)''')
+        
+        # 2. 建立 CLIP 向量表
         cursor.execute('''CREATE TABLE IF NOT EXISTS embeddings (file_id INTEGER, model_name TEXT, embedding BLOB, PRIMARY KEY (file_id, model_name), FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE)''')
+        
+        # 3. 建立統計表
         cursor.execute('''CREATE TABLE IF NOT EXISTS model_stats (model_name TEXT, folder_path TEXT, image_count INTEGER, last_scanned TEXT, PRIMARY KEY (model_name, folder_path))''')
+        
+        # 4. [關鍵修復] 建立多語系 OCR 子表
+        cursor.execute('''CREATE TABLE IF NOT EXISTS ocr_results (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER, lang TEXT, ocr_text TEXT, ocr_data TEXT, confidence REAL, FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE)''')
+        
         conn.commit()
         return conn
 
     def scan_for_new_files(self, source_folders_config):
-        if not source_folders_config:
-            return [], [], [], 0, {}
+        if not source_folders_config: return [], [], [], 0, {}
 
         folder_ocr_map = {}
         valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
@@ -83,10 +92,13 @@ class IndexerService:
         
         for f_conf in source_folders_config:
             folder = os.path.normpath(f_conf["path"])
-            # [修改] 改為讀取 enabled_langs 陣列。若無則預設為空陣列(不跑OCR)
             enabled_langs = f_conf.get("enabled_langs", [])
             folder_ocr_map[folder] = enabled_langs
             
+        # [Debug 日誌 1] 檢查從主程式傳遞過來的資料夾設定是否正確
+        print(f"\n[Debug] 目前資料夾的 OCR 設定: {folder_ocr_map}")
+            
+        for folder in folder_ocr_map.keys():
             if not os.path.exists(folder): continue
             for root, _, files in os.walk(folder):
                 for file in files:
@@ -97,20 +109,26 @@ class IndexerService:
         conn = self.init_db()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT file_path FROM files")
-        db_paths = set(os.path.normpath(row[0]) for row in cursor.fetchall())
+        # 1. 取得 DB 所有檔案
+        cursor.execute("SELECT id, file_path FROM files")
+        db_files = {os.path.normpath(row[1]): row[0] for row in cursor.fetchall()}
+        db_paths = set(db_files.keys())
         
-        cursor.execute("""
-            SELECT f.file_path FROM files f
-            JOIN embeddings e ON f.id = e.file_id
-            WHERE e.model_name = ?
-        """, (self.model_name,))
-        db_paths_with_emb = set(os.path.normpath(row[0]) for row in cursor.fetchall())
+        # 2. 取得有 CLIP 向量的檔案
+        cursor.execute("SELECT file_id FROM embeddings WHERE model_name = ?", (self.model_name,))
+        db_has_emb = set(row[0] for row in cursor.fetchall())
         
-        cursor.execute("SELECT file_path FROM files WHERE ocr_text IS NULL")
-        db_paths_null_ocr = set(os.path.normpath(row[0]) for row in cursor.fetchall())
+        # 3. 取得所有檔案「已完成」的 OCR 語系
+        cursor.execute("SELECT file_id, lang FROM ocr_results")
+        ocr_history = {}
+        for file_id, lang in cursor.fetchall():
+            if file_id not in ocr_history: ocr_history[file_id] = set()
+            ocr_history[file_id].add(lang)
+            
+        # [Debug 日誌 2] 檢查資料庫讀取狀況
+        print(f"[Debug] 資料庫狀態 -> 總圖片數: {len(db_files)}, 有 CLIP 向量: {len(db_has_emb)}, 有 OCR 紀錄的圖片數: {len(ocr_history)}")
         
-        to_delete = db_paths - db_paths
+        to_delete = db_paths - disk_paths
         deleted_count = len(to_delete)
         if to_delete:
             to_delete_list = list(to_delete)
@@ -121,15 +139,37 @@ class IndexerService:
                 cursor.execute(f"DELETE FROM files WHERE file_path IN ({placeholders})", batch)
             conn.commit()
             
-        files_full = list(disk_paths - db_paths)
-        files_emb_only = list((disk_paths & db_paths) - db_paths_with_emb)
-        
-        potential_ocr_paths = (disk_paths & db_paths) & db_paths_null_ocr
+        files_full = list(disk_paths - db_paths) # 完全新圖
+        files_emb_only = []
         files_ocr_only = []
-        for p in potential_ocr_paths:
-            # [修改] 檢查該資料夾是否有啟用任何 OCR 語系 (陣列長度 > 0 才跑)
-            if len(self._get_folder_ocr_setting(p, folder_ocr_map)) > 0:
+        
+        debug_print_limit = 0 # 限制印出次數避免洗頻
+        
+        # 交叉比對：找出缺 CLIP 或缺特定語系 OCR 的圖片
+        for p in (disk_paths & db_paths):
+            file_id = db_files[p]
+            
+            # 檢查是否缺 CLIP
+            if file_id not in db_has_emb:
+                files_emb_only.append(p)
+                
+            # 檢查 OCR (該資料夾勾選的 vs 該圖片實際跑過的)
+            required_langs = self._get_folder_ocr_setting(p, folder_ocr_map)
+            done_langs = ocr_history.get(file_id, set())
+            
+            # [Debug 日誌 3] 抽出前 5 張圖片來看看系統到底是怎麼判斷的
+            if debug_print_limit < 5:
+                print(f"[Debug] 圖片: {os.path.basename(p)}")
+                print(f"         - 此資料夾需要的語系 (Required): {required_langs}")
+                print(f"         - 此圖片已完成的語系 (Done): {done_langs}")
+                debug_print_limit += 1
+            
+            # 只要有任何一個需要的語系沒跑過，就排入補算名單！
+            if any(lang not in done_langs for lang in required_langs):
                 files_ocr_only.append(p)
+                
+        # [Debug 日誌 4] 最終分類結果
+        print(f"[Debug] 掃描分類結果 -> 全新圖(Full): {len(files_full)}, 缺向量(Emb): {len(files_emb_only)}, 缺OCR(Ocr): {len(files_ocr_only)}\n")
         
         self.update_folder_stats(conn)
         conn.close()
@@ -196,23 +236,45 @@ class IndexerService:
         for i in range(0, len(files_full), BATCH_SIZE):
             batch_paths = files_full[i : i + BATCH_SIZE]
             batch_images = []
-            files_insert_data = []
             if progress_callback: progress_callback(current_progress, total_files, f"Full AI: {current_progress}/{total_files}...")
 
             for path in batch_paths:
                 try:
                     img = Image.open(path).convert('RGB')
-                    processed_img = preprocess(img).unsqueeze(0)
+                    batch_images.append(preprocess(img).unsqueeze(0))
+                except Exception: continue
+
+            if batch_images:
+                try:
+                    # 1. 寫入 files (移除舊有的 ocr_text, ocr_data)
+                    cursor.executemany('INSERT OR IGNORE INTO files (file_path, filename, folder_path, mtime) VALUES (?, ?, ?, ?)', 
+                                       [(p, os.path.basename(p), os.path.dirname(p), os.path.getmtime(p)) for p in batch_paths])
+                    conn.commit()
+                except sqlite3.Error as e: print(f"DB Error: {e}")
+
+                paths_tuple = tuple(batch_paths)
+                placeholders = ','.join(['?'] * len(paths_tuple))
+                cursor.execute(f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders})", paths_tuple)
+                id_map = {row[0]: row[1] for row in cursor.fetchall()}
+                
+                # 2. 寫入 CLIP 向量
+                embeddings_list = self._compute_clip(model, batch_images)
+                emb_insert_data = [(id_map.get(batch_paths[idx]), self.model_name, embeddings_list[idx]) for idx in range(len(batch_paths)) if id_map.get(batch_paths[idx]) is not None]
+                try:
+                    cursor.executemany('INSERT OR IGNORE INTO embeddings (file_id, model_name, embedding) VALUES (?, ?, ?)', emb_insert_data)
+                    conn.commit()
+                except sqlite3.Error: pass
+                
+                # 3. 分語系跑 OCR，並寫入 ocr_results 子表
+                ocr_insert_data = []
+                for path in batch_paths:
+                    file_id = id_map.get(path)
+                    if not file_id: continue
                     
-                    langs = self._get_folder_ocr_setting(path, folder_ocr_map)
-                    ocr_text_final = "[NONE]" 
-                    ocr_data_final = "[]"
-                    
-                    # [修改 3] 有標記才跑 OCR
-                    if langs:
-                        # 暫時取列表中的第一個標記作為主要辨識語言 (如 'ch' 或 'jp')
-                        target_lang = langs[0] 
+                    required_langs = self._get_folder_ocr_setting(path, folder_ocr_map)
+                    for target_lang in required_langs:
                         if target_lang in ocr_engines:
+                            ocr_text_final, ocr_data_final = "[NONE]", "[]"
                             ocr_result = ocr_engines[target_lang].ocr(path, cls=False)
                             if ocr_result and ocr_result[0]:
                                 detected_text_list = []
@@ -223,28 +285,13 @@ class IndexerService:
                                     json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
                                 ocr_text_final = " ".join(detected_text_list)
                                 ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
-                    
-                    batch_images.append(processed_img)
-                    files_insert_data.append((path, os.path.basename(path), os.path.dirname(path), os.path.getmtime(path), ocr_text_final, ocr_data_final))
-                except Exception as e: continue
-
-            if batch_images:
-                try:
-                    cursor.executemany('INSERT OR IGNORE INTO files (file_path, filename, folder_path, mtime, ocr_text, ocr_data) VALUES (?, ?, ?, ?, ?, ?)', files_insert_data)
-                    conn.commit()
-                except sqlite3.Error as e: print(f"DB Error: {e}")
-
-                embeddings_list = self._compute_clip(model, batch_images)
-                paths_tuple = tuple(p[0] for p in files_insert_data)
-                placeholders = ','.join(['?'] * len(paths_tuple))
-                cursor.execute(f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders})", paths_tuple)
-                id_map = {row[0]: row[1] for row in cursor.fetchall()}
+                            
+                            # 準備寫入新表 ocr_results
+                            ocr_insert_data.append((file_id, target_lang, ocr_text_final, ocr_data_final, 1.0))
                 
-                emb_insert_data = [(id_map.get(item[0]), self.model_name, embeddings_list[idx]) for idx, item in enumerate(files_insert_data) if id_map.get(item[0]) is not None]
-                try:
-                    cursor.executemany('INSERT OR IGNORE INTO embeddings (file_id, model_name, embedding) VALUES (?, ?, ?)', emb_insert_data)
+                if ocr_insert_data:
+                    cursor.executemany('INSERT INTO ocr_results (file_id, lang, ocr_text, ocr_data, confidence) VALUES (?, ?, ?, ?, ?)', ocr_insert_data)
                     conn.commit()
-                except sqlite3.Error: pass
             current_progress += len(batch_paths)
 
         # --- 軌道 B: 切換模型補算 (光速 CLIP) ---
@@ -271,20 +318,29 @@ class IndexerService:
                 except sqlite3.Error: pass
             current_progress += len(batch_paths)
 
-        # --- 軌道 C: 精準補算文字 (OCR Only) ---
+        # --- 軌道 C: 精準補算文字 (缺哪國補哪國) ---
         for i in range(0, len(files_ocr_only), BATCH_SIZE):
             batch_paths = files_ocr_only[i : i + BATCH_SIZE]
             if progress_callback: progress_callback(current_progress, total_files, f"Backfill OCR: {current_progress}/{total_files}...")
-            update_data = []
+            
+            ocr_insert_data = []
             for path in batch_paths:
                 try:
-                    langs = self._get_folder_ocr_setting(path, folder_ocr_map)
-                    ocr_text_final = "[NONE]"
-                    ocr_data_final = "[]"
+                    cursor.execute("SELECT id FROM files WHERE file_path=?", (path,))
+                    row = cursor.fetchone()
+                    if not row: continue
+                    file_id = row[0]
                     
-                    if langs:
-                        target_lang = langs[0]
+                    # 找出這張圖片到底「缺」了哪些標記
+                    cursor.execute("SELECT lang FROM ocr_results WHERE file_id=?", (file_id,))
+                    done_langs = set(r[0] for r in cursor.fetchall())
+                    required_langs = self._get_folder_ocr_setting(path, folder_ocr_map)
+                    missing_langs = [l for l in required_langs if l not in done_langs]
+                    
+                    # 針對缺少的語系補跑
+                    for target_lang in missing_langs:
                         if target_lang in ocr_engines:
+                            ocr_text_final, ocr_data_final = "[NONE]", "[]"
                             ocr_result = ocr_engines[target_lang].ocr(path, cls=False)
                             if ocr_result and ocr_result[0]:
                                 detected_text_list = []
@@ -295,14 +351,17 @@ class IndexerService:
                                     json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
                                 ocr_text_final = " ".join(detected_text_list)
                                 ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
-                    update_data.append((ocr_text_final, ocr_data_final, path))
+                            
+                            # 準備寫入新表 ocr_results
+                            ocr_insert_data.append((file_id, target_lang, ocr_text_final, ocr_data_final, 1.0))
                 except Exception as e: print(f"Skipping OCR {path}: {e}")
             
-            if update_data:
+            if ocr_insert_data:
                 try:
-                    cursor.executemany('UPDATE files SET ocr_text=?, ocr_data=? WHERE file_path=?', update_data)
+                    cursor.executemany('INSERT INTO ocr_results (file_id, lang, ocr_text, ocr_data, confidence) VALUES (?, ?, ?, ?, ?)', ocr_insert_data)
                     conn.commit()
                 except sqlite3.Error as e: print(f"Update OCR Error: {e}")
+                
             current_progress += len(batch_paths)
 
         self.update_folder_stats(conn)

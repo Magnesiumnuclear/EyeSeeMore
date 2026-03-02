@@ -957,7 +957,7 @@ class PreviewOverlay(QWidget):
         self.layout.addWidget(self.ocr_hint, alignment=Qt.AlignmentFlag.AlignCenter)
 
     def show_image(self, result_data):
-        # [修改] 兼容 ImageItem 物件
+        # 兼容 ImageItem 物件
         if isinstance(result_data, ImageItem):
             path = result_data.path
             ocr_boxes = result_data.ocr_data
@@ -967,8 +967,57 @@ class PreviewOverlay(QWidget):
 
         if not os.path.exists(path): return
         
-        img = QImage(path)
+        # ==========================================
+        # [關鍵修復] 使用 QImageReader 並開啟自動轉正
+        # ==========================================
+        from PyQt6.QtGui import QImageReader
+        reader = QImageReader(path)
+        reader.setAutoTransform(True) # 讓 Qt 自動讀取 EXIF 並把圖片轉正
+        img = reader.read()
+        
         if img.isNull(): return
+        
+        # ==========================================
+        # 處理 EXIF 旋轉導致的 OCR 座標錯位 (維持上次的矩陣轉換邏輯)
+        # ==========================================
+        import copy
+        from PIL import Image, ExifTags
+        
+        processed_boxes = copy.deepcopy(ocr_boxes)
+        
+        try:
+            with Image.open(path) as pil_img:
+                raw_w, raw_h = pil_img.size
+                exif = pil_img.getexif()
+                orientation = 1
+                if exif:
+                    for k, v in exif.items():
+                        if ExifTags.TAGS.get(k) == 'Orientation':
+                            orientation = v
+                            break
+                
+                # 如果圖片有 EXIF 旋轉標記，對 OCR 座標執行矩陣轉換
+                if orientation != 1 and processed_boxes:
+                    new_boxes = []
+                    for box in processed_boxes:
+                        new_box = []
+                        for pt in box:
+                            x, y = pt[0], pt[1]
+                            # 根據 EXIF 1~8 的方向標籤轉換座標系
+                            if orientation == 2:   nx, ny = raw_w - x, y
+                            elif orientation == 3: nx, ny = raw_w - x, raw_h - y
+                            elif orientation == 4: nx, ny = x, raw_h - y
+                            elif orientation == 5: nx, ny = y, x
+                            elif orientation == 6: nx, ny = raw_h - y, x  # 右轉 90 度
+                            elif orientation == 7: nx, ny = raw_h - y, raw_w - x
+                            elif orientation == 8: nx, ny = y, raw_w - x  # 左轉 90 度
+                            else:                  nx, ny = x, y
+                            new_box.append([nx, ny])
+                        new_boxes.append(new_box)
+                    processed_boxes = new_boxes
+        except Exception as e:
+            print(f"EXIF rotation parsing error: {e}")
+        # ==========================================
         
         screen_size = self.parent().size()
         max_w = int(screen_size.width() * 0.85)
@@ -979,8 +1028,9 @@ class PreviewOverlay(QWidget):
         
         self.image_label.setPixmap(pixmap)
         
+        # 傳入顯示用的「已經轉正」的長寬 (此時 img.width/height 已經是轉正後的直立尺寸了)
         orig_w, orig_h = img.width(), img.height()
-        self.image_label.set_ocr_data(ocr_boxes, orig_w, orig_h)
+        self.image_label.set_ocr_data(processed_boxes, orig_w, orig_h)
         
         self.filename_label.setText(os.path.basename(path))
         self.resize(self.parent().size())
@@ -2481,7 +2531,7 @@ class SettingsDialog(QDialog):
                 current_langs = f.get("enabled_langs", [])
                 break
         
-        # 2. 如果使用者想「添加」標記，我們需要檢查實體模型檔案是否存在
+        # 2. 檢查實體模型是否存在
         is_adding = lang_code not in current_langs
         if is_adding:
             base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2491,30 +2541,34 @@ class SettingsDialog(QDialog):
             
             is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
             
-            # 3. 若未安裝，觸發「跨頁面跳轉引導」
+            # 3. 若未安裝，觸發跳轉
             if not is_installed:
                 reply = QMessageBox.question(
-                    self, 
-                    "語言包未安裝", 
-                    f"尚未安裝【{lang_name}】語言包。\n\n是否前往「AI 引擎設定」進行下載？",
+                    self, "語言包未安裝", f"尚未安裝【{lang_name}】語言包。\n\n是否前往「AI 引擎設定」進行下載？",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 )
-                
                 if reply == QMessageBox.StandardButton.Yes:
-                    # 跳轉至 AI 引擎設定 (左側導覽列的第 2 個項目，index 為 1)
                     self.nav_list.setCurrentRow(1)
-                    # 切換至 OCR 文字辨識分頁 (頂部標籤的第 2 個分頁，index 為 1)
                     self.ai_tabs.setCurrentIndex(1)
-                
-                # 擋下標記添加動作，維持原樣
                 return 
 
         # 4. 正常切換標記並更新畫面
         self.main_window.config.toggle_folder_lang(path, lang_code)
         self.refresh_folder_list()
-        
-        # 5. [關鍵連動] 由於資料夾標記改變了，順便更新 AI 頁面的「運行中/已安裝」狀態
         self.refresh_ocr_status()
+
+        # ==========================================
+        # [新增] 5. 避免「後續加上沒有偵測」的防呆引導
+        # ==========================================
+        if is_adding:
+            reply = QMessageBox.question(
+                self, 
+                "標記已添加", 
+                f"已成功對資料夾添加【{lang_name}】標記。\n\n是否要立即重新掃描此資料夾，為現有的圖片補跑 {lang_name} 的文字辨識？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.main_window.on_refresh_clicked()
 
     def on_folder_order_changed(self):
         ordered_paths = []
@@ -2696,15 +2750,22 @@ class SettingsDialog(QDialog):
     #  OCR 動態狀態判斷與下載邏輯
     # ==========================================
     def refresh_ocr_status(self):
-        # 清空舊的 UI 重新繪製
+        # 1. 徹底安全清空舊的 UI (解決殘影與版面重疊的元凶)
         while self.lang_layout.count():
             item = self.lang_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+            elif item.layout():
+                # 如果是 Layout，把裡面的元件也清乾淨
+                while item.layout().count():
+                    sub_item = item.layout().takeAt(0)
+                    if sub_item.widget(): sub_item.widget().deleteLater()
+                item.layout().deleteLater()
             
         base_dir = os.path.dirname(os.path.abspath(__file__))
         models_dir = os.path.join(base_dir, "models", "ocr")
         
-        # 掃描資料夾標記，判斷誰在「運行中」
         active_langs = set()
         for f in self.main_window.config.get("source_folders", []):
             active_langs.update(f.get("enabled_langs", []))
@@ -2719,7 +2780,6 @@ class SettingsDialog(QDialog):
         self.lang_ui_elements.clear()
         
         for lang_code, name in langs:
-            # 實體驗證：檢查 .onnx 跟 dict.txt 是否在硬碟裡
             rec_path = os.path.join(models_dir, lang_code, "rec.onnx")
             dict_path = os.path.join(models_dir, lang_code, "dict.txt")
             is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
@@ -2732,19 +2792,22 @@ class SettingsDialog(QDialog):
             else:
                 status, color, btn_text, btn_enabled = "📥 未安裝", "#ff9800", "下載", True
                 
-            row = QHBoxLayout()
+            # [關鍵修復] 使用 QWidget 包裝每一行，確保排版與清除時絕對乾淨
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 5, 0, 5) # 加上微小的上下間距，避免擠在一起
+            
             lbl_name = QLabel(name)
             lbl_name.setFixedWidth(160)
-            lbl_name.setStyleSheet("font-size: 14px; font-weight: bold;")
+            lbl_name.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
             
             lbl_status = QLabel(status)
-            lbl_status.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
+            lbl_status.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold; background: transparent;")
             
             btn_action = QPushButton(btn_text)
             btn_action.setFixedWidth(90)
             btn_action.setEnabled(btn_enabled)
             
-            # 按鈕行為綁定
             if btn_enabled and not is_installed:
                 btn_action.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #ff9800; border-radius: 4px; padding: 6px; color: #eee; } QPushButton:hover { background-color: #ff9800; color: #fff; }")
                 btn_action.clicked.connect(lambda checked, l=lang_code: self.start_download_ocr(l))
@@ -2758,12 +2821,15 @@ class SettingsDialog(QDialog):
             row.addWidget(lbl_status)
             row.addStretch(1)
             row.addWidget(btn_action)
-            self.lang_layout.addLayout(row)
             
-            # 儲存引用以便下載時鎖定按鈕
+            # 將包裝好的 Widget 加入主版面
+            self.lang_layout.addWidget(row_widget)
+            
             self.lang_ui_elements[lang_code] = {"status": lbl_status, "btn": btn_action}
             
-            line = QFrame(); line.setFrameShape(QFrame.Shape.HLine); line.setStyleSheet("border-top: 1px solid #444;")
+            line = QFrame()
+            line.setFrameShape(QFrame.Shape.HLine)
+            line.setStyleSheet("border-top: 1px solid #444;")
             self.lang_layout.addWidget(line)
 
     def start_download_ocr(self, lang_code):
