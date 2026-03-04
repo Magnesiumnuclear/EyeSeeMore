@@ -1830,6 +1830,7 @@ class MainWindow(QMainWindow):
         ocr_mode = ui_state.get("ocr_shift_mode", "hold")      # 預設為長按
         nav_mode = ui_state.get("preview_wasd_mode", "nav")    # 預設為單純移動
 
+        # 1. 處理鍵盤按下 (KeyPress)
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
         
@@ -1868,6 +1869,7 @@ class MainWindow(QMainWindow):
                     self.toggle_preview()
                     return True
     
+        # 2. 處理鍵盤放開 (KeyRelease) -> 關閉紅框 (僅限 Hold 模式)
         if event.type() == QEvent.Type.KeyRelease:
             if event.key() == Qt.Key.Key_Shift:
                 if self.preview_overlay.isVisible():
@@ -1876,9 +1878,7 @@ class MainWindow(QMainWindow):
                         self.preview_overlay.set_ocr_visible(False)
                 return True
 
-        return super().eventFilter(obj, event)
-
-        # 處理滑鼠點擊 (MouseButtonPress)
+        # 3. 處理滑鼠點擊 (MouseButtonPress) -> 顯示/隱藏歷史紀錄
         if event.type() == QEvent.Type.MouseButtonPress:
             click_pos = event.globalPosition().toPoint()
             
@@ -1889,9 +1889,11 @@ class MainWindow(QMainWindow):
                 if not input_rect.contains(click_pos) and not list_rect.contains(click_pos): 
                     self.history_list.hide()
 
+            # 點擊搜尋框彈出歷史紀錄
             if obj == self.input: 
                 self.show_history_popup()
 
+        # 最後確保所有未攔截的事件正常傳遞給父層
         return super().eventFilter(obj, event)
 
     # [新增] 輔助函式：發送模擬按鍵給 ListView
