@@ -871,7 +871,7 @@ class OCRDownloadWorker(QThread):
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 # ==========================================
-#  UI 元件
+# 請將這段程式碼完全覆蓋原本的 OCRLabel 類別
 # ==========================================
 class OCRLabel(QLabel):
     def __init__(self, parent=None):
@@ -879,10 +879,12 @@ class OCRLabel(QLabel):
         self.ocr_data = []
         self.show_ocr_boxes = False
         self.original_size = QSize(0, 0)
+        self.search_query = "" # [新增] 儲存當前的搜尋關鍵字
 
-    def set_ocr_data(self, data, orig_w, orig_h):
+    def set_ocr_data(self, data, orig_w, orig_h, query=""):
         self.ocr_data = data
         self.original_size = QSize(orig_w, orig_h)
+        self.search_query = query.lower() # [新增] 轉小寫方便比對
 
     def set_draw_boxes(self, show):
         self.show_ocr_boxes = show
@@ -894,16 +896,12 @@ class OCRLabel(QLabel):
         # 只有在需要繪製 OCR 框、有資料且有圖片時才進入
         if self.show_ocr_boxes and self.ocr_data and self.pixmap():
             
-            # [加入] 安全檢查：防止原始尺寸為 0 導致除法錯誤
+            # 安全檢查：防止原始尺寸為 0 導致除法錯誤
             if self.original_size.width() == 0 or self.original_size.height() == 0:
                 return
 
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            
-            pen = QPen(QColor(255, 0, 0, 200)) 
-            pen.setWidth(2)
-            painter.setPen(pen)
             
             displayed_w = self.pixmap().width()
             displayed_h = self.pixmap().height()
@@ -911,12 +909,13 @@ class OCRLabel(QLabel):
             offset_x = (self.width() - displayed_w) / 2
             offset_y = (self.height() - displayed_h) / 2
             
-            # 這裡如果 original_size 是 0，沒有上面的檢查就會崩潰
             scale_x = displayed_w / self.original_size.width()
             scale_y = displayed_h / self.original_size.height()
 
             for item in self.ocr_data:
                 box = item.get("box") 
+                text = item.get("text", "").lower() # [新增] 取得該框的文字並轉小寫
+                
                 if box:
                     poly_points = []
                     for pt in box:
@@ -924,7 +923,25 @@ class OCRLabel(QLabel):
                         ny = pt[1] * scale_y + offset_y
                         poly_points.append(QPoint(int(nx), int(ny)))
                     
-                    painter.drawPolygon(QPolygon(poly_points))
+                    polygon = QPolygon(poly_points)
+                    
+                    # ==========================================
+                    # [新增] 螢光高亮判斷邏輯
+                    # ==========================================
+                    if self.search_query and self.search_query in text:
+                        # 命中目標：畫上紅色邊線 + 半透明黃色填充 (螢光筆效果)
+                        painter.setBrush(QBrush(QColor(255, 255, 0, 100))) 
+                        pen = QPen(QColor(255, 0, 0, 255))
+                        pen.setWidth(2)
+                        painter.setPen(pen)
+                    else:
+                        # 沒搜尋或是沒命中：維持純紅框，內部透明
+                        painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                        pen = QPen(QColor(255, 0, 0, 200)) 
+                        pen.setWidth(2)
+                        painter.setPen(pen)
+                    
+                    painter.drawPolygon(polygon)
 
 class PreviewOverlay(QWidget):
     def __init__(self, parent=None):
@@ -956,7 +973,11 @@ class PreviewOverlay(QWidget):
         self.ocr_hint.setStyleSheet("color: #888; font-size: 12px; margin-top: 5px;")
         self.layout.addWidget(self.ocr_hint, alignment=Qt.AlignmentFlag.AlignCenter)
 
-    def show_image(self, result_data):
+    # ==========================================
+# 請找到 PreviewOverlay 類別裡面的 show_image 函式，並進行替換
+# ==========================================
+    # [修改] 加上 current_query 參數
+    def show_image(self, result_data, current_query=""):
         # 兼容 ImageItem 物件
         if isinstance(result_data, ImageItem):
             path = result_data.path
@@ -967,9 +988,6 @@ class PreviewOverlay(QWidget):
 
         if not os.path.exists(path): return
         
-        # ==========================================
-        # [關鍵修復] 使用 QImageReader 並開啟自動轉正
-        # ==========================================
         from PyQt6.QtGui import QImageReader
         reader = QImageReader(path)
         reader.setAutoTransform(True) # 讓 Qt 自動讀取 EXIF 並把圖片轉正
@@ -977,9 +995,6 @@ class PreviewOverlay(QWidget):
         
         if img.isNull(): return
         
-        # ==========================================
-        # 處理 EXIF 旋轉導致的 OCR 座標錯位 (維持上次的矩陣轉換邏輯)
-        # ==========================================
         import copy
         from PIL import Image, ExifTags
         
@@ -1003,7 +1018,6 @@ class PreviewOverlay(QWidget):
                         new_box = []
                         for pt in box:
                             x, y = pt[0], pt[1]
-                            # 根據 EXIF 1~8 的方向標籤轉換座標系
                             if orientation == 2:   nx, ny = raw_w - x, y
                             elif orientation == 3: nx, ny = raw_w - x, raw_h - y
                             elif orientation == 4: nx, ny = x, raw_h - y
@@ -1017,7 +1031,6 @@ class PreviewOverlay(QWidget):
                     processed_boxes = new_boxes
         except Exception as e:
             print(f"EXIF rotation parsing error: {e}")
-        # ==========================================
         
         screen_size = self.parent().size()
         max_w = int(screen_size.width() * 0.85)
@@ -1028,9 +1041,9 @@ class PreviewOverlay(QWidget):
         
         self.image_label.setPixmap(pixmap)
         
-        # 傳入顯示用的「已經轉正」的長寬 (此時 img.width/height 已經是轉正後的直立尺寸了)
+        # [修改] 傳入 current_query 讓 OCRLabel 知道目前在搜什麼
         orig_w, orig_h = img.width(), img.height()
-        self.image_label.set_ocr_data(processed_boxes, orig_w, orig_h)
+        self.image_label.set_ocr_data(processed_boxes, orig_w, orig_h, current_query)
         
         self.filename_label.setText(os.path.basename(path))
         self.resize(self.parent().size())
@@ -1904,30 +1917,39 @@ class MainWindow(QMainWindow):
         QApplication.sendEvent(self.list_view, press_event)
         QApplication.sendEvent(self.list_view, release_event)
 
+    # ==========================================
+# 請找到 MainWindow 類別中的 toggle_preview 與 on_selection_changed 函式並替換
+# ==========================================
+
     def toggle_preview(self):
         if self.preview_overlay.isVisible():
             self.preview_overlay.hide()
-            self.is_ocr_locked = False # 關閉時重置狀態
+            self.is_ocr_locked = False 
         else:
             index = self.list_view.currentIndex()
             if index.isValid():
                 item = index.data(Qt.ItemDataRole.UserRole)
                 if item:
-                    self.is_ocr_locked = False # 開啟時先重置紅框
-                    self.preview_overlay.show_image(item)
+                    self.is_ocr_locked = False
+                    # [新增] 讀取目前搜尋框的文字
+                    current_query = self.input.text().strip()
+                    # [修改] 將文字傳遞給預覽圖層
+                    self.preview_overlay.show_image(item, current_query)
+                    self.preview_overlay.set_ocr_visible(False)
 
     def on_selection_changed(self, current, previous):
         """處理模式 2：沉浸式切換邏輯"""
         ui_state = self.config.get("ui_state", {})
         nav_mode = ui_state.get("preview_wasd_mode", "nav")
     
-        # 如果預覽畫面開著，且設定為「同步切換」模式
         if self.preview_overlay.isVisible() and nav_mode == "sync":
             if current.isValid():
                 item = current.data(Qt.ItemDataRole.UserRole)
                 if item:
-                    self.preview_overlay.show_image(item)
-                    # 切換圖片時，通常建議重置紅框狀態以利閱讀新圖
+                    # [新增] 讀取目前搜尋框的文字
+                    current_query = self.input.text().strip()
+                    # [修改] 將文字傳遞給預覽圖層
+                    self.preview_overlay.show_image(item, current_query)
                     self.is_ocr_locked = False
                     self.preview_overlay.set_ocr_visible(False)
 
