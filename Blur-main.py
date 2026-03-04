@@ -3236,16 +3236,50 @@ class SettingsDialog(QDialog):
         page, layout = self._create_page_container("⌨️ 操作與快捷鍵 (Hotkeys)")
         ui_state = self.main_window.config.get("ui_state", {})
 
-        # 1. WASD 行為設定
+        # ==========================================
+        # 專屬 QSS：讓下拉選單與背景 #2b2b2b 產生強烈區別
+        # ==========================================
+        combo_style = """
+            QComboBox {
+                background-color: #383838;  /* 比背景更亮的凸起感 */
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 8px 12px;
+                color: #ffffff;
+                font-size: 14px;
+            }
+            QComboBox:hover {
+                background-color: #454545;  /* 懸停時再亮一階 */
+                border: 1px solid #60cdff;  /* 懸停邊框變藍 */
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 24px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2b2b2b;
+                border: 1px solid #555555;
+                selection-background-color: #383838;
+                selection-color: #60cdff;
+                outline: none;
+            }
+        """
+
+        # --- 區塊一：預覽導覽行為 (下拉選單) ---
         group_nav = QGroupBox("預覽導覽行為")
         layout_nav = QVBoxLayout(group_nav)
-        layout_nav.addWidget(QLabel("空白鍵預覽時，按下 W/A/S/D 的反應："))
+        layout_nav.setSpacing(10)
+        lbl_nav = QLabel("空白鍵預覽時，按下 W/A/S/D 的反應：")
+        lbl_nav.setStyleSheet("color: #ccc;")
+        layout_nav.addWidget(lbl_nav)
     
         self.combo_wasd = QComboBox()
+        self.combo_wasd.setStyleSheet(combo_style)
+        self.combo_wasd.setFixedHeight(38)
         self.combo_wasd.addItems([
-        "選項 A：移動背景游標並保持預覽 (目前行為)",
-        "選項 B：關閉預覽圖 (快速偷瞄模式)",
-        "選項 C：切換預覽圖 (沉浸看圖模式)"
+            "選項 A：移動背景游標並保持預覽 (預設)",
+            "選項 B：關閉預覽圖 (快速偷瞄模式)",
+            "選項 C：切換預覽圖 (沉浸看圖模式)"
         ])
         nav_map = {"nav": 0, "close": 1, "sync": 2}
         self.combo_wasd.setCurrentIndex(nav_map.get(ui_state.get("preview_wasd_mode", "nav"), 0))
@@ -3253,31 +3287,70 @@ class SettingsDialog(QDialog):
         layout_nav.addWidget(self.combo_wasd)
         layout.addWidget(group_nav)
 
-        # 2. Shift OCR 設定
+        # --- 區塊二：OCR 檢視方式 (下拉選單取代原本的 RadioButton) ---
         group_ocr = QGroupBox("OCR 檢視方式")
         layout_ocr = QVBoxLayout(group_ocr)
-        layout_ocr.addWidget(QLabel("預覽圖片時，Shift 鍵的觸發邏輯："))
+        layout_ocr.setSpacing(10)
+        lbl_ocr = QLabel("預覽圖片時，Shift 鍵的觸發邏輯：")
+        lbl_ocr.setStyleSheet("color: #ccc;")
+        layout_ocr.addWidget(lbl_ocr)
     
-        self.rb_ocr_hold = QRadioButton("長按 Shift 顯示紅框 (Hold)")
-        self.rb_ocr_toggle = QRadioButton("按一下 Shift 切換顯示/隱藏 (Toggle)")
-    
+        self.combo_ocr = QComboBox()
+        self.combo_ocr.setStyleSheet(combo_style)
+        self.combo_ocr.setFixedHeight(38)
+        self.combo_ocr.addItems([
+            "模式 A：長按 Shift 顯示紅框，放開隱藏 (Hold)",
+            "模式 B：按一下 Shift 切換顯示 / 隱藏 (Toggle)"
+        ])
         ocr_mode = ui_state.get("ocr_shift_mode", "hold")
-        if ocr_mode == "toggle": self.rb_ocr_toggle.setChecked(True)
-        else: self.rb_ocr_hold.setChecked(True)
-    
-        self.rb_ocr_hold.toggled.connect(self.on_ocr_mode_changed)
-        self.rb_ocr_toggle.toggled.connect(self.on_ocr_mode_changed)
-    
-        layout_ocr.addWidget(self.rb_ocr_hold)
-        layout_ocr.addWidget(self.rb_ocr_toggle)
+        self.combo_ocr.setCurrentIndex(1 if ocr_mode == "toggle" else 0)
+        # 暫時連接防崩潰事件
+        self.combo_ocr.currentIndexChanged.connect(self.on_ocr_mode_changed)
+        layout_ocr.addWidget(self.combo_ocr)
         layout.addWidget(group_ocr)
 
+        # --- 區塊三：進階視覺效果 (階層式核取方塊) ---
+        group_visual = QGroupBox("進階視覺效果 (Advanced Visuals)")
+        layout_visual = QVBoxLayout(group_visual)
+        layout_visual.setSpacing(12)
+
+        # 3-1: 主開關 (精確高亮)
         self.chk_precise_ocr = QCheckBox("啟用精確文字高亮 (僅著色關鍵字部分)")
-        # 從 config 讀取目前的狀態
-        is_precise = self.main_window.config.get("ui_state", {}).get("precise_ocr_highlight", False)
+        is_precise = ui_state.get("precise_ocr_highlight", False)
         self.chk_precise_ocr.setChecked(is_precise)
+        
+        # 3-2: 子開關 (縮排 25px)
+        self.chk_margin_comp = QCheckBox("↳ 啟用邊緣縮減補償 (Margin Compensation)")
+        # 透過 margin-left 做出完美的父子層級視覺
+        self.chk_margin_comp.setStyleSheet("QCheckBox { margin-left: 25px; color: #aaa; } QCheckBox::indicator { margin-left: 0px; }")
+        is_margin = ui_state.get("margin_compensation", True) # 之後可以加進 config
+        self.chk_margin_comp.setChecked(is_margin)
+        self.chk_margin_comp.setEnabled(is_precise) # 初始化連動
+
+        # UI 狀態連動邏輯 (當父開關被切換時，子開關跟著啟用/禁用)
+        self.chk_precise_ocr.stateChanged.connect(
+            lambda state: self.chk_margin_comp.setEnabled(state == Qt.CheckState.Checked.value)
+        )
+        # 保留原本存入 config 的邏輯
         self.chk_precise_ocr.stateChanged.connect(self.on_precise_highlight_changed)
-        layout.addWidget(self.chk_precise_ocr)
+
+        # 3-3: 獨立開關 (重疊防護)
+        self.chk_dedup = QCheckBox("啟用多語系重疊防護 (Deduplication)")
+        is_dedup = ui_state.get("ocr_deduplication", True) # 之後可以加進 config
+        self.chk_dedup.setChecked(is_dedup)
+
+        # 加入 Layout
+        layout_visual.addWidget(self.chk_precise_ocr)
+        layout_visual.addWidget(self.chk_margin_comp)
+        
+        # 畫一條虛線分隔不同類型的功能
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet("border-top: 1px dashed #444; margin-top: 5px; margin-bottom: 5px;")
+        layout_visual.addWidget(line)
+        
+        layout_visual.addWidget(self.chk_dedup)
+        layout.addWidget(group_visual)
         
         layout.addStretch(1)
         self.stack.addWidget(page)
@@ -3298,8 +3371,10 @@ class SettingsDialog(QDialog):
         ui_state["preview_wasd_mode"] = selected_mode
         self.main_window.config.set("ui_state", ui_state)
 
-    def on_ocr_mode_changed(self):
-        mode = "toggle" if self.rb_ocr_toggle.isChecked() else "hold"
+    # [修改] 配合 QComboBox 改為接收 index 參數
+    def on_ocr_mode_changed(self, index):
+        # 0 是 Hold, 1 是 Toggle
+        mode = "toggle" if index == 1 else "hold"
         
         # 更新 config
         ui_state = self.main_window.config.get("ui_state", {})
