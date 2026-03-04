@@ -1823,80 +1823,60 @@ class MainWindow(QMainWindow):
             self.model.set_search_results(results)
             self.status.setText(f"Folder: {os.path.basename(path)} ({len(results)} items)")
 
+        # [修改] MainWindow.eventFilter
     def eventFilter(self, obj, event):
-        # 取得設定模式 (預設向後相容：長按顯示、方向鍵只跑底層)
-        ocr_mode = self.config.get("ui_state", {}).get("ocr_shift_mode", "hold")
-        nav_mode = self.config.get("ui_state", {}).get("preview_wasd_mode", "nav")
+        # 從設定檔讀取操作模式
+        ui_state = self.config.get("ui_state", {})
+        ocr_mode = ui_state.get("ocr_shift_mode", "hold")      # 預設為長按
+        nav_mode = ui_state.get("preview_wasd_mode", "nav")    # 預設為單純移動
 
-        # 處理鍵盤按下 (KeyPress)
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
-            
-            # --- Shift 邏輯 (單按 Toggle vs 長按 Hold) ---
+        
+            # --- Shift 鍵邏輯：查看 OCR ---
             if key == Qt.Key.Key_Shift:
                 if self.preview_overlay.isVisible():
                     if ocr_mode == "toggle":
-                        # 切換模式：反轉狀態並維持
+                        # 切換模式：反轉目前的鎖定狀態
                         self.is_ocr_locked = not self.is_ocr_locked
                         self.preview_overlay.set_ocr_visible(self.is_ocr_locked)
                     else:
-                        # 傳統長按模式：按下顯示
+                        # 長按模式：按下即顯示
                         self.preview_overlay.set_ocr_visible(True)
                 return True 
 
+            # --- W/A/S/D 方向鍵邏輯 ---
             if not self.input.hasFocus() and QApplication.activeWindow() == self:
-                # --- W/A/S/D 預覽圖連動邏輯 ---
                 if key in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D):
-                    # 1. 如果預覽畫面「沒開」，純粹移動背景游標
-                    if not self.preview_overlay.isVisible():
-                        self.list_view.setFocus()
-                        if key == Qt.Key.Key_W: self.send_nav_key(Qt.Key.Key_Up)
-                        elif key == Qt.Key.Key_S: self.send_nav_key(Qt.Key.Key_Down)
-                        elif key == Qt.Key.Key_A: self.send_nav_key(Qt.Key.Key_Left)
-                        elif key == Qt.Key.Key_D: self.send_nav_key(Qt.Key.Key_Right)
-                        return True
-
-                    # 2. 如果預覽畫面「已開」，根據選項決定行為
-                    if nav_mode == "close":
-                        # 選項 B: 關閉預覽並回到底層控制
+                    # 判斷預覽視窗是否開啟
+                    is_preview_active = self.preview_overlay.isVisible()
+                
+                    # 如果是「模式 1：關閉預覽」，且預覽正開啟時按下 WASD
+                    if is_preview_active and nav_mode == "close":
                         self.preview_overlay.hide()
-                        self.list_view.setFocus()
-                        if key == Qt.Key.Key_W: self.send_nav_key(Qt.Key.Key_Up)
-                        elif key == Qt.Key.Key_S: self.send_nav_key(Qt.Key.Key_Down)
-                        elif key == Qt.Key.Key_A: self.send_nav_key(Qt.Key.Key_Left)
-                        elif key == Qt.Key.Key_D: self.send_nav_key(Qt.Key.Key_Right)
-                        return True
-
-                    elif nav_mode == "sync":
-                        # 選項 C: 沉浸式切換。先讓底層游標移動，等待底層回報 currentChanged 後自然更新
-                        self.list_view.setFocus()
-                        if key == Qt.Key.Key_W: self.send_nav_key(Qt.Key.Key_Up)
-                        elif key == Qt.Key.Key_S: self.send_nav_key(Qt.Key.Key_Down)
-                        elif key == Qt.Key.Key_A: self.send_nav_key(Qt.Key.Key_Left)
-                        elif key == Qt.Key.Key_D: self.send_nav_key(Qt.Key.Key_Right)
-                        return True
-
-                    else:
-                        # 選項 A: (預設 nav) 保持預覽圖不動，但背景游標繼續跑
-                        self.list_view.setFocus()
-                        if key == Qt.Key.Key_W: self.send_nav_key(Qt.Key.Key_Up)
-                        elif key == Qt.Key.Key_S: self.send_nav_key(Qt.Key.Key_Down)
-                        elif key == Qt.Key.Key_A: self.send_nav_key(Qt.Key.Key_Left)
-                        elif key == Qt.Key.Key_D: self.send_nav_key(Qt.Key.Key_Right)
-                        return True
-
+                        self.is_ocr_locked = False
+                
+                    # 執行底層移動
+                    self.list_view.setFocus()
+                    if key == Qt.Key.Key_W: self.send_nav_key(Qt.Key.Key_Up)
+                    elif key == Qt.Key.Key_S: self.send_nav_key(Qt.Key.Key_Down)
+                    elif key == Qt.Key.Key_A: self.send_nav_key(Qt.Key.Key_Left)
+                    elif key == Qt.Key.Key_D: self.send_nav_key(Qt.Key.Key_Right)
+                    return True
+                
                 elif key == Qt.Key.Key_Space:
                     self.toggle_preview()
                     return True
-        
-        # 處理鍵盤放開 (KeyRelease) -> 關閉紅框 (僅限 Hold 模式)
+    
         if event.type() == QEvent.Type.KeyRelease:
             if event.key() == Qt.Key.Key_Shift:
                 if self.preview_overlay.isVisible():
-                    # 如果是切換模式，放開按鍵時不要把紅框關掉
+                    # 只有在「長按模式」下，放開按鍵才會隱藏紅框
                     if ocr_mode != "toggle":
                         self.preview_overlay.set_ocr_visible(False)
                 return True
+
+        return super().eventFilter(obj, event)
 
         # 處理滑鼠點擊 (MouseButtonPress)
         if event.type() == QEvent.Type.MouseButtonPress:
@@ -1925,17 +1905,27 @@ class MainWindow(QMainWindow):
     def toggle_preview(self):
         if self.preview_overlay.isVisible():
             self.preview_overlay.hide()
-            # 關閉預覽時，重設 OCR 鎖定狀態
-            self.is_ocr_locked = False
-            self.preview_overlay.set_ocr_visible(False)
+            self.is_ocr_locked = False # 關閉時重置狀態
         else:
-            # 獲取選取項目
             index = self.list_view.currentIndex()
             if index.isValid():
                 item = index.data(Qt.ItemDataRole.UserRole)
                 if item:
+                    self.is_ocr_locked = False # 開啟時先重置紅框
                     self.preview_overlay.show_image(item)
-                    # 每次新開啟預覽時，重設狀態
+
+    def on_selection_changed(self, current, previous):
+        """處理模式 2：沉浸式切換邏輯"""
+        ui_state = self.config.get("ui_state", {})
+        nav_mode = ui_state.get("preview_wasd_mode", "nav")
+    
+        # 如果預覽畫面開著，且設定為「同步切換」模式
+        if self.preview_overlay.isVisible() and nav_mode == "sync":
+            if current.isValid():
+                item = current.data(Qt.ItemDataRole.UserRole)
+                if item:
+                    self.preview_overlay.show_image(item)
+                    # 切換圖片時，通常建議重置紅框狀態以利閱讀新圖
                     self.is_ocr_locked = False
                     self.preview_overlay.set_ocr_visible(False)
 
@@ -2411,7 +2401,7 @@ class SettingsDialog(QDialog):
             QListWidget::item:selected { background-color: #383838; color: white; font-weight: bold; border-left: 4px solid #60cdff; border-radius: 6px; }
         """)
         
-        for tab in ["📁 資料夾管理", "🧠 AI 引擎設定", "🖥️ 介面與顯示", "ℹ️ 關於與說明"]:
+        for tab in ["📁 資料夾管理", "🧠 AI 引擎設定", "🖥️ 介面與顯示", "⌨️ 操作與快捷鍵", "ℹ️ 關於與說明"]:
             self.nav_list.addItem(tab)
             
         main_layout.addWidget(self.nav_list)
@@ -2423,6 +2413,7 @@ class SettingsDialog(QDialog):
         self.init_page_folders()
         self.init_page_ai()
         self.init_page_appearance()
+        self.init_page_hotkeys()
         self.init_page_about()
         self.nav_list.setCurrentRow(0)
 
@@ -3085,70 +3076,59 @@ class SettingsDialog(QDialog):
 
     def init_page_appearance(self):
         page, layout = self._create_page_container("🖥️ 介面與顯示 (Appearance)")
-        
-        # --- 區塊 1：顯示大小 ---
-        group_display = QGroupBox("顯示設定")
-        layout_display = QVBoxLayout(group_display)
-        layout_display.setSpacing(10)
-        
-        layout_display.addWidget(QLabel("預設圖片顯示大小："))
+        layout.addWidget(QLabel("預設圖片顯示大小："))
         self.combo_size = QComboBox()
         self.combo_size.setFixedHeight(35)
         self.combo_size.addItems(["超大圖示 (Extra Large)", "大圖示 (Large)", "中圖示 (Medium)"])
-        
+    
         mode_map = {"xl": 0, "large": 1, "medium": 2}
-        current_mode = self.main_window.current_view_mode
-        self.combo_size.setCurrentIndex(mode_map.get(current_mode, 1))
+        self.combo_size.setCurrentIndex(mode_map.get(self.main_window.current_view_mode, 1))
         self.combo_size.currentIndexChanged.connect(self.on_view_mode_changed)
-        
-        layout_display.addWidget(self.combo_size)
-        layout.addWidget(group_display)
-        
-        # --- [NEW] 區塊 2：操作與快捷鍵 ---
-        group_keys = QGroupBox("⌨️ 操作與快捷鍵")
-        layout_keys = QVBoxLayout(group_keys)
-        layout_keys.setSpacing(15)
-        
-        # 2-1: 預覽方向鍵行為
-        layout_keys.addWidget(QLabel("空白鍵預覽時的 W/A/S/D 方向鍵行為："))
+    
+        layout.addWidget(self.combo_size)
+        layout.addStretch(1)
+        self.stack.addWidget(page)
+
+    def init_page_hotkeys(self):
+        page, layout = self._create_page_container("⌨️ 操作與快捷鍵 (Hotkeys)")
+        ui_state = self.main_window.config.get("ui_state", {})
+
+        # 1. WASD 行為設定
+        group_nav = QGroupBox("預覽導覽行為")
+        layout_nav = QVBoxLayout(group_nav)
+        layout_nav.addWidget(QLabel("空白鍵預覽時，按下 W/A/S/D 的反應："))
+    
         self.combo_wasd = QComboBox()
-        self.combo_wasd.setFixedHeight(35)
         self.combo_wasd.addItems([
-            "選項 A：移動背景游標並保持預覽 (預設)", 
-            "選項 B：關閉預覽圖 (快速偷瞄模式)", 
-            "選項 C：切換預覽圖 (沉浸看圖模式)"
+        "選項 A：移動背景游標並保持預覽 (目前行為)",
+        "選項 B：關閉預覽圖 (快速偷瞄模式)",
+        "選項 C：切換預覽圖 (沉浸看圖模式)"
         ])
-        
-        wasd_map = {"nav": 0, "close": 1, "sync": 2}
-        current_wasd = self.main_window.config.get("ui_state", {}).get("preview_wasd_mode", "nav")
-        self.combo_wasd.setCurrentIndex(wasd_map.get(current_wasd, 0))
+        nav_map = {"nav": 0, "close": 1, "sync": 2}
+        self.combo_wasd.setCurrentIndex(nav_map.get(ui_state.get("preview_wasd_mode", "nav"), 0))
         self.combo_wasd.currentIndexChanged.connect(self.on_wasd_mode_changed)
-        layout_keys.addWidget(self.combo_wasd)
-        
-        # 2-2: OCR 紅框顯示方式
-        layout_keys.addWidget(QLabel("預覽時 Shift 檢視 OCR 的操作方式："))
-        ocr_mode_container = QWidget()
-        ocr_mode_layout = QHBoxLayout(ocr_mode_container)
-        ocr_mode_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.rb_ocr_hold = QRadioButton("長按 Shift 顯示 (Hold)")
-        self.rb_ocr_toggle = QRadioButton("敲擊 Shift 切換 (Toggle)")
-        
-        current_ocr = self.main_window.config.get("ui_state", {}).get("ocr_shift_mode", "hold")
-        if current_ocr == "toggle":
-            self.rb_ocr_toggle.setChecked(True)
-        else:
-            self.rb_ocr_hold.setChecked(True)
-            
+        layout_nav.addWidget(self.combo_wasd)
+        layout.addWidget(group_nav)
+
+        # 2. Shift OCR 設定
+        group_ocr = QGroupBox("OCR 檢視方式")
+        layout_ocr = QVBoxLayout(group_ocr)
+        layout_ocr.addWidget(QLabel("預覽圖片時，Shift 鍵的觸發邏輯："))
+    
+        self.rb_ocr_hold = QRadioButton("長按 Shift 顯示紅框 (Hold)")
+        self.rb_ocr_toggle = QRadioButton("按一下 Shift 切換顯示/隱藏 (Toggle)")
+    
+        ocr_mode = ui_state.get("ocr_shift_mode", "hold")
+        if ocr_mode == "toggle": self.rb_ocr_toggle.setChecked(True)
+        else: self.rb_ocr_hold.setChecked(True)
+    
         self.rb_ocr_hold.toggled.connect(self.on_ocr_mode_changed)
-        
-        ocr_mode_layout.addWidget(self.rb_ocr_hold)
-        ocr_mode_layout.addWidget(self.rb_ocr_toggle)
-        ocr_mode_layout.addStretch(1)
-        layout_keys.addWidget(ocr_mode_container)
-        
-        layout.addWidget(group_keys)
-        
+        self.rb_ocr_toggle.toggled.connect(self.on_ocr_mode_changed)
+    
+        layout_ocr.addWidget(self.rb_ocr_hold)
+        layout_ocr.addWidget(self.rb_ocr_toggle)
+        layout.addWidget(group_ocr)
+
         layout.addStretch(1)
         self.stack.addWidget(page)
 
