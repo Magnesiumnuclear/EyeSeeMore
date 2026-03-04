@@ -871,6 +871,9 @@ class OCRDownloadWorker(QThread):
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 # ==========================================
+# 原本的 OCRLabel 類別
+# ==========================================
+# ==========================================
 # 請將這段程式碼完全覆蓋原本的 OCRLabel 類別
 # ==========================================
 class OCRLabel(QLabel):
@@ -879,24 +882,69 @@ class OCRLabel(QLabel):
         self.ocr_data = []
         self.show_ocr_boxes = False
         self.original_size = QSize(0, 0)
-        self.search_query = "" # [新增] 儲存當前的搜尋關鍵字
+        self.search_query = ""
+        self.is_precise_mode = False 
 
-    def set_ocr_data(self, data, orig_w, orig_h, query=""):
+    def set_ocr_data(self, data, orig_w, orig_h, query="", is_precise=False):
         self.ocr_data = data
         self.original_size = QSize(orig_w, orig_h)
-        self.search_query = query.lower() # [新增] 轉小寫方便比對
+        self.search_query = query.lower()
+        self.is_precise_mode = is_precise
 
     def set_draw_boxes(self, show):
         self.show_ocr_boxes = show
         self.update() 
 
+    # ==========================================
+    # [修復 1] 座標重排序 (幾何定錨)
+    # ==========================================
+    def _sort_points(self, box):
+        """將 OpenCV 隨機順序的四個點嚴格定義為 TL, TR, BR, BL"""
+        import numpy as np
+        pts = np.array(box)
+        rect = np.zeros((4, 2), dtype="float32")
+        
+        # 左上 TL: x+y 最小；右下 BR: x+y 最大
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)] # TL
+        rect[2] = pts[np.argmax(s)] # BR
+        
+        # 右上 TR: y-x 最小；左下 BL: y-x 最大
+        diff = np.diff(pts, axis=1) 
+        rect[1] = pts[np.argmin(diff)] # TR
+        rect[3] = pts[np.argmax(diff)] # BL
+        
+        return rect.tolist()
+
+    # ==========================================
+    # [修復 3] 中英文字元權重計算
+    # ==========================================
+    def _calculate_ratios(self, full_text, search_query):
+        """計算字元權重與起訖比例 (中文字寬度權重=2, 英數字=1)"""
+        start_idx = full_text.find(search_query)
+        if start_idx == -1:
+            return 0.0, 1.0
+            
+        def get_weight(char):
+            # 判斷是否為全形/中日韓字元 (ASCII > 255)
+            return 2.0 if ord(char) > 255 else 1.0
+
+        total_weight = sum(get_weight(c) for c in full_text)
+        if total_weight == 0: 
+            return 0.0, 1.0
+            
+        start_weight = sum(get_weight(c) for c in full_text[:start_idx])
+        match_weight = sum(get_weight(c) for c in search_query)
+        
+        start_ratio = start_weight / total_weight
+        end_ratio = (start_weight + match_weight) / total_weight
+        
+        return start_ratio, end_ratio
+
     def paintEvent(self, event):
         super().paintEvent(event)
         
-        # 只有在需要繪製 OCR 框、有資料且有圖片時才進入
         if self.show_ocr_boxes and self.ocr_data and self.pixmap():
-            
-            # 安全檢查：防止原始尺寸為 0 導致除法錯誤
             if self.original_size.width() == 0 or self.original_size.height() == 0:
                 return
 
@@ -912,36 +960,67 @@ class OCRLabel(QLabel):
             scale_x = displayed_w / self.original_size.width()
             scale_y = displayed_h / self.original_size.height()
 
+            import math
+
             for item in self.ocr_data:
                 box = item.get("box") 
-                text = item.get("text", "").lower() # [新增] 取得該框的文字並轉小寫
+                full_text = item.get("text", "").lower()
+            
+                if box and len(box) == 4:
+                    # [套用修復 1] 強制排序座標
+                    sorted_box = self._sort_points(box)
+                    p0, p1, p2, p3 = sorted_box[0], sorted_box[1], sorted_box[2], sorted_box[3]
+                    
+                    highlight_box = sorted_box
                 
-                if box:
-                    poly_points = []
-                    for pt in box:
+                    if self.search_query and self.search_query in full_text:
+                        if self.is_precise_mode:
+                            # [套用修復 3] 取得物理權重比例
+                            start_ratio, end_ratio = self._calculate_ratios(full_text, self.search_query)
+                            
+                            # [套用修復 2] 自動判斷書寫方向
+                            width = math.hypot(p0[0] - p1[0], p0[1] - p1[1])
+                            height = math.hypot(p0[0] - p3[0], p0[1] - p3[1])
+                            
+                            # 如果高度大於寬度的 1.2 倍，視為垂直文字
+                            if height > width * 1.2:
+                                # --- 垂直切割 (Y軸插值) ---
+                                np0 = [p0[0] + (p3[0]-p0[0])*start_ratio, p0[1] + (p3[1]-p0[1])*start_ratio]
+                                np3 = [p0[0] + (p3[0]-p0[0])*end_ratio,   p0[1] + (p3[1]-p0[1])*end_ratio]
+                                
+                                np1 = [p1[0] + (p2[0]-p1[0])*start_ratio, p1[1] + (p2[1]-p1[1])*start_ratio]
+                                np2 = [p1[0] + (p2[0]-p1[0])*end_ratio,   p1[1] + (p2[1]-p1[1])*end_ratio]
+                            else:
+                                # --- 水平切割 (X軸插值) ---
+                                np0 = [p0[0] + (p1[0]-p0[0])*start_ratio, p0[1] + (p1[1]-p0[1])*start_ratio]
+                                np1 = [p0[0] + (p1[0]-p0[0])*end_ratio,   p0[1] + (p1[1]-p0[1])*end_ratio]
+                                
+                                np3 = [p3[0] + (p2[0]-p3[0])*start_ratio, p3[1] + (p2[1]-p3[1])*start_ratio]
+                                np2 = [p3[0] + (p2[0]-p3[0])*end_ratio,   p3[1] + (p2[1]-p3[1])*end_ratio]
+                        
+                            highlight_box = [np0, np1, np2, np3]
+                    
+                        poly_points = []
+                        for pt in highlight_box:
+                            nx = pt[0] * scale_x + offset_x
+                            ny = pt[1] * scale_y + offset_y
+                            poly_points.append(QPoint(int(nx), int(ny)))
+                    
+                        # 畫黃色螢光底色
+                        painter.setBrush(QBrush(QColor(255, 255, 0, 100))) 
+                        painter.setPen(Qt.PenStyle.NoPen)
+                        painter.drawPolygon(QPolygon(poly_points))
+                
+                    # 畫上原本的整條紅框 (使用修正排序後的點)
+                    full_poly_points = []
+                    for pt in sorted_box:
                         nx = pt[0] * scale_x + offset_x
                         ny = pt[1] * scale_y + offset_y
-                        poly_points.append(QPoint(int(nx), int(ny)))
-                    
-                    polygon = QPolygon(poly_points)
-                    
-                    # ==========================================
-                    # [新增] 螢光高亮判斷邏輯
-                    # ==========================================
-                    if self.search_query and self.search_query in text:
-                        # 命中目標：畫上紅色邊線 + 半透明黃色填充 (螢光筆效果)
-                        painter.setBrush(QBrush(QColor(255, 255, 0, 100))) 
-                        pen = QPen(QColor(255, 0, 0, 255))
-                        pen.setWidth(2)
-                        painter.setPen(pen)
-                    else:
-                        # 沒搜尋或是沒命中：維持純紅框，內部透明
-                        painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-                        pen = QPen(QColor(255, 0, 0, 200)) 
-                        pen.setWidth(2)
-                        painter.setPen(pen)
-                    
-                    painter.drawPolygon(polygon)
+                        full_poly_points.append(QPoint(int(nx), int(ny)))
+                
+                    painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                    painter.setPen(QPen(QColor(255, 0, 0, 200), 2))
+                    painter.drawPolygon(QPolygon(full_poly_points))
 
 class PreviewOverlay(QWidget):
     def __init__(self, parent=None):
@@ -977,7 +1056,7 @@ class PreviewOverlay(QWidget):
 # 請找到 PreviewOverlay 類別裡面的 show_image 函式，並進行替換
 # ==========================================
     # [修改] 加上 current_query 參數
-    def show_image(self, result_data, current_query=""):
+    def show_image(self, result_data, current_query="", is_precise_mode=False):
         # 兼容 ImageItem 物件
         if isinstance(result_data, ImageItem):
             path = result_data.path
@@ -1043,7 +1122,7 @@ class PreviewOverlay(QWidget):
         
         # [修改] 傳入 current_query 讓 OCRLabel 知道目前在搜什麼
         orig_w, orig_h = img.width(), img.height()
-        self.image_label.set_ocr_data(processed_boxes, orig_w, orig_h, current_query)
+        self.image_label.set_ocr_data(processed_boxes, orig_w, orig_h, current_query, is_precise_mode)
         
         self.filename_label.setText(os.path.basename(path))
         self.resize(self.parent().size())
@@ -1917,7 +1996,7 @@ class MainWindow(QMainWindow):
         QApplication.sendEvent(self.list_view, press_event)
         QApplication.sendEvent(self.list_view, release_event)
 
-    # ==========================================
+# ==========================================
 # 請找到 MainWindow 類別中的 toggle_preview 與 on_selection_changed 函式並替換
 # ==========================================
 
@@ -1931,14 +2010,14 @@ class MainWindow(QMainWindow):
                 item = index.data(Qt.ItemDataRole.UserRole)
                 if item:
                     self.is_ocr_locked = False
-                    # [新增] 讀取目前搜尋框的文字
                     current_query = self.input.text().strip()
-                    # [修改] 將文字傳遞給預覽圖層
-                    self.preview_overlay.show_image(item, current_query)
+                    # [新增] 從設定檔讀取是否開啟精確模式
+                    is_precise = self.config.get("ui_state", {}).get("precise_ocr_highlight", False)
+                    # [修改] 傳遞參數
+                    self.preview_overlay.show_image(item, current_query, is_precise)
                     self.preview_overlay.set_ocr_visible(False)
 
     def on_selection_changed(self, current, previous):
-        """處理模式 2：沉浸式切換邏輯"""
         ui_state = self.config.get("ui_state", {})
         nav_mode = ui_state.get("preview_wasd_mode", "nav")
     
@@ -1946,10 +2025,11 @@ class MainWindow(QMainWindow):
             if current.isValid():
                 item = current.data(Qt.ItemDataRole.UserRole)
                 if item:
-                    # [新增] 讀取目前搜尋框的文字
                     current_query = self.input.text().strip()
-                    # [修改] 將文字傳遞給預覽圖層
-                    self.preview_overlay.show_image(item, current_query)
+                    # [新增] 從設定檔讀取是否開啟精確模式
+                    is_precise = ui_state.get("precise_ocr_highlight", False)
+                    # [修改] 傳遞參數
+                    self.preview_overlay.show_image(item, current_query, is_precise)
                     self.is_ocr_locked = False
                     self.preview_overlay.set_ocr_visible(False)
 
@@ -3122,6 +3202,8 @@ class SettingsDialog(QDialog):
         layout.addStretch(1)
         self.stack.addWidget(page)
 
+
+
     def init_page_hotkeys(self):
         page, layout = self._create_page_container("⌨️ 操作與快捷鍵 (Hotkeys)")
         ui_state = self.main_window.config.get("ui_state", {})
@@ -3162,8 +3244,21 @@ class SettingsDialog(QDialog):
         layout_ocr.addWidget(self.rb_ocr_toggle)
         layout.addWidget(group_ocr)
 
+        self.chk_precise_ocr = QCheckBox("啟用精確文字高亮 (僅著色關鍵字部分)")
+        # 從 config 讀取目前的狀態
+        is_precise = self.main_window.config.get("ui_state", {}).get("precise_ocr_highlight", False)
+        self.chk_precise_ocr.setChecked(is_precise)
+        self.chk_precise_ocr.stateChanged.connect(self.on_precise_highlight_changed)
+        layout.addWidget(self.chk_precise_ocr)
+        
         layout.addStretch(1)
         self.stack.addWidget(page)
+
+    def on_precise_highlight_changed(self, state):
+        is_checked = (state == Qt.CheckState.Checked.value)
+        ui_state = self.main_window.config.get("ui_state", {})
+        ui_state["precise_ocr_highlight"] = is_checked
+        self.main_window.config.set("ui_state", ui_state)
 
     # [NEW] 處理設定改變的事件方法
     def on_wasd_mode_changed(self, index):

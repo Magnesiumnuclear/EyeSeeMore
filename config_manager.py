@@ -19,7 +19,8 @@ class ConfigManager:
                 "window_height": 900,
                 "is_maximized": False,
                 "sidebar_expanded": True,
-                "view_mode": "large"
+                "view_mode": "large",
+                "precise_ocr_highlight": False
             } # [新增] 補上預設值，明確界定初始狀態為 CPU
         }
         self.config = self.load_config()
