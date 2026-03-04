@@ -871,9 +871,6 @@ class OCRDownloadWorker(QThread):
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 # ==========================================
-# 原本的 OCRLabel 類別
-# ==========================================
-# ==========================================
 # 請將這段程式碼完全覆蓋原本的 OCRLabel 類別
 # ==========================================
 class OCRLabel(QLabel):
@@ -895,38 +892,29 @@ class OCRLabel(QLabel):
         self.show_ocr_boxes = show
         self.update() 
 
-    # ==========================================
-    # [修復 1] 座標重排序 (幾何定錨)
-    # ==========================================
     def _sort_points(self, box):
         """將 OpenCV 隨機順序的四個點嚴格定義為 TL, TR, BR, BL"""
         import numpy as np
         pts = np.array(box)
         rect = np.zeros((4, 2), dtype="float32")
         
-        # 左上 TL: x+y 最小；右下 BR: x+y 最大
         s = pts.sum(axis=1)
         rect[0] = pts[np.argmin(s)] # TL
         rect[2] = pts[np.argmax(s)] # BR
         
-        # 右上 TR: y-x 最小；左下 BL: y-x 最大
         diff = np.diff(pts, axis=1) 
         rect[1] = pts[np.argmin(diff)] # TR
         rect[3] = pts[np.argmax(diff)] # BL
         
         return rect.tolist()
 
-    # ==========================================
-    # [修復 3] 中英文字元權重計算
-    # ==========================================
     def _calculate_ratios(self, full_text, search_query):
-        """計算字元權重與起訖比例 (中文字寬度權重=2, 英數字=1)"""
+        """計算字元權重與起訖比例"""
         start_idx = full_text.find(search_query)
         if start_idx == -1:
             return 0.0, 1.0
             
         def get_weight(char):
-            # 判斷是否為全形/中日韓字元 (ASCII > 255)
             return 2.0 if ord(char) > 255 else 1.0
 
         total_weight = sum(get_weight(c) for c in full_text)
@@ -961,40 +949,80 @@ class OCRLabel(QLabel):
             scale_y = displayed_h / self.original_size.height()
 
             import math
+            # 引入 Shapely 進行多邊形重疊計算 (安裝 PaddleOCR 時已自帶)
+            try:
+                from shapely.geometry import Polygon as ShapelyPolygon
+            except ImportError:
+                ShapelyPolygon = None
+
+            drawn_polygons = [] # 用來記錄已經畫過的多邊形區域
 
             for item in self.ocr_data:
                 box = item.get("box") 
                 full_text = item.get("text", "").lower()
             
                 if box and len(box) == 4:
-                    # [套用修復 1] 強制排序座標
                     sorted_box = self._sort_points(box)
-                    p0, p1, p2, p3 = sorted_box[0], sorted_box[1], sorted_box[2], sorted_box[3]
                     
+                    # ==========================================
+                    # [第一步：消滅重疊幻影 (Deduplication)]
+                    # ==========================================
+                    is_duplicate = False
+                    if ShapelyPolygon:
+                        try:
+                            current_poly = ShapelyPolygon(sorted_box)
+                            if current_poly.is_valid and current_poly.area > 0:
+                                for drawn_poly in drawn_polygons:
+                                    if current_poly.intersects(drawn_poly):
+                                        inter_area = current_poly.intersection(drawn_poly).area
+                                        # 計算重疊比例 (以面積較小的框為分母，容忍些微的辨識大小誤差)
+                                        min_area = min(current_poly.area, drawn_poly.area)
+                                        if (inter_area / min_area) > 0.85: # 重疊率大於 85% 即視為重複
+                                            is_duplicate = True
+                                            break
+                                if not is_duplicate:
+                                    drawn_polygons.append(current_poly)
+                        except Exception: pass
+                            
+                    if is_duplicate:
+                        continue # 直接跳過，不畫這個重複的框！
+
+                    p0, p1, p2, p3 = sorted_box[0], sorted_box[1], sorted_box[2], sorted_box[3]
                     highlight_box = sorted_box
                 
                     if self.search_query and self.search_query in full_text:
                         if self.is_precise_mode:
-                            # [套用修復 3] 取得物理權重比例
                             start_ratio, end_ratio = self._calculate_ratios(full_text, self.search_query)
                             
-                            # [套用修復 2] 自動判斷書寫方向
+                            # ==========================================
+                            # [第二步：邊緣柔化 (Margin Compensation)]
+                            # ==========================================
+                            margin = 0.015 # 內縮 1.5% 寬度
+                            
+                            # 若非頭尾，則進行內縮
+                            if start_ratio > 0.0:
+                                start_ratio = min(start_ratio + margin, 1.0)
+                            if end_ratio < 1.0:
+                                end_ratio = max(end_ratio - margin, 0.0)
+                                
+                            # 防呆：避免因文字極短導致內縮後座標反轉
+                            if start_ratio >= end_ratio:
+                                center = (start_ratio + end_ratio) / 2.0
+                                start_ratio, end_ratio = center - 0.001, center + 0.001
+
                             width = math.hypot(p0[0] - p1[0], p0[1] - p1[1])
                             height = math.hypot(p0[0] - p3[0], p0[1] - p3[1])
                             
-                            # 如果高度大於寬度的 1.2 倍，視為垂直文字
                             if height > width * 1.2:
                                 # --- 垂直切割 (Y軸插值) ---
                                 np0 = [p0[0] + (p3[0]-p0[0])*start_ratio, p0[1] + (p3[1]-p0[1])*start_ratio]
                                 np3 = [p0[0] + (p3[0]-p0[0])*end_ratio,   p0[1] + (p3[1]-p0[1])*end_ratio]
-                                
                                 np1 = [p1[0] + (p2[0]-p1[0])*start_ratio, p1[1] + (p2[1]-p1[1])*start_ratio]
                                 np2 = [p1[0] + (p2[0]-p1[0])*end_ratio,   p1[1] + (p2[1]-p1[1])*end_ratio]
                             else:
                                 # --- 水平切割 (X軸插值) ---
                                 np0 = [p0[0] + (p1[0]-p0[0])*start_ratio, p0[1] + (p1[1]-p0[1])*start_ratio]
                                 np1 = [p0[0] + (p1[0]-p0[0])*end_ratio,   p0[1] + (p1[1]-p0[1])*end_ratio]
-                                
                                 np3 = [p3[0] + (p2[0]-p3[0])*start_ratio, p3[1] + (p2[1]-p3[1])*start_ratio]
                                 np2 = [p3[0] + (p2[0]-p3[0])*end_ratio,   p3[1] + (p2[1]-p3[1])*end_ratio]
                         
