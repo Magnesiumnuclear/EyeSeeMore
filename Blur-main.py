@@ -2150,23 +2150,32 @@ class MainWindow(QMainWindow):
     def show_history_popup(self):
         if not self.search_history: self.history_list.hide(); return
         self.history_list.clear()
+        
+        # --- 修正 1: 標題項目空間 ---
         title_item = QListWidgetItem()
         title_widget = QLabel(" Recent Searches")
-        title_widget.setStyleSheet("color: #888888; font-size: 12px; padding: 4px;")
+        # 移除內層多餘的 padding，稍微加大字體並設為粗體，確保乾淨清晰
+        title_widget.setStyleSheet("color: #888888; font-size: 13px; font-weight: bold; background: transparent;")
         title_item.setFlags(Qt.ItemFlag.NoItemFlags)
-        title_item.setSizeHint(QSize(0, 30))
+        # 給予足夠的高度 (36px)，才不會被外層的 padding 擠壓切斷
+        title_item.setSizeHint(QSize(0, 36))
         self.history_list.addItem(title_item)
         self.history_list.setItemWidget(title_item, title_widget)
         
         for text in self.search_history:
-            item = QListWidgetItem(); item.setSizeHint(QSize(0, 44))
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(0, 44))
             widget = HistoryItemWidget(text, search_callback=self.trigger_history_search, delete_callback=self.delete_history_item)
             self.history_list.addItem(item); self.history_list.setItemWidget(item, widget)
             
+        # --- 修正 2: 精準計算選單展開高度 ---
         input_pos = self.input.mapTo(self, QPoint(0, 0))
-        list_height = min(320, self.history_list.sizeHintForRow(0) * (len(self.search_history) + 1) + 20)
+        # 標題高度(36) + (歷史紀錄數量 * 每個項目高度44) + 底部邊距緩衝(10)
+        list_height = min(320, 36 + (len(self.search_history) * 44) + 10)
+        
         self.history_list.setGeometry(input_pos.x(), input_pos.y() + self.input.height() + 8, self.input.width(), list_height)
-        self.history_list.show(); self.history_list.raise_()
+        self.history_list.show()
+        self.history_list.raise_()
     
     def load_engine(self):
         try:
