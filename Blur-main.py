@@ -2408,6 +2408,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(10, self.adjust_layout)
 
     # [新增] 攔截視窗關閉事件，儲存 UI 狀態
+    # [新增] 攔截視窗關閉事件，儲存 UI 狀態
     def closeEvent(self, event):
         is_max = self.isMaximized()
         
@@ -2418,13 +2419,20 @@ class MainWindow(QMainWindow):
         else:
             w, h = self.width(), self.height()
             
-        ui_state = {
+        # ==========================================
+        # [關鍵修復] 必須先取得「現有」的 ui_state，不能直接宣告新的空字典
+        # 否則會把設定面板裡存好的快捷鍵和 OCR 設定全部洗掉！
+        # ==========================================
+        ui_state = self.config.get("ui_state", {})
+        
+        # 使用 dict.update() 只更新視窗相關的欄位，保留其他所有設定
+        ui_state.update({
             "window_width": w,
             "window_height": h,
             "is_maximized": is_max,
             "sidebar_expanded": self.sidebar.is_expanded,
             "view_mode": getattr(self, 'current_view_mode', 'large')
-        }
+        })
         
         # 寫入設定檔
         self.config.set("ui_state", ui_state)
@@ -3304,7 +3312,6 @@ class SettingsDialog(QDialog):
         ])
         ocr_mode = ui_state.get("ocr_shift_mode", "hold")
         self.combo_ocr.setCurrentIndex(1 if ocr_mode == "toggle" else 0)
-        # 暫時連接防崩潰事件
         self.combo_ocr.currentIndexChanged.connect(self.on_ocr_mode_changed)
         layout_ocr.addWidget(self.combo_ocr)
         layout.addWidget(group_ocr)
@@ -3321,23 +3328,20 @@ class SettingsDialog(QDialog):
         
         # 3-2: 子開關 (縮排 25px)
         self.chk_margin_comp = QCheckBox("↳ 啟用邊緣縮減補償 (Margin Compensation)")
-        # 透過 margin-left 做出完美的父子層級視覺
         self.chk_margin_comp.setStyleSheet("QCheckBox { margin-left: 25px; color: #aaa; } QCheckBox::indicator { margin-left: 0px; }")
-        is_margin = ui_state.get("margin_compensation", True) # 之後可以加進 config
+        is_margin = ui_state.get("margin_compensation", True) 
         self.chk_margin_comp.setChecked(is_margin)
-        self.chk_margin_comp.setEnabled(is_precise) # 初始化連動
+        self.chk_margin_comp.setEnabled(is_precise) # 初始化時判斷是否可用
 
-        # UI 狀態連動邏輯 (當父開關被切換時，子開關跟著啟用/禁用)
-        self.chk_precise_ocr.stateChanged.connect(
-            lambda state: self.chk_margin_comp.setEnabled(state == Qt.CheckState.Checked.value)
-        )
-        # 保留原本存入 config 的邏輯
+        # [修改] 將事件統一綁定給各自的方法處理，移除 lambda
         self.chk_precise_ocr.stateChanged.connect(self.on_precise_highlight_changed)
+        self.chk_margin_comp.stateChanged.connect(self.on_margin_comp_changed)
 
         # 3-3: 獨立開關 (重疊防護)
         self.chk_dedup = QCheckBox("啟用多語系重疊防護 (Deduplication)")
-        is_dedup = ui_state.get("ocr_deduplication", True) # 之後可以加進 config
+        is_dedup = ui_state.get("ocr_deduplication", True)
         self.chk_dedup.setChecked(is_dedup)
+        self.chk_dedup.stateChanged.connect(self.on_dedup_changed)
 
         # 加入 Layout
         layout_visual.addWidget(self.chk_precise_ocr)
@@ -3357,31 +3361,52 @@ class SettingsDialog(QDialog):
 
     def on_precise_highlight_changed(self, state):
         is_checked = (state == Qt.CheckState.Checked.value)
+        
+        # [防呆連動] 如果主開關被關閉，強制取消勾選子開關，並將其變為不可用
+        if not is_checked:
+            self.chk_margin_comp.setChecked(False)  # 這裡會自動觸發 on_margin_comp_changed 進行存檔
+            
+        self.chk_margin_comp.setEnabled(is_checked)
+
+        # 存入 config.json
         ui_state = self.main_window.config.get("ui_state", {})
         ui_state["precise_ocr_highlight"] = is_checked
         self.main_window.config.set("ui_state", ui_state)
 
-    # [NEW] 處理設定改變的事件方法
+    def on_margin_comp_changed(self, state):
+        is_checked = (state == Qt.CheckState.Checked.value)
+        
+        # 存入 config.json
+        ui_state = self.main_window.config.get("ui_state", {})
+        ui_state["margin_compensation"] = is_checked
+        self.main_window.config.set("ui_state", ui_state)
+
+    def on_dedup_changed(self, state):
+        is_checked = (state == Qt.CheckState.Checked.value)
+        
+        # 存入 config.json
+        ui_state = self.main_window.config.get("ui_state", {})
+        ui_state["ocr_deduplication"] = is_checked
+        self.main_window.config.set("ui_state", ui_state)
+
     def on_wasd_mode_changed(self, index):
         wasd_map = {0: "nav", 1: "close", 2: "sync"}
         selected_mode = wasd_map.get(index, "nav")
         
-        # 更新 config
+        # 存入 config.json
         ui_state = self.main_window.config.get("ui_state", {})
         ui_state["preview_wasd_mode"] = selected_mode
         self.main_window.config.set("ui_state", ui_state)
 
-    # [修改] 配合 QComboBox 改為接收 index 參數
     def on_ocr_mode_changed(self, index):
         # 0 是 Hold, 1 是 Toggle
         mode = "toggle" if index == 1 else "hold"
         
-        # 更新 config
+        # 存入 config.json
         ui_state = self.main_window.config.get("ui_state", {})
         ui_state["ocr_shift_mode"] = mode
         self.main_window.config.set("ui_state", ui_state)
 
-    # [新增] 下拉選單改變時，直接呼叫主視窗的切換功能
     def on_view_mode_changed(self, index):
         # 將 index (0,1,2) 轉回對應的字串代號
         mode_map = {0: "xl", 1: "large", 2: "medium"}
