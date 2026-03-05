@@ -696,6 +696,54 @@ class ImageSearchEngine:
             return results
         except Exception as e:
             print(f"[Error] Image search failed: {e}"); return []
+        
+    def update_ocr_manual(self, file_path, flat_data):
+        """接收攤平後的資料，更新 Memory 狀態並寫回 SQLite"""
+        print(f"[Engine] Manual Edit Saved for {os.path.basename(file_path)}")
+        
+        new_full_text = ""
+
+        # 1. 更新 Memory 裡的資料
+        for item in self.data_store:
+            if item["path"] == file_path:
+                item["ocr_data"] = flat_data
+                all_text = [d.get("text", "") for d in flat_data]
+                new_full_text = " ".join(all_text).lower()
+                item["ocr_text"] = new_full_text
+                break
+                
+        # 2. 寫入 SQLite
+        try:
+            conn = sqlite3.connect(self.config.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM files WHERE file_path=?", (file_path,))
+            row = cursor.fetchone()
+            if row:
+                file_id = row[0]
+                cursor.execute("DELETE FROM ocr_results WHERE file_id=?", (file_id,))
+                
+                lang_dict = {}
+                for d in flat_data:
+                    lang = d.get("lang", "unk")
+                    if lang not in lang_dict: lang_dict[lang] = []
+                    lang_dict[lang].append(d)
+                    
+                insert_data = []
+                import json
+                for lang, boxes in lang_dict.items():
+                    lang_text = " ".join([b.get("text", "") for b in boxes])
+                    lang_json = json.dumps(boxes, ensure_ascii=False)
+                    insert_data.append((file_id, lang, lang_text, lang_json, 1.0))
+                    
+                if insert_data:
+                    cursor.executemany("INSERT INTO ocr_results (file_id, lang, ocr_text, ocr_data, confidence) VALUES (?, ?, ?, ?, ?)", insert_data)
+                conn.commit()
+            conn.close()
+            print(f"[Engine] SQLite Database updated successfully.")
+        except Exception as e:
+            print(f"[Engine] DB Update Error: {e}")
+            
+        return new_full_text
 
 from indexer import IndexerService # 確保引入
 
@@ -879,12 +927,14 @@ class OCRDownloadWorker(QThread):
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 # ==========================================
-#  [NEW] 獨立 UI 圖層：懸浮多語系標籤
+#  [NEW] 獨立 UI 圖層：懸浮多語系標籤 (支援雙重型態編輯)
 # ==========================================
 class FloatingWidget(QWidget):
+    # [新增] 編輯完成時發射的訊號
+    edit_completed = pyqtSignal(list)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        # 讓滑鼠點擊可以直接穿透這個標籤，避免擋住底下的紅框
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.hide()
         
@@ -892,8 +942,16 @@ class FloatingWidget(QWidget):
         self.box_poly = None
         self.cursor_pos = QPoint()
         self.mode = "anchored"
+        
+        # [新增] 編輯模式的狀態與元件陣列
+        self.is_editing = False
+        self.edit_fields = []
 
     def update_data(self, results, box_poly, cursor_pos, mode):
+        # [新增] 編輯狀態下，鎖定座標與資料，拒絕外部更新
+        if self.is_editing:
+            return
+
         self.results = results
         self.box_poly = box_poly
         self.cursor_pos = cursor_pos
@@ -927,30 +985,21 @@ class FloatingWidget(QWidget):
         parent_w = self.parent().width()
         parent_h = self.parent().height()
 
-        # 超長文字防護：不超過父視窗寬度
         max_panel_w = parent_w - 20
         if panel_w > max_panel_w: panel_w = max_panel_w
 
-        # --- 計算動態座標 (兩種模式) ---
+        # --- 計算動態座標 ---
         if mode == "anchored" and box_poly and not box_poly.isEmpty():
             rect = box_poly.boundingRect()
-            # 優先位置：框的上方對齊左側
             pos_x = rect.left()
             pos_y = rect.top() - panel_h - 8
 
-            # 若上方空間不夠，改放下方
-            if pos_y < 10:
-                pos_y = rect.bottom() + 8
-            # 若下方也超出畫面 (框極大)，浮在框內頂部
-            if pos_y + panel_h > parent_h:
-                pos_y = rect.top() + 8
+            if pos_y < 10: pos_y = rect.bottom() + 8
+            if pos_y + panel_h > parent_h: pos_y = rect.top() + 8
 
-            # X 軸邊界防護：超出右邊則對齊右側，超出左邊則鎖死 10px
-            if pos_x + panel_w > parent_w:
-                pos_x = rect.right() - panel_w
+            if pos_x + panel_w > parent_w: pos_x = rect.right() - panel_w
             if pos_x < 10: pos_x = 10
         else:
-            # 跟隨游標模式 (Follow)
             pos_x = cursor_pos.x() + 15
             pos_y = cursor_pos.y() + 15
             if pos_x + panel_w > parent_w: pos_x = cursor_pos.x() - panel_w - 10
@@ -961,6 +1010,91 @@ class FloatingWidget(QWidget):
         self.resize(panel_w, panel_h)
         self.move(pos_x, pos_y)
         self.show()
+        self.update()
+
+    # ==========================================
+    #  [新增] 原地變身：編輯模式控制
+    # ==========================================
+    def start_editing(self):
+        if not self.results: return
+        self.is_editing = True
+        
+        # 1. 關閉滑鼠穿透，讓輸入框能被點擊
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        
+        font_text = QFont("Microsoft JhengHei", 13, QFont.Weight.Bold)
+        fm_text = QFontMetrics(font_text)
+        pad_x = 12
+        pad_y = 10
+        line_spacing = 6
+        
+        max_lang_w = 0
+        for r in self.results:
+            w = fm_text.boundingRect(f"[{r.get('lang', 'unk').upper()}] ").width()
+            if w > max_lang_w: max_lang_w = w
+            
+        current_y = pad_y
+        
+        # 2. 動態疊加 QLineEdit (輸入框)
+        for r in self.results:
+            line_edit = QLineEdit(self)
+            line_edit.setFont(font_text)
+            line_edit.setText(r.get("text", ""))
+            
+            # 給予充滿科技感的編輯框樣式
+            line_edit.setStyleSheet("""
+                QLineEdit { background-color: #1e1e1e; color: #ffffff; border: 1px solid #60cdff; border-radius: 3px; padding: 0px 4px; }
+                QLineEdit:focus { border: 2px solid #60cdff; background-color: #2b2b2b; }
+            """)
+            
+            text_start_x = pad_x + max_lang_w
+            w = self.width() - text_start_x - pad_x
+            h = fm_text.height() + 4
+            
+            line_edit.setGeometry(text_start_x, current_y - 2, w, h)
+            line_edit.show()
+            
+            # 綁定 Enter 鍵直接儲存
+            line_edit.returnPressed.connect(self.finish_editing)
+            self.edit_fields.append((r, line_edit))
+            
+            current_y += fm_text.height() + line_spacing
+            
+        # 3. 自動將游標 Focus 到第一個語言框上
+        if self.edit_fields:
+            self.edit_fields[0][1].setFocus()
+            
+        self.update() # 觸發重繪，隱藏原本畫布上的字
+
+    def cancel_editing(self):
+        if not self.is_editing: return
+        for r, line_edit in self.edit_fields: line_edit.deleteLater()
+        self.edit_fields.clear()
+        self.is_editing = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.update()
+
+    def finish_editing(self):
+        # [關鍵修復 1] 防呆：如果已經不在編輯狀態，絕對不要重複執行，避免清空資料！
+        if not self.is_editing: 
+            return 
+            
+        new_results = []
+        for r, line_edit in self.edit_fields:
+            new_text = line_edit.text().strip()
+            new_r = r.copy()
+            new_r["text"] = new_text
+            new_r["manual"] = True 
+            new_r["conf"] = 1.0    
+            new_results.append(new_r)
+            line_edit.deleteLater()
+            
+        self.edit_fields.clear()
+        self.is_editing = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.results = new_results
+        
+        self.edit_completed.emit(new_results) 
         self.update()
 
     def paintEvent(self, event):
@@ -975,21 +1109,21 @@ class FloatingWidget(QWidget):
         line_spacing = 6
         panel_rect = self.rect()
 
-        # ==========================================
-        # [新增] 1. 預先計算所有語言標籤的「最大寬度」
-        # ==========================================
         max_lang_w = 0
         for r in self.results:
             lang_str = f"[{r.get('lang', 'unk').upper()}] "
             w = fm_text.boundingRect(lang_str).width()
-            if w > max_lang_w:
-                max_lang_w = w
+            if w > max_lang_w: max_lang_w = w
 
-        # 畫背景面板 (深灰色)
-        painter.setBrush(QBrush(QColor(35, 35, 35, 240)))
-        painter.setPen(QPen(QColor(85, 85, 85, 255), 1))
+        # 編輯狀態時，背景框變成實心黑，加強聚焦感
+        if self.is_editing:
+            painter.setBrush(QBrush(QColor(25, 25, 25, 255)))
+            painter.setPen(QPen(QColor(96, 205, 255, 255), 1))
+        else:
+            painter.setBrush(QBrush(QColor(35, 35, 35, 240)))
+            painter.setPen(QPen(QColor(85, 85, 85, 255), 1))
+            
         painter.drawRoundedRect(panel_rect.adjusted(0, 0, -1, -1), 6, 6)
-
         current_y = panel_rect.top() + pad_y + fm_text.ascent()
 
         for r in self.results:
@@ -997,27 +1131,21 @@ class FloatingWidget(QWidget):
             text_str = r.get("text", "")
             conf_str = f" {r.get('conf', 0.0):.2f}"
 
-            # 1. 畫語言標籤 (藍色)
             painter.setPen(QColor("#60cdff"))
             painter.drawText(panel_rect.left() + pad_x, current_y, lang_str)
-
-            # 2. 計算信心度寬度 (靠右對齊用)
             conf_w = fm_text.boundingRect(conf_str).width()
 
-            # 3. 畫辨識文字 (白色，過長自動省略)
-            # [關鍵修改] 使用統一的 max_lang_w 來推算 X 座標，確保所有文字垂直對齊
-            text_start_x = panel_rect.left() + pad_x + max_lang_w
-            text_max_w = panel_rect.width() - (pad_x * 2) - max_lang_w - conf_w
-            
-            if text_max_w < 20: text_max_w = 20
-            elided_text = fm_text.elidedText(text_str, Qt.TextElideMode.ElideRight, text_max_w)
-            
-            painter.setPen(QColor(255, 255, 255))
-            painter.drawText(text_start_x, current_y, elided_text)
-
-            # 4. 畫信心度 (灰色，靠右邊緣對齊)
-            painter.setPen(QColor("#aaaaaa"))
-            painter.drawText(panel_rect.right() - pad_x - conf_w, current_y, conf_str)
+            # [關鍵修改] 雙重型態切換：只有在非編輯狀態，才畫字
+            if not self.is_editing:
+                text_start_x = panel_rect.left() + pad_x + max_lang_w
+                text_max_w = panel_rect.width() - (pad_x * 2) - max_lang_w - conf_w
+                if text_max_w < 20: text_max_w = 20
+                elided_text = fm_text.elidedText(text_str, Qt.TextElideMode.ElideRight, text_max_w)
+                
+                painter.setPen(QColor(255, 255, 255))
+                painter.drawText(text_start_x, current_y, elided_text)
+                painter.setPen(QColor("#aaaaaa"))
+                painter.drawText(panel_rect.right() - pad_x - conf_w, current_y, conf_str)
 
             current_y += fm_text.height() + line_spacing
 
@@ -1035,11 +1163,10 @@ class OCRLabel(QLabel):
         self.search_query = ""
         self.is_precise_mode = False 
         
-        # [新增] 1. 開啟滑鼠追蹤，讓游標移動時也能觸發事件
         self.setMouseTracking(True)
-        # [新增] 紀錄目前滑鼠懸停踩中的多邊形索引與游標位置
         self.hovered_index = -1
         self.cursor_pos = QPoint(0, 0)
+        self.is_editing_locked = False  # [新增] 鎖定標記
 
     def set_ocr_data(self, data, orig_w, orig_h, query="", is_precise=False):
         self.original_size = QSize(orig_w, orig_h)
@@ -1047,9 +1174,6 @@ class OCRLabel(QLabel):
         self.is_precise_mode = is_precise
         self.hovered_index = -1
         
-        # ==========================================
-        # [升級] Shapely 群組打包 (Group & Merge)
-        # ==========================================
         merged_data = []
         try:
             from shapely.geometry import Polygon as ShapelyPolygon
@@ -1057,14 +1181,20 @@ class OCRLabel(QLabel):
             ShapelyPolygon = None
 
         if not ShapelyPolygon:
-            # 沒有 Shapely 的備用方案：直接轉換格式
-            for item in data:
+            # [關鍵修復 2] 追蹤原始索引 orig_indices
+            for orig_idx, item in enumerate(data):
                 merged_data.append({
                     "box": item.get("box", []),
-                    "results": [{"lang": item.get("lang", "unk"), "text": item.get("text", ""), "conf": item.get("conf", 0.0)}]
+                    "orig_indices": [orig_idx],
+                    "results": [{
+                        "lang": item.get("lang", "unk"), 
+                        "text": item.get("text", ""), 
+                        "conf": item.get("conf", 0.0),
+                        "manual": item.get("manual", False)
+                    }]
                 })
         else:
-            for item in data:
+            for orig_idx, item in enumerate(data):
                 box = item.get("box")
                 if not box or len(box) != 4: continue
                 
@@ -1081,13 +1211,14 @@ class OCRLabel(QLabel):
                         if current_poly.intersects(existing_poly):
                             inter_area = current_poly.intersection(existing_poly).area
                             min_area = min(current_poly.area, existing_poly.area)
-                            # 如果重疊超過 85%，判定為同一個區塊的不同語言結果，打包在一起！
                             if (inter_area / min_area) > 0.85:
                                 existing["results"].append({
                                     "lang": item.get("lang", "unk"),
                                     "text": item.get("text", ""),
-                                    "conf": item.get("conf", 0.0)
+                                    "conf": item.get("conf", 0.0),
+                                    "manual": item.get("manual", False)
                                 })
+                                existing["orig_indices"].append(orig_idx) # 加入追蹤
                                 is_merged = True
                                 break
                     except: pass
@@ -1096,14 +1227,15 @@ class OCRLabel(QLabel):
                     merged_data.append({
                         "box": sorted_box,
                         "poly": current_poly,
+                        "orig_indices": [orig_idx], # 加入追蹤
                         "results": [{
                             "lang": item.get("lang", "unk"),
                             "text": item.get("text", ""),
-                            "conf": item.get("conf", 0.0)
+                            "conf": item.get("conf", 0.0),
+                            "manual": item.get("manual", False)
                         }]
                     })
         
-        # 移除底層繪圖不需要的 poly 物件，避免記憶體洩漏或錯誤
         for m in merged_data:
             m.pop("poly", None)
             
@@ -1113,8 +1245,14 @@ class OCRLabel(QLabel):
         self.show_ocr_boxes = show
         if not show:
             self.hovered_index = -1
+            self.is_editing_locked = False # [新增] 解除鎖定
             self.hover_info_changed.emit([], QPolygon(), QPoint())
         self.update()
+
+    def mouseMoveEvent(self, event):
+        # [新增] 如果正在編輯中，強制無視滑鼠移動，鎖定標籤位置
+        if self.is_editing_locked:
+            return
 
     def _sort_points(self, box):
         """將 OpenCV 隨機順序的四個點嚴格定義為 TL, TR, BR, BL"""
@@ -1314,6 +1452,8 @@ class PreviewOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.hide()
         self.setStyleSheet("background-color: rgba(0, 0, 0, 220);")
+
+        self.current_item = None
         
         self.layout = QVBoxLayout(self)
         self.layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1340,8 +1480,16 @@ class PreviewOverlay(QWidget):
         self.layout.addWidget(self.ocr_hint, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.floating_tag = FloatingWidget(self)
+
+        self.floating_tag.edit_completed.connect(self.on_edit_completed)
     
     def on_hover_info_changed(self, results, poly, cursor_pos):
+        # ==========================================
+        # [關鍵修復 2] 編輯模式下，徹底無視任何懸停訊號更新或隱藏指令
+        # ==========================================
+        if self.floating_tag.is_editing:
+            return
+            
         if not results:
             self.floating_tag.hide()
             return
@@ -1357,6 +1505,13 @@ class PreviewOverlay(QWidget):
         self.floating_tag.update_data(results, mapped_poly, mapped_cursor, mode)
 
     def set_ocr_visible(self, visible):
+        # ==========================================
+        # [關鍵修復 1] 編輯模式下，絕對鎖定顯示狀態，拒絕隱藏！
+        # 這讓使用者點擊後可以放心放開 Shift 鍵，雙手打字
+        # ==========================================
+        if self.floating_tag.is_editing and not visible:
+            return
+            
         self.image_label.set_draw_boxes(visible)
         if not visible:
             self.floating_tag.hide()
@@ -1366,11 +1521,12 @@ class PreviewOverlay(QWidget):
 # ==========================================
     # [修改] 加上 current_query 參數
     def show_image(self, result_data, current_query="", is_precise_mode=False):
-        # 兼容 ImageItem 物件
+        self.current_item = result_data 
+        
         if isinstance(result_data, ImageItem):
             path = result_data.path
             ocr_boxes = result_data.ocr_data
-        else: # 字典
+        else:
             path = result_data['path']
             ocr_boxes = result_data.get('ocr_data', [])
 
@@ -1378,7 +1534,7 @@ class PreviewOverlay(QWidget):
         
         from PyQt6.QtGui import QImageReader
         reader = QImageReader(path)
-        reader.setAutoTransform(True) # 讓 Qt 自動讀取 EXIF 並把圖片轉正
+        reader.setAutoTransform(True)
         img = reader.read()
         
         if img.isNull(): return
@@ -1399,12 +1555,15 @@ class PreviewOverlay(QWidget):
                             orientation = v
                             break
                 
-                # 如果圖片有 EXIF 旋轉標記，對 OCR 座標執行矩陣轉換
+                # ==========================================
+                # [關鍵修復 1] 解決 int & str 崩潰：正確解析字典中的 "box" 陣列
+                # ==========================================
                 if orientation != 1 and processed_boxes:
-                    new_boxes = []
-                    for box in processed_boxes:
-                        new_box = []
-                        for pt in box:
+                    new_processed_boxes = []
+                    for item_dict in processed_boxes:
+                        box_pts = item_dict.get("box", [])
+                        new_box_pts = []
+                        for pt in box_pts:
                             x, y = pt[0], pt[1]
                             if orientation == 2:   nx, ny = raw_w - x, y
                             elif orientation == 3: nx, ny = raw_w - x, raw_h - y
@@ -1414,12 +1573,16 @@ class PreviewOverlay(QWidget):
                             elif orientation == 7: nx, ny = raw_h - y, raw_w - x
                             elif orientation == 8: nx, ny = y, raw_w - x  # 左轉 90 度
                             else:                  nx, ny = x, y
-                            new_box.append([nx, ny])
-                        new_boxes.append(new_box)
-                    processed_boxes = new_boxes
+                            new_box_pts.append([nx, ny])
+                        
+                        new_item = copy.deepcopy(item_dict)
+                        new_item["box"] = new_box_pts
+                        new_processed_boxes.append(new_item)
+                    processed_boxes = new_processed_boxes
         except Exception as e:
             print(f"EXIF rotation parsing error: {e}")
         
+        # ... (後面的畫面縮放與顯示邏輯保持不變) ...
         screen_size = self.parent().size()
         max_w = int(screen_size.width() * 0.85)
         max_h = int(screen_size.height() * 0.85)
@@ -1429,7 +1592,6 @@ class PreviewOverlay(QWidget):
         
         self.image_label.setPixmap(pixmap)
         
-        # [修改] 傳入 current_query 讓 OCRLabel 知道目前在搜什麼
         orig_w, orig_h = img.width(), img.height()
         self.image_label.set_ocr_data(processed_boxes, orig_w, orig_h, current_query, is_precise_mode)
         
@@ -1439,14 +1601,116 @@ class PreviewOverlay(QWidget):
         self.raise_()
         self.setFocus()
 
+    def on_edit_completed(self, new_results):
+        self.image_label.is_editing_locked = False
+        idx = self.image_label.hovered_index
+        
+        if idx != -1 and idx < len(self.image_label.ocr_data):
+            edited_group = self.image_label.ocr_data[idx]
+            orig_indices = edited_group.get("orig_indices", [])
+            
+            # 1. 更新 UI 顯示的暫存資料
+            edited_group["results"] = new_results
+            
+            if hasattr(self.parent(), 'engine') and self.parent().engine and self.current_item:
+                file_path = self.current_item.path if hasattr(self.current_item, 'path') else self.current_item['path']
+                
+                # 2. 取出「未被旋轉汙染」的原始 flat list
+                original_flat_data = self.current_item.ocr_data if hasattr(self.current_item, 'ocr_data') else self.current_item.get('ocr_data', [])
+                
+                import copy
+                updated_flat_data = copy.deepcopy(original_flat_data)
+                
+                # 3. 利用 orig_indices 精準寫回原始資料 (不破壞座標)
+                for i, orig_idx in enumerate(orig_indices):
+                    if i < len(new_results) and orig_idx < len(updated_flat_data):
+                        updated_flat_data[orig_idx]["text"] = new_results[i]["text"]
+                        updated_flat_data[orig_idx]["manual"] = new_results[i].get("manual", True)
+                        updated_flat_data[orig_idx]["conf"] = new_results[i].get("conf", 1.0)
+                
+                # 4. 呼叫 Engine 更新 (現在傳入的是攤平的資料)
+                new_text = self.parent().engine.update_ocr_manual(file_path, updated_flat_data)
+                
+                if hasattr(self.current_item, 'ocr_data'):
+                    self.current_item.ocr_data = updated_flat_data
+                    self.current_item.ocr_text = new_text
+                else:
+                    self.current_item['ocr_data'] = updated_flat_data
+                    self.current_item['ocr_text'] = new_text
+                    
+        self.image_label.update()
+        
+        # ==========================================
+        # [關鍵修復 4] 編輯完成後，檢查 Shift 狀態與模式，決定是否關閉紅框
+        # 徹底消滅輸入框或紅框卡在畫面上的 Bug
+        # ==========================================
+        ui_state = self.parent().config.get("ui_state", {})
+        ocr_mode = ui_state.get("ocr_shift_mode", "hold")
+        
+        from PyQt6.QtGui import QApplication
+        modifiers = QApplication.keyboardModifiers()
+        if ocr_mode == "hold" and not (modifiers & Qt.KeyboardModifier.ShiftModifier):
+            self.set_ocr_visible(False)
+        elif ocr_mode == "toggle" and not getattr(self.parent(), 'is_ocr_locked', False):
+            self.set_ocr_visible(False)
+
     def set_ocr_visible(self, visible):
         self.image_label.set_draw_boxes(visible)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Escape):
+            if self.floating_tag.is_editing:
+                # 編輯時按下 ESC，取消編輯，但不關閉預覽視窗
+                self.floating_tag.cancel_editing()
+                self.image_label.is_editing_locked = False
+                
+                # 恢復 Shift 狀態
+                ui_state = self.parent().config.get("ui_state", {})
+                ocr_mode = ui_state.get("ocr_shift_mode", "hold")
+                
+                # [關鍵修復] 移除錯誤的 import，直接使用頂端的 QApplication
+                modifiers = QApplication.keyboardModifiers()
+                if ocr_mode == "hold" and not (modifiers & Qt.KeyboardModifier.ShiftModifier):
+                    self.set_ocr_visible(False)
+                elif ocr_mode == "toggle" and not getattr(self.parent(), 'is_ocr_locked', False):
+                    self.set_ocr_visible(False)
+                return
             self.hide()
 
     def mousePressEvent(self, event):
+        # 閘門 1: 判斷是否正在編輯模式
+        if self.floating_tag.is_editing:
+            local_pos = self.floating_tag.mapFromParent(event.pos())
+            if self.floating_tag.rect().contains(local_pos):
+                return
+            else:
+                # [關鍵修復 3] 點擊在面板以外的地方，代表輸入完成，自動儲存！
+                self.floating_tag.finish_editing()
+                self.image_label.is_editing_locked = False
+                return
+
+        # 閘門 2: 如果滑鼠正指著某個紅框
+        if self.image_label.hovered_index != -1:
+            self.image_label.is_editing_locked = True
+            self.floating_tag.start_editing()
+            event.accept()
+            return
+            
+        # 閘門 3: 判斷是否點擊在「圖片本體」範圍內
+        if self.image_label.pixmap():
+            displayed_w = self.image_label.pixmap().width()
+            displayed_h = self.image_label.pixmap().height()
+            offset_x = (self.image_label.width() - displayed_w) / 2
+            offset_y = (self.image_label.height() - displayed_h) / 2
+            img_rect = QRect(int(offset_x), int(offset_y), int(displayed_w), int(displayed_h))
+            
+            # 將點擊座標對齊至 image_label
+            local_pos = self.image_label.mapFrom(self, event.pos())
+            if img_rect.contains(local_pos):
+                event.accept()
+                return
+
+        # 如果點在圖片外的黑色陰影區 ➔ 正常關閉預覽
         self.hide()
 
 class HistoryItemWidget(QWidget):
