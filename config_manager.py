@@ -7,8 +7,11 @@ class ConfigManager:
         self.config_path = os.path.join(self.app_root, "config.json")
         self.db_path = os.path.join(self.app_root, "images.db")
         
+        # ==========================================
+        # [升級] 在這裡把所有我們最近新增的 UI 狀態都補上預設值
+        # ==========================================
         self.default_config = {
-            "source_folders": [], # 新格式: [{"path": "C:\\...", "icon": "🐱"}]
+            "source_folders": [], 
             "model_name": "xlm-roberta-large-ViT-H-14",
             "pretrained": "frozen_laion5b_s13b_b90k",
             "search_limit": 50,
@@ -20,8 +23,13 @@ class ConfigManager:
                 "is_maximized": False,
                 "sidebar_expanded": True,
                 "view_mode": "large",
-                "precise_ocr_highlight": False
-            } # [新增] 補上預設值，明確界定初始狀態為 CPU
+                "precise_ocr_highlight": False,
+                "margin_compensation": True,      # 邊緣縮減補償
+                "ocr_deduplication": True,        # 多語系重疊防護
+                "preview_wasd_mode": "nav",       # 空白鍵預覽 WASD 模式
+                "ocr_shift_mode": "hold",         # Shift 鍵觸發邏輯
+                "ocr_tag_mode": "anchored"        # OCR 懸浮標籤顯示方式
+            }
         }
         self.config = self.load_config()
 
@@ -32,24 +40,35 @@ class ConfigManager:
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
+                
+                # 1. 淺層合併：補齊第一層缺失的 key
                 for k, v in self.default_config.items():
                     if k not in loaded:
                         loaded[k] = v
+                        
+                # ==========================================
+                # 2. [關鍵修復] 深層合併：確保 ui_state 裡面的新功能也會被強制寫入
+                # ==========================================
+                if "ui_state" in loaded:
+                    for sub_k, sub_v in self.default_config["ui_state"].items():
+                        if sub_k not in loaded["ui_state"]:
+                            loaded["ui_state"][sub_k] = sub_v
                 
-                # [升級] 將舊的 use_ocr (布林值) 無縫轉移為 enabled_langs (陣列)
+                # 3. [升級] 將舊的 use_ocr (布林值) 無縫轉移為 enabled_langs (陣列)
                 new_folders = []
                 for item in loaded.get("source_folders", []):
                     if isinstance(item, str):
                         langs = ["ch"] if loaded.get("use_ocr", True) else []
                         new_folders.append({"path": item, "icon": "", "enabled_langs": langs})
                     else:
-                        # 處理已是字典，但還沒升級 enabled_langs 的舊資料
                         if "enabled_langs" not in item:
-                            # 讀取舊的 use_ocr，如果有開就預設給 "ch"，沒開就給空陣列
                             langs = ["ch"] if item.get("use_ocr", loaded.get("use_ocr", True)) else []
                             item["enabled_langs"] = langs
                         new_folders.append(item)
                 loaded["source_folders"] = new_folders
+                
+                # 4. 讀取完畢後，強制回寫一次，讓剛補齊的預設值實體化儲存到 config.json 裡！
+                self.save_config(loaded)
                 
                 return loaded
         except Exception as e:

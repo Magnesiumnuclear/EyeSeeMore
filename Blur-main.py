@@ -879,9 +879,154 @@ class OCRDownloadWorker(QThread):
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 # ==========================================
+#  [NEW] 獨立 UI 圖層：懸浮多語系標籤
+# ==========================================
+class FloatingWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 讓滑鼠點擊可以直接穿透這個標籤，避免擋住底下的紅框
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.hide()
+        
+        self.results = []
+        self.box_poly = None
+        self.cursor_pos = QPoint()
+        self.mode = "anchored"
+
+    def update_data(self, results, box_poly, cursor_pos, mode):
+        self.results = results
+        self.box_poly = box_poly
+        self.cursor_pos = cursor_pos
+        self.mode = mode
+
+        if not results or not self.parent():
+            self.hide()
+            return
+
+        # --- 計算面板所需尺寸 ---
+        font_text = QFont("Microsoft JhengHei", 13, QFont.Weight.Bold)
+        fm_text = QFontMetrics(font_text)
+        pad_x = 12
+        pad_y = 10
+        line_spacing = 6
+        max_w = 0
+        total_h = 0
+
+        for r in results:
+            lang_str = f"[{r.get('lang', 'unk').upper()}]"
+            text_str = r.get("text", "")
+            conf_str = f"({r.get('conf', 0.0):.2f})"
+            w = fm_text.boundingRect(f"{lang_str} {text_str} {conf_str} ").width()
+            if w > max_w: max_w = w
+            total_h += fm_text.height()
+
+        total_h += (len(results) - 1) * line_spacing
+        panel_w = max_w + (pad_x * 2)
+        panel_h = total_h + (pad_y * 2)
+
+        parent_w = self.parent().width()
+        parent_h = self.parent().height()
+
+        # 超長文字防護：不超過父視窗寬度
+        max_panel_w = parent_w - 20
+        if panel_w > max_panel_w: panel_w = max_panel_w
+
+        # --- 計算動態座標 (兩種模式) ---
+        if mode == "anchored" and box_poly and not box_poly.isEmpty():
+            rect = box_poly.boundingRect()
+            # 優先位置：框的上方對齊左側
+            pos_x = rect.left()
+            pos_y = rect.top() - panel_h - 8
+
+            # 若上方空間不夠，改放下方
+            if pos_y < 10:
+                pos_y = rect.bottom() + 8
+            # 若下方也超出畫面 (框極大)，浮在框內頂部
+            if pos_y + panel_h > parent_h:
+                pos_y = rect.top() + 8
+
+            # X 軸邊界防護：超出右邊則對齊右側，超出左邊則鎖死 10px
+            if pos_x + panel_w > parent_w:
+                pos_x = rect.right() - panel_w
+            if pos_x < 10: pos_x = 10
+        else:
+            # 跟隨游標模式 (Follow)
+            pos_x = cursor_pos.x() + 15
+            pos_y = cursor_pos.y() + 15
+            if pos_x + panel_w > parent_w: pos_x = cursor_pos.x() - panel_w - 10
+            if pos_y + panel_h > parent_h: pos_y = cursor_pos.y() - panel_h - 10
+            if pos_x < 10: pos_x = 10
+            if pos_y < 10: pos_y = 10
+
+        self.resize(panel_w, panel_h)
+        self.move(pos_x, pos_y)
+        self.show()
+        self.update()
+
+    def paintEvent(self, event):
+        if not self.results: return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        font_text = QFont("Microsoft JhengHei", 13, QFont.Weight.Bold)
+        fm_text = QFontMetrics(font_text)
+        pad_x = 12
+        pad_y = 10
+        line_spacing = 6
+        panel_rect = self.rect()
+
+        # ==========================================
+        # [新增] 1. 預先計算所有語言標籤的「最大寬度」
+        # ==========================================
+        max_lang_w = 0
+        for r in self.results:
+            lang_str = f"[{r.get('lang', 'unk').upper()}] "
+            w = fm_text.boundingRect(lang_str).width()
+            if w > max_lang_w:
+                max_lang_w = w
+
+        # 畫背景面板 (深灰色)
+        painter.setBrush(QBrush(QColor(35, 35, 35, 240)))
+        painter.setPen(QPen(QColor(85, 85, 85, 255), 1))
+        painter.drawRoundedRect(panel_rect.adjusted(0, 0, -1, -1), 6, 6)
+
+        current_y = panel_rect.top() + pad_y + fm_text.ascent()
+
+        for r in self.results:
+            lang_str = f"[{r.get('lang', 'unk').upper()}] "
+            text_str = r.get("text", "")
+            conf_str = f" {r.get('conf', 0.0):.2f}"
+
+            # 1. 畫語言標籤 (藍色)
+            painter.setPen(QColor("#60cdff"))
+            painter.drawText(panel_rect.left() + pad_x, current_y, lang_str)
+
+            # 2. 計算信心度寬度 (靠右對齊用)
+            conf_w = fm_text.boundingRect(conf_str).width()
+
+            # 3. 畫辨識文字 (白色，過長自動省略)
+            # [關鍵修改] 使用統一的 max_lang_w 來推算 X 座標，確保所有文字垂直對齊
+            text_start_x = panel_rect.left() + pad_x + max_lang_w
+            text_max_w = panel_rect.width() - (pad_x * 2) - max_lang_w - conf_w
+            
+            if text_max_w < 20: text_max_w = 20
+            elided_text = fm_text.elidedText(text_str, Qt.TextElideMode.ElideRight, text_max_w)
+            
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(text_start_x, current_y, elided_text)
+
+            # 4. 畫信心度 (灰色，靠右邊緣對齊)
+            painter.setPen(QColor("#aaaaaa"))
+            painter.drawText(panel_rect.right() - pad_x - conf_w, current_y, conf_str)
+
+            current_y += fm_text.height() + line_spacing
+
+# ==========================================
 # 請將這段程式碼完全覆蓋原本的 OCRLabel 類別
 # ==========================================
 class OCRLabel(QLabel):
+    hover_info_changed = pyqtSignal(list, QPolygon, QPoint)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.ocr_data = []
@@ -966,10 +1111,10 @@ class OCRLabel(QLabel):
 
     def set_draw_boxes(self, show):
         self.show_ocr_boxes = show
-        # [新增] 如果關閉紅框，強制清除懸停狀態，避免殘影
         if not show:
             self.hovered_index = -1
-        self.update() 
+            self.hover_info_changed.emit([], QPolygon(), QPoint())
+        self.update()
 
     def _sort_points(self, box):
         """將 OpenCV 隨機順序的四個點嚴格定義為 TL, TR, BR, BL"""
@@ -1048,10 +1193,27 @@ class OCRLabel(QLabel):
                     new_hovered_index = i
                     break # 找到一個就停，避免重疊時閃爍
 
-        # 4. 如果踩到的目標改變了，或者游標在框內移動(需要更新標籤位置)，就觸發重繪
+        # 4. 如果踩到的目標改變了，或者游標在框內移動(需要更新標籤位置)
         if self.hovered_index != new_hovered_index or new_hovered_index != -1:
             self.hovered_index = new_hovered_index
             self.update()
+            
+            # [新增] 準備資料並發射給 FloatingWidget
+            if self.hovered_index != -1:
+                item = self.ocr_data[self.hovered_index]
+                results = item.get("results", [])
+
+                sorted_box = item.get("box")
+                full_poly_points = []
+                for pt in sorted_box:
+                    nx = pt[0] * scale_x + offset_x
+                    ny = pt[1] * scale_y + offset_y
+                    full_poly_points.append(QPoint(int(nx), int(ny)))
+                poly = QPolygon(full_poly_points)
+
+                self.hover_info_changed.emit(results, poly, self.cursor_pos)
+            else:
+                self.hover_info_changed.emit([], QPolygon(), QPoint())
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -1145,85 +1307,6 @@ class OCRLabel(QLabel):
                     painter.setPen(QPen(QColor(255, 0, 0, 200), 2))
                     painter.drawPolygon(QPolygon(full_poly_points))
 
-            # ==========================================
-            # 迴圈 2：繪製跟隨標籤 (多語系群組顯示)
-            # ==========================================
-            if self.hovered_index != -1 and self.hovered_index < len(self.ocr_data):
-                item = self.ocr_data[self.hovered_index]
-                results = item.get("results", [])
-                
-                font_text = QFont("Microsoft JhengHei", 13, QFont.Weight.Bold)
-                fm_text = QFontMetrics(font_text)
-                
-                pad_x = 12
-                pad_y = 10
-                line_spacing = 6
-                max_w = 0
-                total_h = 0
-                
-                # 計算面板尺寸
-                for r in results:
-                    lang_str = f"[{r.get('lang', 'unk').upper()}]"
-                    text_str = r.get("text", "")
-                    conf_str = f"({r.get('conf', 0.0):.2f})"
-                    
-                    w = fm_text.boundingRect(f"{lang_str} {text_str} {conf_str} ").width()
-                    if w > max_w: max_w = w
-                    total_h += fm_text.height()
-                    
-                total_h += (len(results) - 1) * line_spacing
-                
-                panel_w = max_w + (pad_x * 2)
-                panel_h = total_h + (pad_y * 2)
-                
-                max_panel_w = self.width() - 20
-                if panel_w > max_panel_w: panel_w = max_panel_w
-                
-                pos_x = self.cursor_pos.x() + 15
-                pos_y = self.cursor_pos.y() + 15
-                
-                if pos_x + panel_w > self.width(): pos_x = self.cursor_pos.x() - panel_w - 10
-                if pos_y + panel_h > self.height(): pos_y = self.cursor_pos.y() - panel_h - 10
-                if pos_x < 10: pos_x = 10
-                if pos_y < 10: pos_y = 10
-                    
-                panel_rect = QRect(pos_x, pos_y, panel_w, panel_h)
-                
-                # 畫面板背景
-                painter.setBrush(QBrush(QColor(35, 35, 35, 235)))
-                painter.setPen(QPen(QColor(85, 85, 85, 255), 1))
-                painter.drawRoundedRect(panel_rect, 6, 6)
-                
-                # 畫多語系文字列
-                painter.setFont(font_text)
-                current_y = panel_rect.top() + pad_y + fm_text.ascent()
-                
-                for r in results:
-                    lang_str = f"[{r.get('lang', 'unk').upper()}] "
-                    text_str = r.get("text", "")
-                    conf_str = f" {r.get('conf', 0.0):.2f}"
-                    
-                    # 1. 畫語言標籤 (藍色)
-                    painter.setPen(QColor("#60cdff"))
-                    painter.drawText(panel_rect.left() + pad_x, current_y, lang_str)
-                    lang_w = fm_text.boundingRect(lang_str).width()
-                    
-                    # 2. 準備信心度 (灰色)
-                    conf_w = fm_text.boundingRect(conf_str).width()
-                    
-                    # 3. 畫主文字 (白色，自動截斷)
-                    text_max_w = panel_w - (pad_x * 2) - lang_w - conf_w
-                    if text_max_w < 20: text_max_w = 20
-                    elided_text = fm_text.elidedText(text_str, Qt.TextElideMode.ElideRight, text_max_w)
-                    
-                    painter.setPen(QColor(255, 255, 255))
-                    painter.drawText(panel_rect.left() + pad_x + lang_w, current_y, elided_text)
-                    
-                    # 4. 畫信心度
-                    painter.setPen(QColor("#aaaaaa"))
-                    painter.drawText(panel_rect.right() - pad_x - conf_w, current_y, conf_str)
-                    
-                    current_y += fm_text.height() + line_spacing
 
 class PreviewOverlay(QWidget):
     def __init__(self, parent=None):
@@ -1236,6 +1319,7 @@ class PreviewOverlay(QWidget):
         self.layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.image_label = OCRLabel()
+        self.image_label.hover_info_changed.connect(self.on_hover_info_changed)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet("background: transparent;")
         
@@ -1255,7 +1339,29 @@ class PreviewOverlay(QWidget):
         self.ocr_hint.setStyleSheet("color: #888; font-size: 12px; margin-top: 5px;")
         self.layout.addWidget(self.ocr_hint, alignment=Qt.AlignmentFlag.AlignCenter)
 
-    # ==========================================
+        self.floating_tag = FloatingWidget(self)
+    
+    def on_hover_info_changed(self, results, poly, cursor_pos):
+        if not results:
+            self.floating_tag.hide()
+            return
+
+        # 把 OCRLabel 的區域座標，轉換成 PreviewOverlay (全螢幕) 的絕對座標
+        mapped_poly = QPolygon([self.image_label.mapTo(self, pt) for pt in poly])
+        mapped_cursor = self.image_label.mapTo(self, cursor_pos)
+
+        # 讀取設定檔決定顯示模式
+        ui_state = self.parent().config.get("ui_state", {})
+        mode = ui_state.get("ocr_tag_mode", "anchored")
+
+        self.floating_tag.update_data(results, mapped_poly, mapped_cursor, mode)
+
+    def set_ocr_visible(self, visible):
+        self.image_label.set_draw_boxes(visible)
+        if not visible:
+            self.floating_tag.hide()
+
+# ==========================================
 # 請找到 PreviewOverlay 類別裡面的 show_image 函式，並進行替換
 # ==========================================
     # [修改] 加上 current_query 參數
@@ -3400,6 +3506,8 @@ class SettingsDialog(QDialog):
 
     def init_page_appearance(self):
         page, layout = self._create_page_container("🖥️ 介面與顯示 (Appearance)")
+        ui_state = self.main_window.config.get("ui_state", {}) 
+
         layout.addWidget(QLabel("預設圖片顯示大小："))
         self.combo_size = QComboBox()
         self.combo_size.setFixedHeight(35)
@@ -3408,10 +3516,34 @@ class SettingsDialog(QDialog):
         mode_map = {"xl": 0, "large": 1, "medium": 2}
         self.combo_size.setCurrentIndex(mode_map.get(self.main_window.current_view_mode, 1))
         self.combo_size.currentIndexChanged.connect(self.on_view_mode_changed)
-    
         layout.addWidget(self.combo_size)
+        
+        # ==========================================
+        # [新增] OCR 懸浮標籤顯示方式
+        # ==========================================
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("OCR 懸浮標籤顯示方式："))
+        
+        self.combo_tag_mode = QComboBox()
+        self.combo_tag_mode.setFixedHeight(35)
+        # 套用相同的 QSS 樣式
+        self.combo_tag_mode.setStyleSheet(self.combo_size.styleSheet()) 
+        self.combo_tag_mode.addItems(["選項 A：固定在 OCR 框邊緣 (Anchored) - 推薦", "選項 B：跟隨滑鼠游標 (Follow Mouse)"])
+        
+        tag_mode = ui_state.get("ocr_tag_mode", "anchored")
+        self.combo_tag_mode.setCurrentIndex(0 if tag_mode == "anchored" else 1)
+        self.combo_tag_mode.currentIndexChanged.connect(self.on_tag_mode_changed)
+        layout.addWidget(self.combo_tag_mode)
+
         layout.addStretch(1)
         self.stack.addWidget(page)
+
+    # [新增] 儲存設定事件
+    def on_tag_mode_changed(self, index):
+        mode = "anchored" if index == 0 else "follow"
+        ui_state = self.main_window.config.get("ui_state", {})
+        ui_state["ocr_tag_mode"] = mode
+        self.main_window.config.set("ui_state", ui_state)
 
 
 
