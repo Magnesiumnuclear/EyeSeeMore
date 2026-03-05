@@ -540,11 +540,13 @@ class ImageSearchEngine:
         try:
             current_model = self.config.get("model_name")
             
-            # [關鍵修復] 聯合查詢：正確撈取 ocr_results 子表，並將多國語言的文字與紅框完美串接
+            # ==========================================
+            # [升級 1] SQL 動態 JSON 封裝：將 lang 標籤與資料綁定
+            # ==========================================
             cursor.execute("""
                 SELECT f.file_path, e.embedding, f.mtime, 
                        GROUP_CONCAT(o.ocr_text, ' '), 
-                       '[' || GROUP_CONCAT(o.ocr_data, ',') || ']' 
+                       '[' || GROUP_CONCAT('{"lang":"' || o.lang || '", "data":' || o.ocr_data || '}', ',') || ']' 
                 FROM files f
                 JOIN embeddings e ON f.id = e.file_id
                 LEFT JOIN ocr_results o ON f.id = o.file_id
@@ -564,14 +566,20 @@ class ImageSearchEngine:
                 text_content = combined_text if combined_text else ""
                 
                 ocr_boxes = []
-                if combined_data_json and combined_data_json != "[]":
+                # [升級 2] 解析多語系 JSON 並把 lang 注入到每一個 box 中
+                if combined_data_json and combined_data_json != "[]" and combined_data_json != "[NULL]":
                     try:
-                        # 處理組合後的多語系 JSON 陣列
                         parsed_lists = json.loads(combined_data_json)
-                        for sublist in parsed_lists:
-                            if isinstance(sublist, list):
-                                ocr_boxes.extend(sublist)
-                    except: pass
+                        for lang_group in parsed_lists:
+                            if not isinstance(lang_group, dict): continue
+                            lang = lang_group.get("lang", "unk")
+                            data = lang_group.get("data", [])
+                            if isinstance(data, list):
+                                for item in data:
+                                    item["lang"] = lang  # 關鍵：標記這是哪一國語言抓到的
+                                    ocr_boxes.append(item)
+                    except Exception as e: 
+                        print(f"JSON Parse error: {e}")
 
                 self.data_store.append({
                     "path": path,
@@ -889,12 +897,72 @@ class OCRLabel(QLabel):
         self.cursor_pos = QPoint(0, 0)
 
     def set_ocr_data(self, data, orig_w, orig_h, query="", is_precise=False):
-        self.ocr_data = data
         self.original_size = QSize(orig_w, orig_h)
         self.search_query = query.lower()
         self.is_precise_mode = is_precise
-        # 資料更新時，重置懸停狀態
         self.hovered_index = -1
+        
+        # ==========================================
+        # [升級] Shapely 群組打包 (Group & Merge)
+        # ==========================================
+        merged_data = []
+        try:
+            from shapely.geometry import Polygon as ShapelyPolygon
+        except ImportError:
+            ShapelyPolygon = None
+
+        if not ShapelyPolygon:
+            # 沒有 Shapely 的備用方案：直接轉換格式
+            for item in data:
+                merged_data.append({
+                    "box": item.get("box", []),
+                    "results": [{"lang": item.get("lang", "unk"), "text": item.get("text", ""), "conf": item.get("conf", 0.0)}]
+                })
+        else:
+            for item in data:
+                box = item.get("box")
+                if not box or len(box) != 4: continue
+                
+                sorted_box = self._sort_points(box)
+                try:
+                    current_poly = ShapelyPolygon(sorted_box)
+                    if not current_poly.is_valid or current_poly.area <= 0: continue
+                except: continue
+                
+                is_merged = False
+                for existing in merged_data:
+                    existing_poly = existing["poly"]
+                    try:
+                        if current_poly.intersects(existing_poly):
+                            inter_area = current_poly.intersection(existing_poly).area
+                            min_area = min(current_poly.area, existing_poly.area)
+                            # 如果重疊超過 85%，判定為同一個區塊的不同語言結果，打包在一起！
+                            if (inter_area / min_area) > 0.85:
+                                existing["results"].append({
+                                    "lang": item.get("lang", "unk"),
+                                    "text": item.get("text", ""),
+                                    "conf": item.get("conf", 0.0)
+                                })
+                                is_merged = True
+                                break
+                    except: pass
+                
+                if not is_merged:
+                    merged_data.append({
+                        "box": sorted_box,
+                        "poly": current_poly,
+                        "results": [{
+                            "lang": item.get("lang", "unk"),
+                            "text": item.get("text", ""),
+                            "conf": item.get("conf", 0.0)
+                        }]
+                    })
+        
+        # 移除底層繪圖不需要的 poly 物件，避免記憶體洩漏或錯誤
+        for m in merged_data:
+            m.pop("poly", None)
+            
+        self.ocr_data = merged_data
 
     def set_draw_boxes(self, show):
         self.show_ocr_boxes = show
@@ -997,166 +1065,165 @@ class OCRLabel(QLabel):
             
             displayed_w = self.pixmap().width()
             displayed_h = self.pixmap().height()
-            
             offset_x = (self.width() - displayed_w) / 2
             offset_y = (self.height() - displayed_h) / 2
-            
             scale_x = displayed_w / self.original_size.width()
             scale_y = displayed_h / self.original_size.height()
 
             import math
-            try:
-                from shapely.geometry import Polygon as ShapelyPolygon
-            except ImportError:
-                ShapelyPolygon = None
 
-            drawn_polygons = []
-
+            # ==========================================
             # 迴圈 1：繪製所有底層紅框 (與精確高亮)
+            # ==========================================
             for i, item in enumerate(self.ocr_data):
-                box = item.get("box") 
-                full_text = item.get("text", "").lower()
+                sorted_box = item.get("box") 
+                if not sorted_box or len(sorted_box) != 4: continue
+                
+                # 將該框群組內的所有文字串起來檢查是否命中搜尋
+                results = item.get("results", [])
+                full_text = " ".join([r.get("text", "") for r in results]).lower()
+                
+                p0, p1, p2, p3 = sorted_box[0], sorted_box[1], sorted_box[2], sorted_box[3]
+                highlight_box = sorted_box
             
-                if box and len(box) == 4:
-                    sorted_box = self._sort_points(box)
-                    
-                    is_duplicate = False
-                    if ShapelyPolygon:
-                        try:
-                            current_poly = ShapelyPolygon(sorted_box)
-                            if current_poly.is_valid and current_poly.area > 0:
-                                for drawn_poly in drawn_polygons:
-                                    if current_poly.intersects(drawn_poly):
-                                        inter_area = current_poly.intersection(drawn_poly).area
-                                        min_area = min(current_poly.area, drawn_poly.area)
-                                        if (inter_area / min_area) > 0.85: 
-                                            is_duplicate = True
-                                            break
-                                if not is_duplicate:
-                                    drawn_polygons.append(current_poly)
-                        except Exception: pass
-                            
-                    if is_duplicate:
-                        continue 
-
-                    p0, p1, p2, p3 = sorted_box[0], sorted_box[1], sorted_box[2], sorted_box[3]
-                    highlight_box = sorted_box
-                
-                    if self.search_query and self.search_query in full_text:
-                        if self.is_precise_mode:
-                            start_ratio, end_ratio = self._calculate_ratios(full_text, self.search_query)
-                            margin = 0.015
-                            
-                            if start_ratio > 0.0: start_ratio = min(start_ratio + margin, 1.0)
-                            if end_ratio < 1.0:   end_ratio = max(end_ratio - margin, 0.0)
-                                
-                            if start_ratio >= end_ratio:
-                                center = (start_ratio + end_ratio) / 2.0
-                                start_ratio, end_ratio = center - 0.001, center + 0.001
-
-                            width = math.hypot(p0[0] - p1[0], p0[1] - p1[1])
-                            height = math.hypot(p0[0] - p3[0], p0[1] - p3[1])
-                            
-                            if height > width * 1.2:
-                                np0 = [p0[0] + (p3[0]-p0[0])*start_ratio, p0[1] + (p3[1]-p0[1])*start_ratio]
-                                np3 = [p0[0] + (p3[0]-p0[0])*end_ratio,   p0[1] + (p3[1]-p0[1])*end_ratio]
-                                np1 = [p1[0] + (p2[0]-p1[0])*start_ratio, p1[1] + (p2[1]-p1[1])*start_ratio]
-                                np2 = [p1[0] + (p2[0]-p1[0])*end_ratio,   p1[1] + (p2[1]-p1[1])*end_ratio]
-                            else:
-                                np0 = [p0[0] + (p1[0]-p0[0])*start_ratio, p0[1] + (p1[1]-p0[1])*start_ratio]
-                                np1 = [p0[0] + (p1[0]-p0[0])*end_ratio,   p0[1] + (p1[1]-p0[1])*end_ratio]
-                                np3 = [p3[0] + (p2[0]-p3[0])*start_ratio, p3[1] + (p2[1]-p3[1])*start_ratio]
-                                np2 = [p3[0] + (p2[0]-p3[0])*end_ratio,   p3[1] + (p2[1]-p3[1])*end_ratio]
+                if self.search_query and self.search_query in full_text:
+                    if self.is_precise_mode:
+                        # 找出具體是哪個語言的文字命中了，以此來計算黃色螢光筆的比例
+                        match_text = ""
+                        for r in results:
+                            if self.search_query in r.get("text", "").lower():
+                                match_text = r.get("text", "").lower()
+                                break
+                        if not match_text: match_text = full_text
                         
-                            highlight_box = [np0, np1, np2, np3]
+                        start_ratio, end_ratio = self._calculate_ratios(match_text, self.search_query)
+                        margin = 0.015
+                        if start_ratio > 0.0: start_ratio = min(start_ratio + margin, 1.0)
+                        if end_ratio < 1.0:   end_ratio = max(end_ratio - margin, 0.0)
+                        if start_ratio >= end_ratio:
+                            center = (start_ratio + end_ratio) / 2.0
+                            start_ratio, end_ratio = center - 0.001, center + 0.001
+
+                        width = math.hypot(p0[0] - p1[0], p0[1] - p1[1])
+                        height = math.hypot(p0[0] - p3[0], p0[1] - p3[1])
+                        
+                        if height > width * 1.2:
+                            np0 = [p0[0] + (p3[0]-p0[0])*start_ratio, p0[1] + (p3[1]-p0[1])*start_ratio]
+                            np3 = [p0[0] + (p3[0]-p0[0])*end_ratio,   p0[1] + (p3[1]-p0[1])*end_ratio]
+                            np1 = [p1[0] + (p2[0]-p1[0])*start_ratio, p1[1] + (p2[1]-p1[1])*start_ratio]
+                            np2 = [p1[0] + (p2[0]-p1[0])*end_ratio,   p1[1] + (p2[1]-p1[1])*end_ratio]
+                        else:
+                            np0 = [p0[0] + (p1[0]-p0[0])*start_ratio, p0[1] + (p1[1]-p0[1])*start_ratio]
+                            np1 = [p0[0] + (p1[0]-p0[0])*end_ratio,   p0[1] + (p1[1]-p0[1])*end_ratio]
+                            np3 = [p3[0] + (p2[0]-p3[0])*start_ratio, p3[1] + (p2[1]-p3[1])*start_ratio]
+                            np2 = [p3[0] + (p2[0]-p3[0])*end_ratio,   p3[1] + (p2[1]-p3[1])*end_ratio]
                     
-                        poly_points = []
-                        for pt in highlight_box:
-                            nx = pt[0] * scale_x + offset_x
-                            ny = pt[1] * scale_y + offset_y
-                            poly_points.append(QPoint(int(nx), int(ny)))
-                    
-                        painter.setBrush(QBrush(QColor(255, 255, 0, 100))) 
-                        painter.setPen(Qt.PenStyle.NoPen)
-                        painter.drawPolygon(QPolygon(poly_points))
+                        highlight_box = [np0, np1, np2, np3]
                 
-                    # [修改] 如果目前滑鼠指著這個框，畫成高亮藍色，否則畫原本的紅色
-                    full_poly_points = []
-                    for pt in sorted_box:
+                    poly_points = []
+                    for pt in highlight_box:
                         nx = pt[0] * scale_x + offset_x
                         ny = pt[1] * scale_y + offset_y
-                        full_poly_points.append(QPoint(int(nx), int(ny)))
-                        
-                    if i == self.hovered_index:
-                        # 懸停時：藍色粗框 + 藍色半透明底色
-                        painter.setBrush(QBrush(QColor(96, 205, 255, 60))) 
-                        painter.setPen(QPen(QColor("#60cdff"), 3))
-                        painter.drawPolygon(QPolygon(full_poly_points))
-                    else:
-                        # 平常時：紅色細框
-                        painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-                        painter.setPen(QPen(QColor(255, 0, 0, 200), 2))
-                        painter.drawPolygon(QPolygon(full_poly_points))
+                        poly_points.append(QPoint(int(nx), int(ny)))
+                
+                    painter.setBrush(QBrush(QColor(255, 255, 0, 100))) 
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.drawPolygon(QPolygon(poly_points))
+            
+                full_poly_points = []
+                for pt in sorted_box:
+                    nx = pt[0] * scale_x + offset_x
+                    ny = pt[1] * scale_y + offset_y
+                    full_poly_points.append(QPoint(int(nx), int(ny)))
+                    
+                if i == self.hovered_index:
+                    painter.setBrush(QBrush(QColor(96, 205, 255, 60))) 
+                    painter.setPen(QPen(QColor("#60cdff"), 3))
+                    painter.drawPolygon(QPolygon(full_poly_points))
+                else:
+                    painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                    painter.setPen(QPen(QColor(255, 0, 0, 200), 2))
+                    painter.drawPolygon(QPolygon(full_poly_points))
 
             # ==========================================
-            # [新增] 迴圈 2：繪製跟隨標籤 (確保畫在最上層不被其他紅框遮擋)
+            # 迴圈 2：繪製跟隨標籤 (多語系群組顯示)
             # ==========================================
-            if self.hovered_index != -1:
+            if self.hovered_index != -1 and self.hovered_index < len(self.ocr_data):
                 item = self.ocr_data[self.hovered_index]
-                text = item.get("text", "")
-                conf = item.get("conf", 0.0)
+                results = item.get("results", [])
                 
-                # 設定字型
-                font_text = QFont("Microsoft JhengHei", 14, QFont.Weight.Bold)
-                font_conf = QFont("Consolas", 10)
+                font_text = QFont("Microsoft JhengHei", 13, QFont.Weight.Bold)
                 fm_text = QFontMetrics(font_text)
-                fm_conf = QFontMetrics(font_conf)
                 
-                # 計算文字需要的尺寸
-                text_rect = fm_text.boundingRect(text)
-                conf_str = f"Conf: {conf:.2f}"
-                conf_rect = fm_conf.boundingRect(conf_str)
-                
-                # 計算標籤面板尺寸 (留白 padding)
                 pad_x = 12
-                pad_y = 8
-                panel_w = max(text_rect.width(), conf_rect.width()) + (pad_x * 2)
-                panel_h = text_rect.height() + conf_rect.height() + (pad_y * 2) + 4
+                pad_y = 10
+                line_spacing = 6
+                max_w = 0
+                total_h = 0
                 
-                # 決定面板位置 (游標右下方)
+                # 計算面板尺寸
+                for r in results:
+                    lang_str = f"[{r.get('lang', 'unk').upper()}]"
+                    text_str = r.get("text", "")
+                    conf_str = f"({r.get('conf', 0.0):.2f})"
+                    
+                    w = fm_text.boundingRect(f"{lang_str} {text_str} {conf_str} ").width()
+                    if w > max_w: max_w = w
+                    total_h += fm_text.height()
+                    
+                total_h += (len(results) - 1) * line_spacing
+                
+                panel_w = max_w + (pad_x * 2)
+                panel_h = total_h + (pad_y * 2)
+                
+                max_panel_w = self.width() - 20
+                if panel_w > max_panel_w: panel_w = max_panel_w
+                
                 pos_x = self.cursor_pos.x() + 15
                 pos_y = self.cursor_pos.y() + 15
                 
-                # 防呆：如果面板超出畫面右邊或下邊，就往反方向彈
-                if pos_x + panel_w > self.width():
-                    pos_x = self.cursor_pos.x() - panel_w - 10
-                if pos_y + panel_h > self.height():
-                    pos_y = self.cursor_pos.y() - panel_h - 10
+                if pos_x + panel_w > self.width(): pos_x = self.cursor_pos.x() - panel_w - 10
+                if pos_y + panel_h > self.height(): pos_y = self.cursor_pos.y() - panel_h - 10
+                if pos_x < 10: pos_x = 10
+                if pos_y < 10: pos_y = 10
                     
                 panel_rect = QRect(pos_x, pos_y, panel_w, panel_h)
                 
-                # 畫面板背景 (深灰半透明圓角)
-                painter.setBrush(QBrush(QColor(35, 35, 35, 230)))
+                # 畫面板背景
+                painter.setBrush(QBrush(QColor(35, 35, 35, 235)))
                 painter.setPen(QPen(QColor(85, 85, 85, 255), 1))
                 painter.drawRoundedRect(panel_rect, 6, 6)
                 
-                # 畫主文字 (白色)
+                # 畫多語系文字列
                 painter.setFont(font_text)
-                painter.setPen(QColor(255, 255, 255))
-                painter.drawText(
-                    panel_rect.left() + pad_x, 
-                    panel_rect.top() + pad_y + fm_text.ascent(), 
-                    text
-                )
+                current_y = panel_rect.top() + pad_y + fm_text.ascent()
                 
-                # 畫信心度 (淺藍色小字，靠右對齊)
-                painter.setFont(font_conf)
-                painter.setPen(QColor(96, 205, 255))
-                painter.drawText(
-                    panel_rect.right() - pad_x - conf_rect.width(), 
-                    panel_rect.bottom() - pad_y, 
-                    conf_str
-                )
+                for r in results:
+                    lang_str = f"[{r.get('lang', 'unk').upper()}] "
+                    text_str = r.get("text", "")
+                    conf_str = f" {r.get('conf', 0.0):.2f}"
+                    
+                    # 1. 畫語言標籤 (藍色)
+                    painter.setPen(QColor("#60cdff"))
+                    painter.drawText(panel_rect.left() + pad_x, current_y, lang_str)
+                    lang_w = fm_text.boundingRect(lang_str).width()
+                    
+                    # 2. 準備信心度 (灰色)
+                    conf_w = fm_text.boundingRect(conf_str).width()
+                    
+                    # 3. 畫主文字 (白色，自動截斷)
+                    text_max_w = panel_w - (pad_x * 2) - lang_w - conf_w
+                    if text_max_w < 20: text_max_w = 20
+                    elided_text = fm_text.elidedText(text_str, Qt.TextElideMode.ElideRight, text_max_w)
+                    
+                    painter.setPen(QColor(255, 255, 255))
+                    painter.drawText(panel_rect.left() + pad_x + lang_w, current_y, elided_text)
+                    
+                    # 4. 畫信心度
+                    painter.setPen(QColor("#aaaaaa"))
+                    painter.drawText(panel_rect.right() - pad_x - conf_w, current_y, conf_str)
+                    
+                    current_y += fm_text.height() + line_spacing
 
 class PreviewOverlay(QWidget):
     def __init__(self, parent=None):
