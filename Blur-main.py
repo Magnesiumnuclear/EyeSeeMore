@@ -881,15 +881,26 @@ class OCRLabel(QLabel):
         self.original_size = QSize(0, 0)
         self.search_query = ""
         self.is_precise_mode = False 
+        
+        # [新增] 1. 開啟滑鼠追蹤，讓游標移動時也能觸發事件
+        self.setMouseTracking(True)
+        # [新增] 紀錄目前滑鼠懸停踩中的多邊形索引與游標位置
+        self.hovered_index = -1
+        self.cursor_pos = QPoint(0, 0)
 
     def set_ocr_data(self, data, orig_w, orig_h, query="", is_precise=False):
         self.ocr_data = data
         self.original_size = QSize(orig_w, orig_h)
         self.search_query = query.lower()
         self.is_precise_mode = is_precise
+        # 資料更新時，重置懸停狀態
+        self.hovered_index = -1
 
     def set_draw_boxes(self, show):
         self.show_ocr_boxes = show
+        # [新增] 如果關閉紅框，強制清除懸停狀態，避免殘影
+        if not show:
+            self.hovered_index = -1
         self.update() 
 
     def _sort_points(self, box):
@@ -929,6 +940,51 @@ class OCRLabel(QLabel):
         
         return start_ratio, end_ratio
 
+    # ==========================================
+    # [新增] 滑鼠移動事件：處理座標對齊與碰撞偵測
+    # ==========================================
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        
+        # 如果沒開紅框，或者沒資料，就不浪費算力
+        if not self.show_ocr_boxes or not self.ocr_data or not self.pixmap():
+            return
+            
+        if self.original_size.width() == 0 or self.original_size.height() == 0:
+            return
+
+        self.cursor_pos = event.pos()
+        
+        # 1. 取得目前圖片在畫面上的縮放比例與位移
+        displayed_w = self.pixmap().width()
+        displayed_h = self.pixmap().height()
+        offset_x = (self.width() - displayed_w) / 2
+        offset_y = (self.height() - displayed_h) / 2
+        scale_x = displayed_w / self.original_size.width()
+        scale_y = displayed_h / self.original_size.height()
+
+        # 2. 將滑鼠在螢幕上的座標，逆向還原回圖片的「真實像素座標」
+        real_x = (self.cursor_pos.x() - offset_x) / scale_x
+        real_y = (self.cursor_pos.y() - offset_y) / scale_y
+        real_point = QPoint(int(real_x), int(real_y))
+
+        # 3. 多邊形碰撞測試 (Hit Test)
+        new_hovered_index = -1
+        for i, item in enumerate(self.ocr_data):
+            box = item.get("box")
+            if box and len(box) == 4:
+                # 建立原尺寸的多邊形
+                poly = QPolygon([QPoint(int(pt[0]), int(pt[1])) for pt in box])
+                # 測試滑鼠是否踩在裡面
+                if poly.containsPoint(real_point, Qt.FillRule.OddEvenFill):
+                    new_hovered_index = i
+                    break # 找到一個就停，避免重疊時閃爍
+
+        # 4. 如果踩到的目標改變了，或者游標在框內移動(需要更新標籤位置)，就觸發重繪
+        if self.hovered_index != new_hovered_index or new_hovered_index != -1:
+            self.hovered_index = new_hovered_index
+            self.update()
+
     def paintEvent(self, event):
         super().paintEvent(event)
         
@@ -949,24 +1005,21 @@ class OCRLabel(QLabel):
             scale_y = displayed_h / self.original_size.height()
 
             import math
-            # 引入 Shapely 進行多邊形重疊計算 (安裝 PaddleOCR 時已自帶)
             try:
                 from shapely.geometry import Polygon as ShapelyPolygon
             except ImportError:
                 ShapelyPolygon = None
 
-            drawn_polygons = [] # 用來記錄已經畫過的多邊形區域
+            drawn_polygons = []
 
-            for item in self.ocr_data:
+            # 迴圈 1：繪製所有底層紅框 (與精確高亮)
+            for i, item in enumerate(self.ocr_data):
                 box = item.get("box") 
                 full_text = item.get("text", "").lower()
             
                 if box and len(box) == 4:
                     sorted_box = self._sort_points(box)
                     
-                    # ==========================================
-                    # [第一步：消滅重疊幻影 (Deduplication)]
-                    # ==========================================
                     is_duplicate = False
                     if ShapelyPolygon:
                         try:
@@ -975,9 +1028,8 @@ class OCRLabel(QLabel):
                                 for drawn_poly in drawn_polygons:
                                     if current_poly.intersects(drawn_poly):
                                         inter_area = current_poly.intersection(drawn_poly).area
-                                        # 計算重疊比例 (以面積較小的框為分母，容忍些微的辨識大小誤差)
                                         min_area = min(current_poly.area, drawn_poly.area)
-                                        if (inter_area / min_area) > 0.85: # 重疊率大於 85% 即視為重複
+                                        if (inter_area / min_area) > 0.85: 
                                             is_duplicate = True
                                             break
                                 if not is_duplicate:
@@ -985,7 +1037,7 @@ class OCRLabel(QLabel):
                         except Exception: pass
                             
                     if is_duplicate:
-                        continue # 直接跳過，不畫這個重複的框！
+                        continue 
 
                     p0, p1, p2, p3 = sorted_box[0], sorted_box[1], sorted_box[2], sorted_box[3]
                     highlight_box = sorted_box
@@ -993,19 +1045,11 @@ class OCRLabel(QLabel):
                     if self.search_query and self.search_query in full_text:
                         if self.is_precise_mode:
                             start_ratio, end_ratio = self._calculate_ratios(full_text, self.search_query)
+                            margin = 0.015
                             
-                            # ==========================================
-                            # [第二步：邊緣柔化 (Margin Compensation)]
-                            # ==========================================
-                            margin = 0.015 # 內縮 1.5% 寬度
-                            
-                            # 若非頭尾，則進行內縮
-                            if start_ratio > 0.0:
-                                start_ratio = min(start_ratio + margin, 1.0)
-                            if end_ratio < 1.0:
-                                end_ratio = max(end_ratio - margin, 0.0)
+                            if start_ratio > 0.0: start_ratio = min(start_ratio + margin, 1.0)
+                            if end_ratio < 1.0:   end_ratio = max(end_ratio - margin, 0.0)
                                 
-                            # 防呆：避免因文字極短導致內縮後座標反轉
                             if start_ratio >= end_ratio:
                                 center = (start_ratio + end_ratio) / 2.0
                                 start_ratio, end_ratio = center - 0.001, center + 0.001
@@ -1014,13 +1058,11 @@ class OCRLabel(QLabel):
                             height = math.hypot(p0[0] - p3[0], p0[1] - p3[1])
                             
                             if height > width * 1.2:
-                                # --- 垂直切割 (Y軸插值) ---
                                 np0 = [p0[0] + (p3[0]-p0[0])*start_ratio, p0[1] + (p3[1]-p0[1])*start_ratio]
                                 np3 = [p0[0] + (p3[0]-p0[0])*end_ratio,   p0[1] + (p3[1]-p0[1])*end_ratio]
                                 np1 = [p1[0] + (p2[0]-p1[0])*start_ratio, p1[1] + (p2[1]-p1[1])*start_ratio]
                                 np2 = [p1[0] + (p2[0]-p1[0])*end_ratio,   p1[1] + (p2[1]-p1[1])*end_ratio]
                             else:
-                                # --- 水平切割 (X軸插值) ---
                                 np0 = [p0[0] + (p1[0]-p0[0])*start_ratio, p0[1] + (p1[1]-p0[1])*start_ratio]
                                 np1 = [p0[0] + (p1[0]-p0[0])*end_ratio,   p0[1] + (p1[1]-p0[1])*end_ratio]
                                 np3 = [p3[0] + (p2[0]-p3[0])*start_ratio, p3[1] + (p2[1]-p3[1])*start_ratio]
@@ -1034,21 +1076,87 @@ class OCRLabel(QLabel):
                             ny = pt[1] * scale_y + offset_y
                             poly_points.append(QPoint(int(nx), int(ny)))
                     
-                        # 畫黃色螢光底色
                         painter.setBrush(QBrush(QColor(255, 255, 0, 100))) 
                         painter.setPen(Qt.PenStyle.NoPen)
                         painter.drawPolygon(QPolygon(poly_points))
                 
-                    # 畫上原本的整條紅框 (使用修正排序後的點)
+                    # [修改] 如果目前滑鼠指著這個框，畫成高亮藍色，否則畫原本的紅色
                     full_poly_points = []
                     for pt in sorted_box:
                         nx = pt[0] * scale_x + offset_x
                         ny = pt[1] * scale_y + offset_y
                         full_poly_points.append(QPoint(int(nx), int(ny)))
+                        
+                    if i == self.hovered_index:
+                        # 懸停時：藍色粗框 + 藍色半透明底色
+                        painter.setBrush(QBrush(QColor(96, 205, 255, 60))) 
+                        painter.setPen(QPen(QColor("#60cdff"), 3))
+                        painter.drawPolygon(QPolygon(full_poly_points))
+                    else:
+                        # 平常時：紅色細框
+                        painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                        painter.setPen(QPen(QColor(255, 0, 0, 200), 2))
+                        painter.drawPolygon(QPolygon(full_poly_points))
+
+            # ==========================================
+            # [新增] 迴圈 2：繪製跟隨標籤 (確保畫在最上層不被其他紅框遮擋)
+            # ==========================================
+            if self.hovered_index != -1:
+                item = self.ocr_data[self.hovered_index]
+                text = item.get("text", "")
+                conf = item.get("conf", 0.0)
                 
-                    painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-                    painter.setPen(QPen(QColor(255, 0, 0, 200), 2))
-                    painter.drawPolygon(QPolygon(full_poly_points))
+                # 設定字型
+                font_text = QFont("Microsoft JhengHei", 14, QFont.Weight.Bold)
+                font_conf = QFont("Consolas", 10)
+                fm_text = QFontMetrics(font_text)
+                fm_conf = QFontMetrics(font_conf)
+                
+                # 計算文字需要的尺寸
+                text_rect = fm_text.boundingRect(text)
+                conf_str = f"Conf: {conf:.2f}"
+                conf_rect = fm_conf.boundingRect(conf_str)
+                
+                # 計算標籤面板尺寸 (留白 padding)
+                pad_x = 12
+                pad_y = 8
+                panel_w = max(text_rect.width(), conf_rect.width()) + (pad_x * 2)
+                panel_h = text_rect.height() + conf_rect.height() + (pad_y * 2) + 4
+                
+                # 決定面板位置 (游標右下方)
+                pos_x = self.cursor_pos.x() + 15
+                pos_y = self.cursor_pos.y() + 15
+                
+                # 防呆：如果面板超出畫面右邊或下邊，就往反方向彈
+                if pos_x + panel_w > self.width():
+                    pos_x = self.cursor_pos.x() - panel_w - 10
+                if pos_y + panel_h > self.height():
+                    pos_y = self.cursor_pos.y() - panel_h - 10
+                    
+                panel_rect = QRect(pos_x, pos_y, panel_w, panel_h)
+                
+                # 畫面板背景 (深灰半透明圓角)
+                painter.setBrush(QBrush(QColor(35, 35, 35, 230)))
+                painter.setPen(QPen(QColor(85, 85, 85, 255), 1))
+                painter.drawRoundedRect(panel_rect, 6, 6)
+                
+                # 畫主文字 (白色)
+                painter.setFont(font_text)
+                painter.setPen(QColor(255, 255, 255))
+                painter.drawText(
+                    panel_rect.left() + pad_x, 
+                    panel_rect.top() + pad_y + fm_text.ascent(), 
+                    text
+                )
+                
+                # 畫信心度 (淺藍色小字，靠右對齊)
+                painter.setFont(font_conf)
+                painter.setPen(QColor(96, 205, 255))
+                painter.drawText(
+                    panel_rect.right() - pad_x - conf_rect.width(), 
+                    panel_rect.bottom() - pad_y, 
+                    conf_str
+                )
 
 class PreviewOverlay(QWidget):
     def __init__(self, parent=None):
