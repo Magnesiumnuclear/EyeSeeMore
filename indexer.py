@@ -378,49 +378,41 @@ class IndexerService:
             end_mem = process.memory_info().rss / (1024 * 1024)
             perf_print(f"[系統資源] 處理結束後，程式佔用 RAM: {end_mem:.2f} MB (變化: {end_mem - start_mem:+.2f} MB)\n")
 
-    def _compute_clip(self, model, batch_images):
-        with torch.no_grad():
-            use_amp = (self.device == 'cuda')
-            
-            image_input = torch.cat(batch_images).to(self.device)
-            # [修改] 使用 perf_print
-            perf_print(f"[張量追蹤] 目前計算批次 (Batch Size: {len(batch_images)}) 被送往 -> {str(image_input.device).upper()}")
+    def _compute_clip(self, image_session, batch_images):
+        # 1. 將 PyTorch 的影像 Tensor 轉成 Numpy 陣列
+        image_input_np = torch.cat(batch_images).cpu().numpy()
+        
+        # [修改] 使用 perf_print
+        perf_print(f"[張量追蹤] 目前計算批次 (Batch Size: {len(batch_images)}) 被送往 -> ONNX Runtime")
 
-            # [修改] 如果沒有開啟效能監控，就不跑 ProfilerActivity，避免拖慢計算速度
-            if ENABLE_PROFILING:
-                with torch_profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
-                    with torch.amp.autocast(device_type=self.device, enabled=use_amp):
-                        with record_function("CLIP_Model_Forward"):
-                            image_features = model.encode_image(image_input)
-                            image_features /= image_features.norm(dim=-1, keepdim=True)
-                
-                sort_metric = "cuda_time_total" if self.device == 'cuda' else "cpu_time_total"
-                perf_print(prof.key_averages().table(sort_by=sort_metric, row_limit=3))
-            else:
-                # 一般純粹的極速運算邏輯
-                with torch.amp.autocast(device_type=self.device, enabled=use_amp):
-                    image_features = model.encode_image(image_input)
-                    image_features /= image_features.norm(dim=-1, keepdim=True)
-
-            image_features = image_features.cpu().numpy()
+        # 2. 執行 ONNX 推論
+        input_name = image_session.get_inputs()[0].name
+        image_features = image_session.run(None, {input_name: image_input_np})[0]
+        
+        # 3. 使用 Numpy 進行 L2 正規化 (Normalize)
+        image_features = image_features / np.linalg.norm(image_features, axis=-1, keepdims=True)
             
         return [emb.astype(np.float32).tobytes() for emb in image_features]
 
     def load_ai_models(self, need_ocr=True):
-        print(f"Loading Models on {self.device}...")
-        model, _, preprocess = open_clip.create_model_and_transforms(
-            self.model_name, pretrained=self.pretrained_name, device=self.device
-        )
-        model.eval()
+        print(f"Loading Models via ONNX Runtime...")
+        import onnxruntime as ort
         
-        actual_clip_device = next(model.parameters()).device
-        # [修改] 使用 perf_print
-        perf_print(f"[CLIP 權重] 實際分配位置: {str(actual_clip_device).upper()}")
-
+        # 為了保證圖片縮放與裁切邏輯完全一致，我們暫時保留 open_clip 的 preprocess
+        _, _, preprocess = open_clip.create_model_and_transforms(
+            self.model_name, pretrained=self.pretrained_name, device="cpu"
+        )
+        
+        # 載入我們剛轉好的 ONNX Image Encoder
+        onnx_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "onnx_clip", "clip_image_encoder.onnx")
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if (self.device == 'cuda') else ['CPUExecutionProvider']
+        
+        # [替換] 原本回傳 PyTorch model，現在回傳 ONNX session
+        image_session = ort.InferenceSession(onnx_path, providers=providers)
+        
         ocr_engine = ONNXOCR(lang='ch', use_gpu=self.use_gpu_ocr) if need_ocr else None
-        # (ONNXOCR 預設就很安靜，不需要特別設定 logging level)
 
-        return model, preprocess, ocr_engine
+        return image_session, preprocess, ocr_engine
 
     def update_folder_stats(self, conn):
         cursor = conn.cursor()

@@ -477,28 +477,31 @@ class ImageSearchEngine:
             print(f"[Error] Database file not found: {self.config.db_path}")
 
     def load_ai_models(self):
-        """第二階段：載入重量級 AI 模型 (耗時操作)"""
+        """第二階段：載入 ONNX AI 模型 (取代原本的 PyTorch)"""
         try:
             model_name = self.config.get("model_name")
             pretrained = self.config.get("pretrained")
+            import onnxruntime as ort
 
-            print(f"[Engine] Loading OpenCLIP model: {model_name}...")
-            self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-                model_name, pretrained=pretrained, device=self.device
+            print(f"[Engine] Loading ONNX CLIP models...")
+            # 暫留 Tokenizer 與 Preprocess
+            _, _, self.preprocess = open_clip.create_model_and_transforms(
+                model_name, pretrained=pretrained, device="cpu"
             )
-            self.model.eval()
+            self.tokenizer = open_clip.get_tokenizer(model_name)
+            self.is_hf_tokenizer = False # ViT-B-32 是標準 tokenizer
             
-            # [關鍵修復 1] 動態切換對應的 Tokenizer
-            if "roberta" in model_name.lower() or "xlm" in model_name.lower():
-                self.tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-large')
-                self.is_hf_tokenizer = True # 標記為 HuggingFace 分詞器
-            else:
-                self.tokenizer = open_clip.get_tokenizer(model_name)
-                self.is_hf_tokenizer = False # 標記為標準 OpenCLIP 分詞器
+            # 載入 ONNX Sessions
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            img_onnx_path = os.path.join(base_dir, "models", "onnx_clip", "clip_image_encoder.onnx")
+            txt_onnx_path = os.path.join(base_dir, "models", "onnx_clip", "clip_text_encoder.onnx")
             
-            # 模型載入完畢，標記為 Ready
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if torch.cuda.is_available() else ['CPUExecutionProvider']
+            self.clip_image_session = ort.InferenceSession(img_onnx_path, providers=providers)
+            self.clip_text_session = ort.InferenceSession(txt_onnx_path, providers=providers)
+            
             self.is_ready = True
-            print(f"[Engine] AI Models Loaded. System is fully ready.")
+            print(f"[Engine] ONNX AI Models Loaded. System is fully ready.")
             
         except Exception as e:
             print(f"[Error] AI Model loading failed: {e}")
@@ -591,8 +594,11 @@ class ImageSearchEngine:
             
             if self.data_store and embeddings_list:
                 emb_matrix = np.stack(embeddings_list)
-                self.stored_embeddings = torch.from_numpy(emb_matrix).to(self.device)
-                print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
+                if self.data_store and embeddings_list:
+                    emb_matrix = np.stack(embeddings_list)
+                    # [關鍵修改] 直接保留為 Numpy 陣列，不再轉換成 PyTorch Tensor！
+                    self.stored_embeddings = emb_matrix
+                    print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
             else:
                 print(f"[Engine] No records found for model '{current_model}'.")
                 self.stored_embeddings = None
@@ -632,28 +638,24 @@ class ImageSearchEngine:
         except Exception as e: return False, str(e)
 
     def search_hybrid(self, query, top_k=50, use_ocr=True):
-        # [安全檢查] 增加檢查 stored_embeddings 是否存在
         if not self.is_ready or self.stored_embeddings is None: 
             return [] 
             
         results = []; query_lower = query.lower()
         try:
-            with torch.no_grad():
-                # [關鍵修復 2] 根據不同種類的 Tokenizer 餵入不同的格式
-                if getattr(self, 'is_hf_tokenizer', True):
-                    # RoBERTa 專用處理方式
-                    inputs = self.tokenizer(query, padding=True, truncation=True, return_tensors="pt").to(self.device)
-                    text_features = self.model.encode_text(inputs.input_ids)
-                else:
-                    # 標準 CLIP 專用處理方式 (例如 ViT-H-14, ViT-B-32)
-                    text_tokens = self.tokenizer([query]).to(self.device)
-                    text_features = self.model.encode_text(text_tokens)
-                
-                text_features /= text_features.norm(dim=-1, keepdim=True)
-                text_features = text_features.to(self.stored_embeddings.dtype)
+            # 1. 文字轉 Token 並轉為 Numpy
+            text_tokens = self.tokenizer([query]).cpu().numpy()
             
-            similarity = (text_features @ self.stored_embeddings.T).squeeze(0)
-            scores = similarity.cpu().numpy()
+            # 2. ONNX 提取文字特徵
+            input_name = self.clip_text_session.get_inputs()[0].name
+            text_features = self.clip_text_session.run(None, {input_name: text_tokens})[0]
+            
+            # 3. L2 正規化
+            text_features = text_features / np.linalg.norm(text_features, axis=-1, keepdims=True)
+            
+            # 4. 極速 Numpy 矩陣相乘計算相似度 (取代 PyTorch @ 運算)
+            scores = np.dot(text_features, self.stored_embeddings.T).squeeze(0)
+            
         except Exception as e:
             print(f"CLIP Search Error: {e}"); scores = np.zeros(len(self.data_store))
 
@@ -672,25 +674,32 @@ class ImageSearchEngine:
         return results[:top_k]
 
     def search_image(self, image_path, top_k=50):
-        # [安全檢查]
         if not self.is_ready or self.stored_embeddings is None: 
             return []
             
         try:
             image = Image.open(image_path).convert('RGB')
-            processed_image = self.preprocess(image).unsqueeze(0).to(self.device)
-            with torch.no_grad():
-                image_features = self.model.encode_image(processed_image)
-                image_features /= image_features.norm(dim=-1, keepdim=True)
-                image_features = image_features.to(self.stored_embeddings.dtype)
-            similarity = (image_features @ self.stored_embeddings.T).squeeze(0)
+            # 轉 Numpy
+            processed_image = self.preprocess(image).unsqueeze(0).cpu().numpy()
+            
+            # ONNX 提取影像特徵
+            input_name = self.clip_image_session.get_inputs()[0].name
+            image_features = self.clip_image_session.run(None, {input_name: processed_image})[0]
+            image_features = image_features / np.linalg.norm(image_features, axis=-1, keepdims=True)
+            
+            # Numpy 矩陣相乘
+            similarity = np.dot(image_features, self.stored_embeddings.T).squeeze(0)
+            
+            # 找出 Top K
             k = min(top_k, len(self.data_store))
-            values, indices = similarity.topk(k)
+            indices = np.argsort(similarity)[::-1][:k] # Numpy 排序遞減
+            values = similarity[indices]
+            
             results = []
             for i in range(k):
-                idx = indices[i].item(); item = self.data_store[idx]; score = values[i].item()
+                idx = indices[i]; item = self.data_store[idx]; score = values[i]
                 results.append({
-                    "score": score, "clip_score": score, "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
+                    "score": float(score), "clip_score": float(score), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
                     "path": item["path"], "filename": item["filename"], "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0)
                 })
             return results
