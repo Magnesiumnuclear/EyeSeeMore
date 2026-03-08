@@ -489,12 +489,20 @@ class ImageSearchEngine:
                 model_name, pretrained=pretrained, device="cpu"
             )
             self.tokenizer = open_clip.get_tokenizer(model_name)
-            self.is_hf_tokenizer = False # ViT-B-32 是標準 tokenizer
-            
+
+            self.is_hf_tokenizer = ("roberta" in model_name.lower() or "xlm" in model_name.lower())
+
+            # [關鍵修改] 根據模型類型，指派正確的 Tokenizer
+            if self.is_hf_tokenizer:
+                from transformers import AutoTokenizer
+                self.tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-large')
+            else:
+                self.tokenizer = open_clip.get_tokenizer(model_name)
+
             # 載入 ONNX Sessions
             base_dir = os.path.dirname(os.path.abspath(__file__))
-            img_onnx_path = os.path.join(base_dir, "models", "onnx_clip", "clip_image_encoder.onnx")
-            txt_onnx_path = os.path.join(base_dir, "models", "onnx_clip", "clip_text_encoder.onnx")
+            img_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_name}_image.onnx")
+            txt_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_name}_text.onnx")
             
             providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if torch.cuda.is_available() else ['CPUExecutionProvider']
             self.clip_image_session = ort.InferenceSession(img_onnx_path, providers=providers)
@@ -644,7 +652,12 @@ class ImageSearchEngine:
         results = []; query_lower = query.lower()
         try:
             # 1. 文字轉 Token 並轉為 Numpy
-            text_tokens = self.tokenizer([query]).cpu().numpy()
+            if getattr(self, 'is_hf_tokenizer', False):
+                # 多語系模式：使用 HuggingFace 官方的 Tokenizer 語法
+                text_tokens = self.tokenizer([query], padding=True, truncation=True, return_tensors="pt").input_ids.numpy()
+            else:
+                # 標準模式：使用 CLIP 預設的 Tokenizer 語法
+                text_tokens = self.tokenizer([query]).cpu().numpy()
             
             # 2. ONNX 提取文字特徵
             input_name = self.clip_text_session.get_inputs()[0].name
@@ -788,6 +801,30 @@ class SearchWorker(QThread):
             
         self.batch_ready.emit(raw_results)
         self.finished_search.emit(time.time() - start_time, len(raw_results))
+
+from export_clip_onnx import export_to_onnx
+
+class ONNXExportWorker(QThread):
+    progress_update = pyqtSignal(int, str)
+    finished_signal = pyqtSignal(bool)
+    
+    def __init__(self, model_name, pretrained):
+        super().__init__()
+        self.model_name = model_name
+        self.pretrained = pretrained
+        self.save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "onnx_clip")
+        
+    def run(self):
+        try:
+            # 傳入 self.progress_update.emit 當作 callback，即時回傳進度
+            success = export_to_onnx(
+                self.model_name, self.pretrained, self.save_dir, 
+                progress_callback=self.progress_update.emit
+            )
+            self.finished_signal.emit(success)
+        except Exception as e:
+            self.progress_update.emit(0, f"Error: {str(e)}")
+            self.finished_signal.emit(False)
 
 class OCRDownloadWorker(QThread):
     progress_update = pyqtSignal(int, str)
@@ -1410,10 +1447,10 @@ class PreviewOverlay(QWidget):
                 
                 # 如果圖片有 EXIF 旋轉標記，對 OCR 座標執行矩陣轉換
                 if orientation != 1 and processed_boxes:
-                    new_boxes = []
-                    for box in processed_boxes:
+                    for item in processed_boxes:
+                        box_pts = item.get("box", [])
                         new_box = []
-                        for pt in box:
+                        for pt in box_pts:
                             x, y = pt[0], pt[1]
                             if orientation == 2:   nx, ny = raw_w - x, y
                             elif orientation == 3: nx, ny = raw_w - x, raw_h - y
@@ -1424,8 +1461,7 @@ class PreviewOverlay(QWidget):
                             elif orientation == 8: nx, ny = y, raw_w - x  # 左轉 90 度
                             else:                  nx, ny = x, y
                             new_box.append([nx, ny])
-                        new_boxes.append(new_box)
-                    processed_boxes = new_boxes
+                        item["box"] = new_box
         except Exception as e:
             print(f"EXIF rotation parsing error: {e}")
         
@@ -3361,17 +3397,36 @@ class SettingsDialog(QDialog):
         self.refresh_ocr_status()
 
     def on_switch_clip_model(self, model_id, pretrained):
-        # 將設定寫入 config.json
-        self.main_window.config.set("model_name", model_id)
-        self.main_window.config.set("pretrained", pretrained)
+        # 1. 喚醒上方的下載進度條 UI
+        self.dl_progress.setFixedHeight(12) 
+        self.dl_progress.setValue(0)
+        self.dl_status_label.setText(f"檢查並準備 {model_id} 模型...")
+        self.dl_status_label.show()
         
-        # 由於 CLIP 模型過大，必須重啟程式來釋放並重新佔用顯存
-        QMessageBox.information(
-            self, 
-            "設定已儲存", 
-            "AI 模型已切換！\n\n為了確保記憶體安全釋放，程式將會關閉，請您手動重新啟動。"
-        )
-        QApplication.quit()
+        # 2. 啟動背景轉換 Worker
+        self.export_worker = ONNXExportWorker(model_id, pretrained)
+        self.export_worker.progress_update.connect(self.update_download_progress)
+        
+        # 3. 轉換完成後的回呼函式
+        def on_export_finished(success):
+            if success:
+                # 寫入設定檔
+                self.main_window.config.set("model_name", model_id)
+                self.main_window.config.set("pretrained", pretrained)
+                
+                QMessageBox.information(
+                    self, 
+                    "設定已儲存", 
+                    "AI 模型已準備就緒並切換成功！\n\n為了確保記憶體安全釋放，程式將會關閉，請您手動重新啟動。"
+                )
+                QApplication.quit()
+            else:
+                self.dl_progress.setFixedHeight(2)
+                self.dl_status_label.hide()
+                QMessageBox.critical(self, "轉換失敗", "無法轉換模型為 ONNX 格式，請查看終端機錯誤訊息。")
+                
+        self.export_worker.finished_signal.connect(on_export_finished)
+        self.export_worker.start()
 
     def eventFilter(self, obj, event):
         # 取得設定模式 (預設向後相容：長按顯示、方向鍵只跑底層)

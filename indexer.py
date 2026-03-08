@@ -223,7 +223,7 @@ class IndexerService:
             for lang in needed_langs:
                 try:
                     ocr_engines[lang] = ONNXOCR(lang=lang, use_gpu=self.use_gpu_ocr)
-                    perf_print(f"[ONNXOCR] 成功加載 '{lang}' 模型準備運算。")
+                    perf_print(f"{self.model_name}_image.onnx")
                 except Exception as e:
                     print(f"Skipping OCR lang '{lang}': {e}")
 
@@ -403,8 +403,8 @@ class IndexerService:
             self.model_name, pretrained=self.pretrained_name, device="cpu"
         )
         
-        # 載入我們剛轉好的 ONNX Image Encoder
-        onnx_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "onnx_clip", "clip_image_encoder.onnx")
+        # 載入我們剛轉好的 ONNX Image Encoder (改為動態檔名)
+        onnx_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "onnx_clip", f"{self.model_name}_image.onnx")
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if (self.device == 'cuda') else ['CPUExecutionProvider']
         
         # [替換] 原本回傳 PyTorch model，現在回傳 ONNX session
