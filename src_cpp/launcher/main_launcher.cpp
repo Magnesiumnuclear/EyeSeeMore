@@ -9,7 +9,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     
     // 1. 動態載入 Python 核心 DLL
     // 開發階段它會自動從您的系統 PATH 抓取；未來部署到 USB 時，只要把 python310.dll 放在旁邊就能隨插即用！
-    HMODULE hPython = LoadLibraryW(L"python310.dll");
+    HMODULE hPython = LoadLibraryW(L"C:\\Users\\samho\\AppData\\Local\\Programs\\Python\\Python310\\python310.dll");
     
     if (!hPython) {
         MessageBoxW(NULL, L"啟動失敗！找不到 python310.dll\n請確認 Python 已安裝，或 DLL 檔案與啟動器位於同目錄。", L"EyeSeeMore 環境錯誤", MB_ICONERROR);
