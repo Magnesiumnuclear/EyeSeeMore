@@ -1,14 +1,21 @@
 #include <windows.h>
 #include <string>
 
-// 定義我們要從 python310.dll 偷接出來的函數指標
 typedef void (*Py_Initialize_t)();
 typedef int (*PyRun_SimpleString_t)(const char*);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     
-    // 1. 動態載入 Python 核心 DLL
-    // 開發階段它會自動從您的系統 PATH 抓取；未來部署到 USB 時，只要把 python310.dll 放在旁邊就能隨插即用！
+    // ==========================================
+    // [防彈裝甲] 獲取 .exe 自己所在的絕對路徑，並強制切換工作目錄
+    // ==========================================
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    std::wstring ws(exePath);
+    std::wstring exeDir = ws.substr(0, ws.find_last_of(L"\\/"));
+    SetCurrentDirectoryW(exeDir.c_str()); 
+
+    // 1. 載入您電腦裡的 Python 核心
     HMODULE hPython = LoadLibraryW(L"C:\\Users\\samho\\AppData\\Local\\Programs\\Python\\Python310\\python310.dll");
     
     if (!hPython) {
@@ -20,15 +27,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     Py_Initialize_t Py_Initialize = (Py_Initialize_t)GetProcAddress(hPython, "Py_Initialize");
     PyRun_SimpleString_t PyRun_SimpleString = (PyRun_SimpleString_t)GetProcAddress(hPython, "PyRun_SimpleString");
 
-    if (!Py_Initialize || !PyRun_SimpleString) {
-        MessageBoxW(NULL, L"Python 引擎載入異常！", L"EyeSeeMore", MB_ICONERROR);
-        return 1;
-    }
-
-    // 3. 喚醒 Python 引擎 (此時進程依然是 EyeSeeMore_Launcher.exe)
+    // 3. 喚醒 Python 引擎
     Py_Initialize();
 
-    // 4. 注入啟動腳本 (包含將 .venv-onnx 套件庫加入路徑，並具備錯誤彈窗防呆機制)
+    // 4. 注入啟動腳本 (加入字典定義，確保 __name__ == "__main__" 能正確觸發 PyQt6)
     const char* boot_script =
         "import sys\n"
         "import os\n"
@@ -36,7 +38,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         "try:\n"
         "    with open('Blur-main.py', 'r', encoding='utf-8') as f:\n"
         "        code = f.read()\n"
-        "    exec(code)\n"
+        "    exec(code, {'__name__': '__main__', '__file__': 'Blur-main.py'})\n"
         "except Exception as e:\n"
         "    import ctypes\n"
         "    ctypes.windll.user32.MessageBoxW(0, f'Python 執行崩潰:\\n{str(e)}', 'EyeSeeMore 嚴重錯誤', 0x10)\n";
