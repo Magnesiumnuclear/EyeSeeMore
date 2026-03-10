@@ -13,6 +13,9 @@ add_executable(EyeSeeMore_Launcher WIN32
     resources/resource.rc
 )
 
+# [新增] 連結 Windows 系統函式庫：ole32 (工具列 COM), uuid, gdi32 (視窗繪圖)
+target_link_libraries(EyeSeeMore_Launcher ole32 uuid gdi32)
+
 # 2. 安裝程式保留不動
 add_executable(EyeSeeMore_Setup 
     installer/main_installer.cpp
