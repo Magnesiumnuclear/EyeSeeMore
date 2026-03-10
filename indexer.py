@@ -1,18 +1,42 @@
 import os
-# 在最頂端限制 Paddle 的記憶體貪婪策略 (Auto Growth)
-#os.environ["FLAGS_allocator_strategy"] = "auto_growth"
-#from paddleocr import PaddleOCR
-
 import sqlite3
-import torch
 from PIL import Image
-import open_clip
 import numpy as np
 import logging
 import json
 import datetime
-
+import psutil
+import onnxruntime as ort  # <--- 新增
 from onnx_ocr import ONNXOCR
+
+# ==========================================
+# [新增] 純 Numpy 的圖片預處理 (完全取代 PyTorch & open_clip)
+# ==========================================
+class NumpyPreprocess:
+    def __init__(self, size=224):
+        self.size = size
+        self.mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32).reshape(3, 1, 1)
+        self.std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32).reshape(3, 1, 1)
+
+    def __call__(self, image: Image.Image):
+        # 1. 智慧縮放 (短邊對齊 224)
+        w, h = image.size
+        if w < h:
+            new_w = self.size; new_h = int(h * (self.size / w))
+        else:
+            new_h = self.size; new_w = int(w * (self.size / h))
+        image = image.resize((new_w, new_h), Image.Resampling.BICUBIC)
+        
+        # 2. 中央裁切
+        left = (new_w - self.size) // 2
+        top = (new_h - self.size) // 2
+        image = image.crop((left, top, left + self.size, top + self.size))
+        
+        # 3. 轉 Numpy、歸一化、調換維度為 CHW
+        img_arr = np.array(image).astype(np.float32) / 255.0
+        img_arr = img_arr.transpose((2, 0, 1))
+        img_arr = (img_arr - self.mean) / self.std
+        return img_arr
 
 # ==========================================
 # [新增] 效能監控「總開關」與動態工具
@@ -42,7 +66,7 @@ class IndexerService:
         self.model_name = model_name
         self.pretrained_name = pretrained_name
         self.use_gpu_ocr = bool(use_gpu_ocr) 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if 'CUDAExecutionProvider' in ort.get_available_providers() else "cpu"
         
         # [修改] 使用 perf_print 取代一般的 print
         perf_print(f"\n{'='*50}")
@@ -379,37 +403,26 @@ class IndexerService:
             perf_print(f"[系統資源] 處理結束後，程式佔用 RAM: {end_mem:.2f} MB (變化: {end_mem - start_mem:+.2f} MB)\n")
 
     def _compute_clip(self, image_session, batch_images):
-        # 1. 將 PyTorch 的影像 Tensor 轉成 Numpy 陣列
-        image_input_np = torch.cat(batch_images).cpu().numpy()
+        # [關鍵修改] 不再使用 torch.cat，改用純 Numpy 的 concatenate
+        image_input_np = np.concatenate(batch_images, axis=0)
         
-        # [修改] 使用 perf_print
         perf_print(f"[張量追蹤] 目前計算批次 (Batch Size: {len(batch_images)}) 被送往 -> ONNX Runtime")
-
-        # 2. 執行 ONNX 推論
         input_name = image_session.get_inputs()[0].name
         image_features = image_session.run(None, {input_name: image_input_np})[0]
-        
-        # 3. 使用 Numpy 進行 L2 正規化 (Normalize)
         image_features = image_features / np.linalg.norm(image_features, axis=-1, keepdims=True)
             
         return [emb.astype(np.float32).tobytes() for emb in image_features]
 
     def load_ai_models(self, need_ocr=True):
         print(f"Loading Models via ONNX Runtime...")
-        import onnxruntime as ort
         
-        # 為了保證圖片縮放與裁切邏輯完全一致，我們暫時保留 open_clip 的 preprocess
-        _, _, preprocess = open_clip.create_model_and_transforms(
-            self.model_name, pretrained=self.pretrained_name, device="cpu"
-        )
+        # [關鍵修改] 放棄 open_clip，直接實例化我們的 Numpy 引擎
+        preprocess = NumpyPreprocess(size=224)
         
-        # 載入我們剛轉好的 ONNX Image Encoder (改為動態檔名)
         onnx_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "onnx_clip", f"{self.model_name}_image.onnx")
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if (self.device == 'cuda') else ['CPUExecutionProvider']
         
-        # [替換] 原本回傳 PyTorch model，現在回傳 ONNX session
         image_session = ort.InferenceSession(onnx_path, providers=providers)
-        
         ocr_engine = ONNXOCR(lang='ch', use_gpu=self.use_gpu_ocr) if need_ocr else None
 
         return image_session, preprocess, ocr_engine

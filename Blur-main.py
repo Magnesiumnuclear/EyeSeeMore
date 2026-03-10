@@ -5,15 +5,18 @@ import sqlite3
 import threading
 import json
 from PIL import Image
-import torch
+
 import numpy as np
-import open_clip
+import onnxruntime as ort
+
 from transformers import AutoTokenizer 
 from datetime import datetime
 from collections import OrderedDict
 from indexer import IndexerService
 import unicodedata
 import re
+
+from indexer import IndexerService, NumpyPreprocess
 
 import urllib.request
 import tarfile
@@ -459,7 +462,7 @@ class ImageDelegate(QStyledItemDelegate):
 class ImageSearchEngine:
     def __init__(self, config: ConfigManager):
         self.config = config
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if 'CUDAExecutionProvider' in ort.get_available_providers() else "cpu"
         self.is_ready = False
         self.model = None
         self.preprocess = None
@@ -477,34 +480,29 @@ class ImageSearchEngine:
             print(f"[Error] Database file not found: {self.config.db_path}")
 
     def load_ai_models(self):
-        """第二階段：載入 ONNX AI 模型 (取代原本的 PyTorch)"""
         try:
             model_name = self.config.get("model_name")
             pretrained = self.config.get("pretrained")
-            import onnxruntime as ort
 
             print(f"[Engine] Loading ONNX CLIP models...")
-            # 暫留 Tokenizer 與 Preprocess
-            _, _, self.preprocess = open_clip.create_model_and_transforms(
-                model_name, pretrained=pretrained, device="cpu"
-            )
-            self.tokenizer = open_clip.get_tokenizer(model_name)
+            # [關鍵修改] 捨棄 open_clip，載入純 Numpy 預處理
+            self.preprocess = NumpyPreprocess(size=224)
 
             self.is_hf_tokenizer = ("roberta" in model_name.lower() or "xlm" in model_name.lower())
 
-            # [關鍵修改] 根據模型類型，指派正確的 Tokenizer
+            # [關鍵修改] Tokenizer 改用 huggingface 輕量版
+            from transformers import AutoTokenizer, CLIPTokenizer
             if self.is_hf_tokenizer:
-                from transformers import AutoTokenizer
                 self.tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-large')
             else:
-                self.tokenizer = open_clip.get_tokenizer(model_name)
+                self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
 
             # 載入 ONNX Sessions
             base_dir = os.path.dirname(os.path.abspath(__file__))
             img_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_name}_image.onnx")
             txt_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_name}_text.onnx")
             
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if torch.cuda.is_available() else ['CPUExecutionProvider']
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if (self.device == 'cuda') else ['CPUExecutionProvider']
             self.clip_image_session = ort.InferenceSession(img_onnx_path, providers=providers)
             self.clip_text_session = ort.InferenceSession(txt_onnx_path, providers=providers)
             
@@ -654,7 +652,7 @@ class ImageSearchEngine:
             # 1. 文字轉 Token 並轉為 Numpy
             if getattr(self, 'is_hf_tokenizer', False):
                 # 多語系模式：使用 HuggingFace 官方的 Tokenizer 語法
-                text_tokens = self.tokenizer([query], padding=True, truncation=True, return_tensors="pt").input_ids.numpy()
+                text_tokens = self.tokenizer([query], padding=True, truncation=True, return_tensors="np").input_ids
             else:
                 # 標準模式：使用 CLIP 預設的 Tokenizer 語法
                 text_tokens = self.tokenizer([query]).cpu().numpy()
@@ -693,7 +691,7 @@ class ImageSearchEngine:
         try:
             image = Image.open(image_path).convert('RGB')
             # 轉 Numpy
-            processed_image = self.preprocess(image).unsqueeze(0).cpu().numpy()
+            processed_image = np.expand_dims(self.preprocess(image), axis=0)
             
             # ONNX 提取影像特徵
             input_name = self.clip_image_session.get_inputs()[0].name
