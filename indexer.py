@@ -265,7 +265,7 @@ class IndexerService:
             for path in batch_paths:
                 try:
                     img = Image.open(path).convert('RGB')
-                    batch_images.append(preprocess(img).unsqueeze(0))
+                    batch_images.append(np.expand_dims(preprocess(img), axis=0))
                 except Exception: continue
 
             if batch_images:
@@ -326,7 +326,7 @@ class IndexerService:
             for path in batch_paths:
                 try:
                     img = Image.open(path).convert('RGB')
-                    batch_images.append(preprocess(img).unsqueeze(0)); valid_paths.append(path)
+                    batch_images.append(np.expand_dims(preprocess(img), axis=0)); valid_paths.append(path)
                 except Exception: continue
 
             if batch_images:

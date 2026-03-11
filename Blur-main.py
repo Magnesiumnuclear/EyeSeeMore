@@ -2293,14 +2293,16 @@ class MainWindow(QMainWindow):
             config_folders = self.config.get("source_folders")
             self.sidebar.update_folders(stats, config_folders)
 
-    # [修復] 加回此函式，讓側邊欄的 + 號能運作
+    # [修復] 加回此函式，讓側邊欄的 + 號能運作，並正確更新畫面
     def on_add_folder_clicked(self):
         from PyQt6.QtWidgets import QFileDialog
         folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
         if folder:
             if self.config.add_source_folder(folder):
+                # 1. 立即更新側邊欄
                 self.refresh_sidebar()
-                QMessageBox.information(self, "Success", "加入成功！請點擊側邊欄的「⟳」按鈕進行掃描。")
+                # 2. 自動觸發一次重新掃描，讓使用者不用再點「⟳」按鈕
+                self.on_refresh_clicked() 
             else:
                 QMessageBox.warning(self, "重複", "此資料夾已經存在。")
 
@@ -2494,6 +2496,9 @@ class MainWindow(QMainWindow):
         self.status.setText(f"System Ready ({count} images)")
         self.progress.hide()
         
+        # [新增] AI 準備好後，關閉工作列的進度條狀態
+        self.taskbar_ctrl.set_state(TBPF_NOPROGRESS)
+        
         # 這裡會去抓取資料夾統計，並建立二級選單的按鈕
         if self.engine:
             self.refresh_sidebar()
@@ -2505,6 +2510,10 @@ class MainWindow(QMainWindow):
         self.progress.show()
         self.progress.setRange(0, total)
         self.progress.setValue(current)
+        
+        # [新增] 同步更新工作列上的進度百分比，並確保狀態為「正常 (綠色進度條)」
+        self.taskbar_ctrl.set_state(TBPF_NORMAL)
+        self.taskbar_ctrl.set_progress(current, total)
 
     def on_scan_finished(self, added, deleted):
         if added > 0 or deleted > 0:
@@ -2517,6 +2526,10 @@ class MainWindow(QMainWindow):
 
     def on_indexing_finished(self):
         self.progress.hide()
+        
+        # [新增] 索引任務結束，關閉工作列進度條
+        self.taskbar_ctrl.set_state(TBPF_NOPROGRESS)
+        
         self.status.setText("Index Updated.")
         if self.engine:
             print("Reloading engine data...")
@@ -2737,6 +2750,9 @@ class MainWindow(QMainWindow):
     def load_engine(self):
         try:
             #self.status.setText("Loading Database...")
+            
+            # [新增] 載入模型時，工作列顯示綠色流光 (跑動條)
+            self.taskbar_ctrl.set_state(TBPF_INDETERMINATE)
             
             # 正確建立 Engine 實例
             self.engine = ImageSearchEngine(self.config)
