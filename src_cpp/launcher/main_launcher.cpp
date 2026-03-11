@@ -1,167 +1,88 @@
 #include <windows.h>
+#include <iostream>
 #include <string>
-#include <thread>
-#include <atomic>
-#include <shobjidl.h> // ITaskbarList3 介面
 
-// Python 函數指標
-typedef void (*Py_Initialize_t)();
+// --- 定義 Python 函數的指標型態 ---
+typedef void (*Py_Initialize_t)(void);
 typedef int (*PyRun_SimpleString_t)(const char*);
+typedef void (*Py_Finalize_t)(void);
 
-// 全域變數
-HWND g_hSplashWnd = NULL;
-std::atomic<bool> g_PythonFailed(false);
+int main() {
+    // 隱藏終端機黑窗 (正式版時開啟，測試時可先註解掉看報錯)
+    // FreeConsole();
 
-// ==========================================
-// [背景執行緒] 專門負責吞下 Python 引擎與執行程式
-// ==========================================
-void PythonWorkerThread(std::wstring exeDir) {
-    SetCurrentDirectoryW(exeDir.c_str()); 
-
-    // 載入 Python 核心 (保留您電腦的路徑)
-    HMODULE hPython = LoadLibraryW(L"C:\\Users\\samho\\AppData\\Local\\Programs\\Python\\Python310\\python310.dll");
+    // ==========================================
+    // 1. 從註冊表讀取 EyeSeeMore 的安裝路徑
+    // ==========================================
+    HKEY hKey;
+    wchar_t installPath[MAX_PATH] = { 0 };
+    DWORD bufferSize = sizeof(installPath);
     
-    if (!hPython) {
-        g_PythonFailed = true;
-        MessageBoxW(NULL, L"啟動失敗！找不到 python310.dll", L"EyeSeeMore 環境錯誤", MB_ICONERROR);
-        PostMessage(g_hSplashWnd, WM_CLOSE, 0, 0);
-        return;
+    // 開啟 HKCU\Software\EyeSeeMore
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\EyeSeeMore", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        // 讀取 InstallPath 數值
+        if (RegQueryValueExW(hKey, L"InstallPath", NULL, NULL, (LPBYTE)installPath, &bufferSize) != ERROR_SUCCESS) {
+            MessageBoxW(NULL, L"找不到安裝路徑！請重新安裝 EyeSeeMore。", L"啟動錯誤", MB_ICONERROR);
+            RegCloseKey(hKey);
+            return 1;
+        }
+        RegCloseKey(hKey);
+    } else {
+        MessageBoxW(NULL, L"尚未安裝 EyeSeeMore！請先執行 Setup.exe。", L"啟動錯誤", MB_ICONERROR);
+        return 1;
     }
 
+    std::wstring wsInstallPath(installPath);
+
+    // ==========================================
+    // 2. 切換工作目錄到安裝路徑
+    // ==========================================
+    // 這一步極度重要！它確保 Python 腳本裡面的相對路徑 (如 models/ 或是 config.json) 都能正確對應
+    SetCurrentDirectoryW(wsInstallPath.c_str());
+
+    // ==========================================
+    // 3. 組裝 python310.dll 的絕對路徑並載入
+    // ==========================================
+    std::wstring dllPath = wsInstallPath + L"\\python310.dll";
+    HMODULE hPython = LoadLibraryW(dllPath.c_str());
+
+    if (!hPython) {
+        MessageBoxW(NULL, L"無法載入 AI 引擎 (python310.dll)！檔案可能遺失。", L"啟動錯誤", MB_ICONERROR);
+        return 1;
+    }
+
+    // ==========================================
+    // 4. 綁定 Python 函數並啟動
+    // ==========================================
     Py_Initialize_t Py_Initialize = (Py_Initialize_t)GetProcAddress(hPython, "Py_Initialize");
     PyRun_SimpleString_t PyRun_SimpleString = (PyRun_SimpleString_t)GetProcAddress(hPython, "PyRun_SimpleString");
+    Py_Finalize_t Py_Finalize = (Py_Finalize_t)GetProcAddress(hPython, "Py_Finalize");
 
-    Py_Initialize();
+    if (Py_Initialize && PyRun_SimpleString && Py_Finalize) {
+        Py_Initialize();
 
-    const char* boot_script =
-        "import sys\n"
-        "import os\n"
-        "sys.path.insert(0, os.path.abspath('.\\\\.venv-onnx\\\\Lib\\\\site-packages'))\n"
-        "try:\n"
-        "    with open('Blur-main.py', 'r', encoding='utf-8') as f:\n"
-        "        code = f.read()\n"
-        "    exec(code, {'__name__': '__main__', '__file__': 'Blur-main.py'})\n"
-        "except Exception as e:\n"
-        "    import ctypes\n"
-        "    ctypes.windll.user32.MessageBoxW(0, f'Python 執行崩潰:\\n{str(e)}', 'EyeSeeMore 嚴重錯誤', 0x10)\n";
+        // [關鍵防護] 將 C++ 寬字元路徑轉為 UTF-8，以防使用者名稱有中文
+        int utf8_size = WideCharToMultiByte(CP_UTF8, 0, wsInstallPath.c_str(), -1, NULL, 0, NULL, NULL);
+        std::string utf8InstallPath(utf8_size, 0);
+        WideCharToMultiByte(CP_UTF8, 0, wsInstallPath.c_str(), -1, &utf8InstallPath[0], utf8_size, NULL, NULL);
+        utf8InstallPath.pop_back(); // 移除結尾的 null 字元
 
-    // 執行 Python (這行會一直卡住，直到 Blur-main.py 視窗被關閉)
-    PyRun_SimpleString(boot_script);
+        // 啟動腳本：將安裝路徑加入 sys.path，然後執行 Blur-main.py
+        std::string boot_script = 
+            "import sys\n"
+            "import os\n"
+            "install_dir = r'" + utf8InstallPath + "'\n"
+            "sys.path.insert(0, install_dir)\n"
+            "os.chdir(install_dir)\n"
+            "with open('Blur-main.py', 'r', encoding='utf-8') as f:\n"
+            "    exec(f.read())\n";
 
-    // 當 Python 視窗關閉，也就是使用者退出軟體時，連帶關閉背景的 C++
-    PostMessage(g_hSplashWnd, WM_CLOSE, 0, 0);
-}
-
-// ==========================================
-// [主執行緒] Splash 視窗繪圖與交接管理
-// ==========================================
-LRESULT CALLBACK SplashWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    switch (uMsg) {
-        case WM_PAINT: {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hwnd, &ps);
-            
-            // 1. 畫背景：深灰色 (#1e1e1e)
-            HBRUSH hBrush = CreateSolidBrush(RGB(30, 30, 30));
-            FillRect(hdc, &ps.rcPaint, hBrush);
-            DeleteObject(hBrush);
-
-            // 2. 畫邊框：稍亮的灰色
-            HBRUSH hBorder = CreateSolidBrush(RGB(70, 70, 70));
-            FrameRect(hdc, &ps.rcPaint, hBorder);
-            DeleteObject(hBorder);
-
-            // 3. 畫文字：EyeSeeMore Logo (Win11 藍色)
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(96, 205, 255)); // #60cdff
-            HFONT hFontTitle = CreateFontW(32, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-            SelectObject(hdc, hFontTitle);
-            RECT textRect; GetClientRect(hwnd, &textRect);
-            textRect.top -= 20; // 稍微往上移
-            DrawTextW(hdc, L"EyeSeeMore", -1, &textRect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-            DeleteObject(hFontTitle);
-
-            // 4. 畫文字：載入狀態 (灰色)
-            SetTextColor(hdc, RGB(150, 150, 150));
-            HFONT hFontSub = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-            SelectObject(hdc, hFontSub);
-            GetClientRect(hwnd, &textRect);
-            textRect.top += 60; // 往下移
-            DrawTextW(hdc, L"Initializing AI Engine & Python...", -1, &textRect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-            DeleteObject(hFontSub);
-
-            EndPaint(hwnd, &ps);
-            return 0;
-        }
-        case WM_TIMER: {
-            // 每 100 毫秒檢查一次：PyQt6 的主視窗畫出來了嗎？
-            HWND hPyQtWnd = FindWindowW(NULL, L"EyeSeeMore-(Alpha)");
-            if (hPyQtWnd != NULL) {
-                // 發現主視窗！交接完成，把 Splash 視窗隱藏
-                ShowWindow(hwnd, SW_HIDE);
-                KillTimer(hwnd, 1);
-            }
-            return 0;
-        }
-        case WM_DESTROY:
-            PostQuitMessage(0);
-            return 0;
-    }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
-}
-
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // 1. 初始化 COM (為了工具列進度條)
-    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-
-    // 2. 註冊並建立無邊框 Splash 視窗
-    const wchar_t CLASS_NAME[] = L"SplashWindowClass";
-    WNDCLASSW wc = { };
-    wc.lpfnWndProc = SplashWndProc;
-    wc.hInstance = hInstance;
-    wc.lpszClassName = CLASS_NAME;
-    RegisterClassW(&wc);
-
-    int width = 360;
-    int height = 160;
-    int screenW = GetSystemMetrics(SM_CXSCREEN);
-    int screenH = GetSystemMetrics(SM_CYSCREEN);
-
-    // 建立置中、無邊框 (WS_POPUP) 視窗
-    g_hSplashWnd = CreateWindowExW(
-        WS_EX_APPWINDOW, CLASS_NAME, L"EyeSeeMore Launcher", 
-        WS_POPUP | WS_VISIBLE,
-        (screenW - width) / 2, (screenH - height) / 2, width, height,
-        NULL, NULL, hInstance, NULL
-    );
-
-    // 3. 強制在工具列顯示「左右跑動」的載入動畫 (Indeterminate)
-    ITaskbarList3* pTaskbar = NULL;
-    if (SUCCEEDED(CoCreateInstance(CLSID_TaskbarList, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pTaskbar)))) {
-        pTaskbar->SetProgressState(g_hSplashWnd, TBPF_INDETERMINATE);
+        PyRun_SimpleString(boot_script.c_str());
+        Py_Finalize();
+    } else {
+        MessageBoxW(NULL, L"AI 引擎核心函數綁定失敗！", L"啟動錯誤", MB_ICONERROR);
     }
 
-    // 4. 啟動交接監視器 (每 100ms 檢查一次 PyQt 是否出現)
-    SetTimer(g_hSplashWnd, 1, 100, NULL);
-
-    // 5. 獲取路徑並啟動背景 Python 執行緒
-    wchar_t exePath[MAX_PATH];
-    GetModuleFileNameW(NULL, exePath, MAX_PATH);
-    std::wstring ws(exePath);
-    std::wstring exeDir = ws.substr(0, ws.find_last_of(L"\\/"));
-
-    std::thread pythonThread(PythonWorkerThread, exeDir);
-    pythonThread.detach(); // 讓它在背景自由奔跑
-
-    // 6. 維持視窗不卡死的 Message Loop
-    MSG msg = { };
-    while (GetMessage(&msg, NULL, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
-
-    if (pTaskbar) pTaskbar->Release();
-    CoUninitialize();
-
+    FreeLibrary(hPython);
     return 0;
 }
