@@ -18,3 +18,6 @@ target_link_libraries(EyeSeeMore_Launcher ole32 uuid gdi32)
 
 # 只編譯 C++ 原始碼，不載入會報錯的 resource.rc
 add_executable(EyeSeeMore_Setup installer/main_installer.cpp)
+
+# 讓 Setup 連結 Windows 建立捷徑所需的底層函式庫
+target_link_libraries(EyeSeeMore_Setup ole32 uuid)
