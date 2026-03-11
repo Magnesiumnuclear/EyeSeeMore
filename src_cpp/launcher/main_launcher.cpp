@@ -67,15 +67,20 @@ int main() {
         WideCharToMultiByte(CP_UTF8, 0, wsInstallPath.c_str(), -1, &utf8InstallPath[0], utf8_size, NULL, NULL);
         utf8InstallPath.pop_back(); // 移除結尾的 null 字元
 
-        // 啟動腳本：將安裝路徑加入 sys.path，然後執行 Blur-main.py
+        // ==========================================
+        // 啟動腳本：完美模擬 python.exe 的原生環境
+        // ==========================================
         std::string boot_script = 
             "import sys\n"
             "import os\n"
             "install_dir = r'" + utf8InstallPath + "'\n"
             "sys.path.insert(0, install_dir)\n"
             "os.chdir(install_dir)\n"
+            "sys.argv = ['Blur-main.py']\n" // 補齊啟動參數
+            "__file__ = os.path.join(install_dir, 'Blur-main.py')\n" // 補發絕對路徑身分證
             "with open('Blur-main.py', 'r', encoding='utf-8') as f:\n"
-            "    exec(f.read())\n";
+            "    code = compile(f.read(), __file__, 'exec')\n" // 讓編譯器知道這份程式碼的名字
+            "    exec(code, {'__name__': '__main__', '__file__': __file__})\n"; // 注入全局變數
 
         PyRun_SimpleString(boot_script.c_str());
         Py_Finalize();
