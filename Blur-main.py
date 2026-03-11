@@ -758,6 +758,11 @@ class ImageSearchEngine:
                 # 標準模式：使用 CLIP 預設的 Tokenizer 語法
                 text_tokens = self.tokenizer([query]).cpu().numpy()
             
+            # ==========================================
+            # [關鍵修復] 強制轉為 ONNX 要求的 64 位元整數 (int64)
+            # ==========================================
+            text_tokens = text_tokens.astype(np.int64)
+            
             # 2. ONNX 提取文字特徵
             input_name = self.clip_text_session.get_inputs()[0].name
             text_features = self.clip_text_session.run(None, {input_name: text_tokens})[0]
