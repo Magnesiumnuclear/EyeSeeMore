@@ -60,6 +60,13 @@ WINDOW_TITLE = "EyeSeeMore-(Alpha)"
 # ==========================================
 #  [NEW] Windows Taskbar 進度條控制器 (純 ctypes 實作)
 # ==========================================
+
+
+# TODO: [架構清理] 移除舊版 InitSetupDialog 類別與相關呼叫
+# TODO: [UI 改造] 將「AI 引擎設定」頁面重構為「模型管理中心」
+# TODO: [互動邏輯] 實作左側「收合選單資料夾」的點擊與右鍵行為
+
+
 import sys
 import ctypes
 from ctypes import wintypes
