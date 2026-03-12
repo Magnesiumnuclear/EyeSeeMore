@@ -57,7 +57,8 @@ def optional_mem_profile(func):
     return func
 
 import psutil
-from torch.profiler import profile as torch_profile, record_function, ProfilerActivity
+# 已經全面改用 ONNX，不再需要 torch 的效能監控
+# from torch.profiler import profile as torch_profile, record_function, ProfilerActivity
 # ==========================================
 
 class IndexerService:

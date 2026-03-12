@@ -1,5 +1,3 @@
-import torch
-import open_clip
 import os
 import warnings
 
@@ -7,7 +5,18 @@ import warnings
 warnings.filterwarnings("ignore")
 
 def export_to_onnx(model_name, pretrained, save_dir, progress_callback=None):
+    # [關鍵修復] 延遲載入 torch，避免沒有 PyTorch 的輕量版環境在啟動時崩潰
+    try:
+        import torch
+        import open_clip
+    except ImportError:
+        if progress_callback: 
+            progress_callback(0, "錯誤：此輕量版環境未包含 PyTorch，無法進行模型轉換。")
+        return False
+
     os.makedirs(save_dir, exist_ok=True)
+    device = "cpu"
+    # ... (下方保持原樣) ...
     device = "cpu"
     
     # 為了避免不同模型切換時覆蓋檔案，檔名加上 model_name 前綴
