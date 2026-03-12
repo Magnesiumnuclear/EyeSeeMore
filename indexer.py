@@ -67,7 +67,7 @@ class IndexerService:
         self.model_name = model_name
         self.pretrained_name = pretrained_name
         self.use_gpu_ocr = bool(use_gpu_ocr) 
-        self.device = "cuda" if 'CUDAExecutionProvider' in ort.get_available_providers() else "cpu"
+        self.device = "dml" if 'DmlExecutionProvider' in ort.get_available_providers() else "cpu"
         
         # [修改] 使用 perf_print 取代一般的 print
         perf_print(f"\n{'='*50}")
@@ -421,7 +421,7 @@ class IndexerService:
         preprocess = NumpyPreprocess(size=224)
         
         onnx_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "onnx_clip", f"{self.model_name}_image.onnx")
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if (self.device == 'cuda') else ['CPUExecutionProvider']
+        providers = ['DmlExecutionProvider', 'CPUExecutionProvider'] if (self.device == 'dml') else ['CPUExecutionProvider']
         
         image_session = ort.InferenceSession(onnx_path, providers=providers)
         ocr_engine = ONNXOCR(lang='ch', use_gpu=self.use_gpu_ocr) if need_ocr else None

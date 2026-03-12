@@ -563,7 +563,7 @@ class ImageDelegate(QStyledItemDelegate):
 class ImageSearchEngine:
     def __init__(self, config: ConfigManager):
         self.config = config
-        self.device = "cuda" if 'CUDAExecutionProvider' in ort.get_available_providers() else "cpu"
+        self.device = "dml" if 'DmlExecutionProvider' in ort.get_available_providers() else "cpu"
         self.is_ready = False
         self.model = None
         self.preprocess = None
@@ -603,7 +603,7 @@ class ImageSearchEngine:
             img_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_name}_image.onnx")
             txt_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_name}_text.onnx")
             
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if (self.device == 'cuda') else ['CPUExecutionProvider']
+            providers = ['DmlExecutionProvider', 'CPUExecutionProvider'] if (self.device == 'dml') else ['CPUExecutionProvider']
             self.clip_image_session = ort.InferenceSession(img_onnx_path, providers=providers)
             self.clip_text_session = ort.InferenceSession(txt_onnx_path, providers=providers)
             

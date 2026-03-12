@@ -13,7 +13,7 @@ class ONNXOCR:
         self.dict_path = os.path.join(self.base_dir, "models", "ocr", lang, "dict.txt")
         
         # 1. 設定 ONNX Runtime 的執行者 (Provider)
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if use_gpu else ['CPUExecutionProvider']
+        providers = ['DmlExecutionProvider', 'CPUExecutionProvider'] if use_gpu else ['CPUExecutionProvider']
         
         # 2. 載入模型
         print(f"[ONNXOCR] 正在載入模型 (GPU: {use_gpu})...")
