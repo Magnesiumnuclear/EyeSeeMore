@@ -2057,6 +2057,101 @@ class SidebarWidget(QFrame):
     def on_sub_folder_clicked(self, path):
         self.folder_selected.emit(path)
 
+from PyQt6.QtWidgets import QSlider  # 確保頂部或這裡有引入 QSlider
+
+class InspectorPanel(QFrame):
+    """右側屬性與檢索控制台 (純 UI 架構)"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(320) # 設定面板寬度
+        # 專屬的現代化暗色系樣式
+        self.setStyleSheet("""
+            QFrame { background-color: #252525; border-left: 1px solid #3e3e3e; }
+            QLabel { color: #cccccc; font-size: 13px; border: none; background: transparent; }
+            QTabWidget::pane { border: none; border-top: 1px solid #3e3e3e; background: #252525; }
+            QTabBar::tab { background: #2d2d2d; color: #888888; padding: 10px 15px; border: none; font-weight: bold; font-size: 13px; }
+            QTabBar::tab:selected { color: #60cdff; border-bottom: 2px solid #60cdff; background: #252525; }
+            QTabBar::tab:hover:!selected { color: #eeeeee; background: #333333; }
+            QSlider::groove:horizontal { border: 1px solid #444; height: 4px; background: #1e1e1e; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #60cdff; width: 14px; margin: -5px 0; border-radius: 7px; }
+        """)
+        
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+
+        # 建立分頁元件
+        self.tabs = QTabWidget()
+        self.layout.addWidget(self.tabs)
+
+        # --- 分頁 1: 搜尋控制 ---
+        self.tab_search = QWidget()
+        self._setup_search_tab()
+        self.tabs.addTab(self.tab_search, "🔎 搜尋")
+
+        # --- 分頁 2: OCR 細節 ---
+        self.tab_ocr = QWidget()
+        self._setup_ocr_tab()
+        self.tabs.addTab(self.tab_ocr, "🔤 OCR")
+
+        # --- 分頁 3: 圖片資訊 ---
+        self.tab_info = QWidget()
+        self._setup_info_tab()
+        self.tabs.addTab(self.tab_info, "ℹ️ 資訊")
+
+        self.hide() # 預設隱藏，等待按鈕觸發
+
+    def _setup_search_tab(self):
+        layout = QVBoxLayout(self.tab_search)
+        layout.setSpacing(15); layout.setContentsMargins(20, 20, 20, 20)
+        
+        layout.addWidget(QLabel("顯示數量限制 (Limit):"))
+        self.combo_limit = QComboBox()
+        self.combo_limit.addItems(["20", "50", "100", "All"])
+        layout.addWidget(self.combo_limit)
+
+        layout.addWidget(QLabel("排序方式 (Sort By):"))
+        self.combo_sort = QComboBox()
+        self.combo_sort.addItems(["相關度 (Relevance)", "日期 (Date - Newest)", "檔案名稱 (Name)"])
+        layout.addWidget(self.combo_sort)
+
+        layout.addStretch(1)
+
+    def _setup_ocr_tab(self):
+        layout = QVBoxLayout(self.tab_ocr)
+        layout.setSpacing(15); layout.setContentsMargins(20, 20, 20, 20)
+
+        layout.addWidget(QLabel("OCR 信心度閥值 (Threshold):"))
+        self.slider_conf = QSlider(Qt.Orientation.Horizontal)
+        self.slider_conf.setRange(0, 100); self.slider_conf.setValue(50)
+        layout.addWidget(self.slider_conf)
+
+        layout.addWidget(QLabel("搜尋權重分配 (CLIP vs OCR):"))
+        self.slider_weight = QSlider(Qt.Orientation.Horizontal)
+        self.slider_weight.setRange(0, 100); self.slider_weight.setValue(50)
+        layout.addWidget(self.slider_weight)
+
+        layout.addStretch(1)
+
+    def _setup_info_tab(self):
+        layout = QVBoxLayout(self.tab_info)
+        layout.setSpacing(12); layout.setContentsMargins(20, 20, 20, 20)
+
+        self.info_preview = QLabel("尚未選取圖片")
+        self.info_preview.setFixedHeight(160)
+        self.info_preview.setStyleSheet("background-color: #1e1e1e; border: 1px solid #444; border-radius: 6px; color: #666;")
+        self.info_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.info_preview)
+
+        self.lbl_filename = QLabel("檔案名稱: -")
+        self.lbl_path = QLabel("路徑: -"); self.lbl_path.setWordWrap(True)
+        self.lbl_date = QLabel("修改日期: -")
+        self.lbl_score = QLabel("相關度分數: -")
+
+        layout.addWidget(self.lbl_filename); layout.addWidget(self.lbl_path)
+        layout.addWidget(self.lbl_date); layout.addWidget(self.lbl_score)
+        layout.addStretch(1)
+
 class MainWindow(QMainWindow):
     # 定義訊號
     random_data_ready = pyqtSignal(list)
@@ -2247,6 +2342,67 @@ class MainWindow(QMainWindow):
         self.status = QLabel("Initializing..."); self.status.setStyleSheet("color: #888888; font-size: 12px; margin-left: 10px;")
         header_layout.addWidget(self.status)
         right_layout.addWidget(top_bar)
+
+        # Status Label (原本就在的)
+        self.status = QLabel("Initializing...")
+        self.status.setStyleSheet("color: #888888; font-size: 12px; margin-left: 10px;")
+        header_layout.addWidget(self.status)
+
+        # ==========================================
+        # [新增] 右側控制台開關按鈕 (放置在 Top Bar 最右側)
+        # ==========================================
+        self.btn_toggle_inspector = QPushButton("🎛️ 面板")
+        self.btn_toggle_inspector.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_inspector.setStyleSheet("""
+            QPushButton { background-color: transparent; border: 1px solid #444; border-radius: 4px; padding: 6px 12px; color: #ccc; }
+            QPushButton:hover { background-color: #333; color: white; border-color: #666; }
+        """)
+        self.btn_toggle_inspector.clicked.connect(self.toggle_inspector)
+        header_layout.addWidget(self.btn_toggle_inspector)
+
+        right_layout.addWidget(top_bar)
+        
+        self.progress = QProgressBar(); self.progress.hide(); right_layout.addWidget(self.progress)
+        
+        # ==========================================
+        # [修改] 建立中央內容區的水平佈局 (左邊畫廊、右邊控制台)
+        # ==========================================
+        content_container = QWidget()
+        content_layout = QHBoxLayout(content_container)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        # List View (畫廊)
+        self.list_view = QListView()
+        self.list_view.setViewMode(QListView.ViewMode.IconMode)
+        self.list_view.setResizeMode(QListView.ResizeMode.Adjust)
+        self.list_view.setUniformItemSizes(True) 
+        self.list_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.list_view.setSpacing(MIN_SPACING)
+        self.list_view.setMouseTracking(True)
+        self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list_view.setStyleSheet("QListView { border: none; background-color: #1e1e1e; }")
+
+        self.current_card_size = QSize(CARD_SIZE[0], CARD_SIZE[1])
+        self.current_thumb_size = QSize(CARD_SIZE[0], THUMBNAIL_SIZE[1])
+        self.current_view_mode = "large"
+
+        self.model = SearchResultsModel(self.current_thumb_size)
+        self.delegate = ImageDelegate(self.current_card_size, THUMBNAIL_SIZE[1])
+        
+        self.list_view.setModel(self.model)
+        self.list_view.setItemDelegate(self.delegate)
+
+        # [新增] 實例化右側控制台
+        self.inspector_panel = InspectorPanel(self)
+
+        # 將畫廊與右側面板加入 content_layout
+        content_layout.addWidget(self.list_view, stretch=1) # stretch=1 讓畫廊佔據所有剩餘空間
+        content_layout.addWidget(self.inspector_panel)
+
+        # 將包裹好的 content_container 加入到最外層的 right_layout
+        right_layout.addWidget(content_container)
+        main_layout.addWidget(right_container)
         
         self.progress = QProgressBar(); self.progress.hide(); right_layout.addWidget(self.progress)
         
@@ -2491,6 +2647,25 @@ class MainWindow(QMainWindow):
                     # [修改] 傳遞參數
                     self.preview_overlay.show_image(item, current_query, is_precise)
                     self.preview_overlay.set_ocr_visible(False)
+
+    def toggle_inspector(self):
+        """控制右側面板的展開與收合"""
+        if self.inspector_panel.isVisible():
+            self.inspector_panel.hide()
+            # 恢復按鈕預設樣式
+            self.btn_toggle_inspector.setStyleSheet("""
+                QPushButton { background-color: transparent; border: 1px solid #444; border-radius: 4px; padding: 6px 12px; color: #ccc; }
+                QPushButton:hover { background-color: #333; color: white; border-color: #666; }
+            """)
+        else:
+            self.inspector_panel.show()
+            # 面板打開時，按鈕變成高亮藍色，提示目前處於開啟狀態
+            self.btn_toggle_inspector.setStyleSheet("""
+                QPushButton { background-color: #383838; border: 1px solid #60cdff; border-radius: 4px; padding: 6px 12px; color: #fff; }
+            """)
+            
+        # [關鍵] 開關面板會改變畫廊寬度，必須通知 QListView 重新計算網格排版
+        QTimer.singleShot(0, self.adjust_layout)
 
     def on_selection_changed(self, current, previous):
         ui_state = self.config.get("ui_state", {})
