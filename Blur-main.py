@@ -74,6 +74,9 @@ WINDOW_TITLE = "EyeSeeMore-(Alpha)"
 # TODO: 控制欄的UIUX優化
 # TODO: OCR 紅框互動能直接在預覽端修改OCR辨識的結果
 # TODO: BUG 預覽時用WASD移動會丟失OCR黃色高亮功能
+# TODO: 資料夾加入會自動有OCR辨識改成加入後不自動辨識，改成在資料夾右鍵選單裡加入「OCR 辨識」的選項，點了才會去辨識，這樣就不會有大量資料夾加入時的OCR辨識塞車問題了
+# TODO: 加上Satisfactory主題的UI樣式
+# TODO: 加上BlueArchive主題的UI樣式
 
 import sys
 import ctypes
