@@ -68,6 +68,9 @@ WINDOW_TITLE = "EyeSeeMore-(Alpha)"
 # TODO: 介面與顯示優化：在圖片卡片上顯示更多資訊（如修改日期、OCR 文字預覽等），並優化分數顯示的視覺效果
 # TODO: Help -> About 內加入版本資訊、開發者聯繫方式、GitHub 頁面連結等GPL (General Public License) 協議要求的資訊
 # TODO: 關鍵優化 Opt 1 (預先縮放與 Paint 優化) Opt 5 (信號風暴)Opt 6 (Python 邊界稅與字串預處理)Opt 7 (材質上傳與 QImage 格式)Opt 8 (增量載入 Incremental Loading)
+# TODO: 搜尋介面的ORC控制的分數控制
+# TODO: 搜尋結果的limit控制
+# TODO: 控制欄的UIUX優化
 
 import sys
 import ctypes
