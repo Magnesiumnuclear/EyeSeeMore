@@ -2096,6 +2096,13 @@ class InspectorPanel(QFrame):
         self._setup_search_tab()
         self.tabs.addTab(self.tab_search, "🔎 搜尋")
 
+        # ==========================================
+        # [新增] 分頁 1.5: CLIP 控制
+        # ==========================================
+        self.tab_clip = QWidget()
+        self._setup_clip_tab()
+        self.tabs.addTab(self.tab_clip, "👁️ CLIP")
+
         # --- 分頁 2: OCR 細節 ---
         self.tab_ocr = QWidget()
         self._setup_ocr_tab()
@@ -2122,6 +2129,32 @@ class InspectorPanel(QFrame):
         self.combo_sort.addItems(["相關度 (Relevance)", "日期 (Date - Newest)", "檔案名稱 (Name)"])
         layout.addWidget(self.combo_sort)
 
+        layout.addStretch(1)
+
+    def _setup_clip_tab(self):
+        layout = QVBoxLayout(self.tab_clip)
+        layout.setSpacing(15); layout.setContentsMargins(20, 25, 20, 20)
+
+        # 建立一個測試按鈕
+        self.btn_test_clip = QPushButton("這是一個 CLIP 測試按鈕")
+        self.btn_test_clip.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_test_clip.setStyleSheet("""
+            QPushButton { 
+                background-color: #2b2b2b; 
+                color: #eee; 
+                border: 1px solid #444; 
+                border-radius: 4px; 
+                padding: 10px; 
+            } 
+            QPushButton:hover { 
+                background-color: #383838; 
+                border-color: #60cdff; 
+                color: #fff; 
+            }
+        """)
+        layout.addWidget(self.btn_test_clip)
+
+        # 彈簧：把按鈕往上推
         layout.addStretch(1)
 
     def _setup_ocr_tab(self):
@@ -3130,7 +3163,7 @@ class MainWindow(QMainWindow):
         self.status.setText("Searching by Image...")
         self.input.setText(f"[Image] {os.path.basename(image_path)}")
         
-        limit = self.combo_limit.currentText()
+        limit = self.inspector_panel.combo_limit_panel.currentText()
         k = 100000 if limit == "All" else int(limit)
         
         self.worker = SearchWorker(self.engine, image_path, k, search_mode="image")
