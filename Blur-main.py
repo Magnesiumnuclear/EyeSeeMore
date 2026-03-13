@@ -73,6 +73,7 @@ WINDOW_TITLE = "EyeSeeMore-(Alpha)"
 # TODO: 搜尋結果的limit控制
 # TODO: 控制欄的UIUX優化
 # TODO: OCR 紅框互動能直接在預覽端修改OCR辨識的結果
+# TODO: BUG 預覽時用WASD移動會丟失OCR黃色高亮功能
 
 import sys
 import ctypes
@@ -2377,52 +2378,128 @@ class MainWindow(QMainWindow):
         right_layout.setSpacing(0)
         right_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Top Bar
-        # ---------- 從這裡開始替換 ----------
+        # ---------- 從這裡開始選取並覆蓋 ----------
+        # ==========================================
+        # 全新 Top Bar：極簡搜尋樞紐架構
+        # ==========================================
         top_bar = QFrame()
         top_bar.setFixedHeight(60) 
         top_bar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #333;")
         header_layout = QHBoxLayout(top_bar)
-        header_layout.setContentsMargins(20, 0, 30, 0)
+        header_layout.setContentsMargins(20, 0, 20, 0)
         header_layout.setSpacing(15)
         
-        title_label = QLabel("Gallery") 
-        title_label.setStyleSheet("color: #e0e0e0; font-size: 18px; font-weight: 600;")
-        header_layout.addWidget(title_label)
+        # 1. 左側：標題與模式導覽 (Identity & Breadcrumbs)
+        self.breadcrumb_lbl = QLabel("Gallery") 
+        self.breadcrumb_lbl.setStyleSheet("""
+            color: #e0e0e0; 
+            font-family: 'Segoe UI', sans-serif; 
+            font-size: 18px; 
+            font-weight: bold; 
+            border: none;
+            background: transparent;
+        """)
+        header_layout.addWidget(self.breadcrumb_lbl)
         
-        header_layout.addStretch(1)
+        header_layout.addSpacing(20) # 左側與中央的視覺緩衝
         
-        search_container = QWidget()
-        search_container.setFixedWidth(500)
-        search_container.setMinimumWidth(200)
-        search_layout = QHBoxLayout(search_container)
-        search_layout.setContentsMargins(0, 0, 0, 0)
-        search_layout.setSpacing(10)
+        # 2. 置中：膠囊式搜尋樞紐 (Search Capsule)
+        search_capsule = QFrame()
+        search_capsule.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        search_capsule.setFixedHeight(38)
+        search_capsule.setStyleSheet("""
+            QFrame {
+                background-color: #2d2d2d;
+                border: 1px solid #3e3e3e;
+                border-radius: 19px; /* 高度的一半，形成完美膠囊圓角 */
+            }
+            QFrame:focus-within {
+                border: 1px solid #60cdff; /* 點擊輸入框時整顆膠囊發光 */
+            }
+        """)
+        capsule_layout = QHBoxLayout(search_capsule)
+        capsule_layout.setContentsMargins(15, 0, 5, 0) # 右邊留白少一點，讓 OCR 按鈕貼邊
+        capsule_layout.setSpacing(5)
+
         self.input = QLineEdit()
         self.input.setPlaceholderText("Search images...")
+        self.input.setStyleSheet("QLineEdit { background: transparent; border: none; color: white; font-size: 14px; }")
         self.input.returnPressed.connect(self.start_search)
-        self.chk_ocr = QCheckBox("OCR"); self.chk_ocr.setChecked(True)
-        self.combo_limit = QComboBox(); self.combo_limit.addItems(["20", "50", "100", "All"]); self.combo_limit.setCurrentText("50")
-        search_layout.addWidget(self.input, stretch=1); search_layout.addWidget(self.chk_ocr); search_layout.addWidget(self.combo_limit)
-        header_layout.addWidget(search_container)
-        
-        # Status Label
-        self.status = QLabel("Initializing..."); self.status.setStyleSheet("color: #888888; font-size: 12px; margin-left: 10px;")
-        header_layout.addWidget(self.status)
+        capsule_layout.addWidget(self.input, stretch=1)
 
-        # [新增] 右側面板開關
-        self.btn_toggle_inspector = QPushButton("🎛️ 面板")
+        # 內嵌 OCR 開關指示
+        self.btn_ocr_toggle = QPushButton("[T]")
+        self.btn_ocr_toggle.setCheckable(True)
+        self.btn_ocr_toggle.setChecked(True)
+        self.btn_ocr_toggle.setFixedSize(30, 30)
+        self.btn_ocr_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ocr_toggle.setToolTip("啟用/停用 OCR 文字檢索")
+        self.btn_ocr_toggle.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #666666; /* 關閉時暗沉 */
+                font-weight: bold;
+                font-size: 13px;
+                border-radius: 15px;
+            }
+            QPushButton:checked {
+                color: #60cdff; /* 啟用時發光 */
+                background-color: rgba(96, 205, 255, 0.1);
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.05);
+            }
+        """)
+        capsule_layout.addWidget(self.btn_ocr_toggle)
+        
+        # 將膠囊搜尋框加入頂部佈局，並給予 stretch=1 使其動態拉伸
+        header_layout.addWidget(search_capsule, stretch=1)
+        
+        header_layout.addSpacing(20) # 中央與右側的視覺緩衝
+        
+        # 3. 右側：系統資訊與控制面板開關 (Global Actions)
+        right_actions_layout = QHBoxLayout()
+        right_actions_layout.setSpacing(15)
+
+        # 系統訊息顯示
+        self.status = QLabel("Initializing...")
+        self.status.setStyleSheet("color: #888888; font-size: 12px; border: none; background: transparent;")
+        right_actions_layout.addWidget(self.status, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        # 右側面板開關
+        self.btn_toggle_inspector = QPushButton("📊")
+        self.btn_toggle_inspector.setCheckable(True) # 允許有 checked 狀態
+        self.btn_toggle_inspector.setFixedSize(36, 36)
         self.btn_toggle_inspector.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_toggle_inspector.setStyleSheet("QPushButton { background-color: transparent; border: 1px solid #444; border-radius: 4px; padding: 6px 12px; color: #ccc; } QPushButton:hover { background-color: #333; color: white; border-color: #666; }")
+        self.btn_toggle_inspector.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: 1px solid #444;
+                border-radius: 8px;
+                color: #ccc;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: #333;
+                border-color: #666;
+            }
+            QPushButton:checked {
+                background-color: #383838;
+                border: 1px solid #60cdff; /* 展開時外框變藍高亮 */
+            }
+        """)
         self.btn_toggle_inspector.clicked.connect(self.toggle_inspector)
-        header_layout.addWidget(self.btn_toggle_inspector)
+        right_actions_layout.addWidget(self.btn_toggle_inspector)
+
+        header_layout.addLayout(right_actions_layout)
 
         right_layout.addWidget(top_bar)
         
         self.progress = QProgressBar(); self.progress.hide(); right_layout.addWidget(self.progress)
         
         # ==========================================
-        # [核心修復] 使用 QSplitter 來完美分割左畫廊與右面板
+        # 使用 QSplitter 來完美分割左畫廊與右面板
         # ==========================================
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.setStyleSheet("QSplitter::handle { background-color: #333333; width: 1px; }")
@@ -2448,7 +2525,7 @@ class MainWindow(QMainWindow):
         self.list_view.setModel(self.model)
         self.list_view.setItemDelegate(self.delegate)
 
-        # [新增] 右側詳細資料面板
+        # 實例化分頁式右側面板
         self.inspector_panel = InspectorPanel(self)
 
         # 將畫廊與右側面板加入 Splitter
@@ -2461,7 +2538,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.main_splitter)
         
         # ==========================================
-        # 以下保留原有的事件綁定與狀態載入
+        # 狀態載入與事件綁定
         # ==========================================
         ui_state = self.config.get("ui_state", {})
         
@@ -2484,6 +2561,7 @@ class MainWindow(QMainWindow):
         self.list_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
         main_layout.addWidget(right_container)
+        # ---------- 到這裡結束覆蓋 ----------
         # ---------- 到這裡結束替換 ----------
         
         # 其他浮動元件
@@ -2683,19 +2761,12 @@ class MainWindow(QMainWindow):
         """控制右側面板的展開與收合"""
         if self.inspector_panel.isVisible():
             self.inspector_panel.hide()
-            # 恢復按鈕預設樣式
-            self.btn_toggle_inspector.setStyleSheet("""
-                QPushButton { background-color: transparent; border: 1px solid #444; border-radius: 4px; padding: 6px 12px; color: #ccc; }
-                QPushButton:hover { background-color: #333; color: white; border-color: #666; }
-            """)
+            self.btn_toggle_inspector.setChecked(False)
         else:
             self.inspector_panel.show()
-            # 面板打開時，按鈕變成高亮藍色，提示目前處於開啟狀態
-            self.btn_toggle_inspector.setStyleSheet("""
-                QPushButton { background-color: #383838; border: 1px solid #60cdff; border-radius: 4px; padding: 6px 12px; color: #fff; }
-            """)
+            self.btn_toggle_inspector.setChecked(True)
             
-        # [關鍵] 開關面板會改變畫廊寬度，必須通知 QListView 重新計算網格排版
+        # 開關面板會改變畫廊寬度，必須通知 QListView 重新計算網格排版
         QTimer.singleShot(0, self.adjust_layout)
 
     def on_selection_changed(self, current, previous):
@@ -3039,11 +3110,11 @@ class MainWindow(QMainWindow):
         
         # ... 下方的程式碼保持不變 ...
         
-        limit = self.combo_limit.currentText()
+        limit = self.inspector_panel.combo_limit_panel.currentText()
         k = 100000 if limit == "All" else int(limit)
         
-        # [修改] 使用新的 Worker，並連接到 Model
-        self.worker = SearchWorker(self.engine, q, k, search_mode="text", use_ocr=self.chk_ocr.isChecked())
+        # [修改] 從新版膠囊按鈕讀取 OCR 狀態 (self.btn_ocr_toggle)
+        self.worker = SearchWorker(self.engine, q, k, search_mode="text", use_ocr=self.btn_ocr_toggle.isChecked())
         self.worker.batch_ready.connect(self.model.set_search_results)
         self.worker.finished_search.connect(self.on_finished)
         self.worker.finished.connect(self.worker.deleteLater)
