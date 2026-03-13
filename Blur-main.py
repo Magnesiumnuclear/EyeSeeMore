@@ -71,6 +71,7 @@ WINDOW_TITLE = "EyeSeeMore-(Alpha)"
 # TODO: 搜尋介面的ORC控制的分數控制
 # TODO: 搜尋結果的limit控制
 # TODO: 控制欄的UIUX優化
+# TODO: OCR 紅框互動能直接在預覽端修改OCR辨識的結果
 
 import sys
 import ctypes
