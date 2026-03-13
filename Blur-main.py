@@ -2400,25 +2400,28 @@ class MainWindow(QMainWindow):
             background: transparent;
         """)
         header_layout.addWidget(self.breadcrumb_lbl)
-        
-        header_layout.addSpacing(20) # 左側與中央的視覺緩衝
+        header_layout.addStretch(1) 
         
         # 2. 置中：膠囊式搜尋樞紐 (Search Capsule)
         search_capsule = QFrame()
-        search_capsule.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # ==========================================
+        # [修改 2] 設定最大與最小寬度，不再無限拉伸
+        # ==========================================
+        search_capsule.setMaximumWidth(550) # 限制最寬不超過 550px
+        search_capsule.setMinimumWidth(300) # 視窗縮小時最窄保持 300px
         search_capsule.setFixedHeight(38)
         search_capsule.setStyleSheet("""
             QFrame {
                 background-color: #2d2d2d;
                 border: 1px solid #3e3e3e;
-                border-radius: 19px; /* 高度的一半，形成完美膠囊圓角 */
+                border-radius: 19px; 
             }
             QFrame:focus-within {
-                border: 1px solid #60cdff; /* 點擊輸入框時整顆膠囊發光 */
+                border: 1px solid #60cdff; 
             }
         """)
         capsule_layout = QHBoxLayout(search_capsule)
-        capsule_layout.setContentsMargins(15, 0, 5, 0) # 右邊留白少一點，讓 OCR 按鈕貼邊
+        capsule_layout.setContentsMargins(15, 0, 5, 0)
         capsule_layout.setSpacing(5)
 
         self.input = QLineEdit()
@@ -2436,16 +2439,10 @@ class MainWindow(QMainWindow):
         self.btn_ocr_toggle.setToolTip("啟用/停用 OCR 文字檢索")
         self.btn_ocr_toggle.setStyleSheet("""
             QPushButton {
-                background: transparent;
-                border: none;
-                color: #666666; /* 關閉時暗沉 */
-                font-weight: bold;
-                font-size: 13px;
-                border-radius: 15px;
+                background: transparent; border: none; color: #666666; font-weight: bold; font-size: 13px; border-radius: 15px;
             }
             QPushButton:checked {
-                color: #60cdff; /* 啟用時發光 */
-                background-color: rgba(96, 205, 255, 0.1);
+                color: #60cdff; background-color: rgba(96, 205, 255, 0.1);
             }
             QPushButton:hover {
                 background-color: rgba(255, 255, 255, 0.05);
@@ -2453,10 +2450,15 @@ class MainWindow(QMainWindow):
         """)
         capsule_layout.addWidget(self.btn_ocr_toggle)
         
-        # 將膠囊搜尋框加入頂部佈局，並給予 stretch=1 使其動態拉伸
-        header_layout.addWidget(search_capsule, stretch=1)
+        # ==========================================
+        # [修改 3] 拿掉原本的 stretch=1，讓搜尋框維持我們設定的寬度
+        # ==========================================
+        header_layout.addWidget(search_capsule) 
         
-        header_layout.addSpacing(20) # 中央與右側的視覺緩衝
+        # ==========================================
+        # [修改 4] 加入右側彈簧，把搜尋框夾在正中央
+        # ==========================================
+        header_layout.addStretch(1)
         
         # 3. 右側：系統資訊與控制面板開關 (Global Actions)
         right_actions_layout = QHBoxLayout()
@@ -2562,7 +2564,6 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(right_container)
         # ---------- 到這裡結束覆蓋 ----------
-        # ---------- 到這裡結束替換 ----------
         
         # 其他浮動元件
         self.history_list = QListWidget(self); self.history_list.hide(); self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
