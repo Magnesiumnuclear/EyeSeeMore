@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QListWidget, QListWidgetItem, QSizePolicy, QMenu, QMessageBox,
                              QGraphicsDropShadowEffect, QCheckBox, QInputDialog, QDialog,
                              QStyledItemDelegate, QStyle, QFileIconProvider, QAbstractItemView, QListView,
-                             QRadioButton, QGroupBox, QStackedWidget, QTabWidget)
+                             QRadioButton, QGroupBox, QStackedWidget, QTabWidget, QGridLayout, QSplitter)
 from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QPoint, QRect, QRectF, QSize, QEvent, 
                           QFileInfo, QTimer, QAbstractListModel, QRunnable, QThreadPool, QObject, QModelIndex)
 from PyQt6.QtGui import (QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, 
@@ -2059,98 +2059,128 @@ class SidebarWidget(QFrame):
 
 from PyQt6.QtWidgets import QSlider  # 確保頂部或這裡有引入 QSlider
 
-class InspectorPanel(QFrame):
-    """右側屬性與檢索控制台 (純 UI 架構)"""
+class FileDetailsPanel(QFrame):
+    """模仿 Windows 11 檔案總管的完美詳細資料面板"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(320) # 設定面板寬度
-        # 專屬的現代化暗色系樣式
+        self.setFixedWidth(300) # 寬度適中，不會過度擠壓主畫面
+        
+        # 樣式：無縫融合的暗色背景，極簡風格
         self.setStyleSheet("""
-            QFrame { background-color: #252525; border-left: 1px solid #3e3e3e; }
-            QLabel { color: #cccccc; font-size: 13px; border: none; background: transparent; }
-            QTabWidget::pane { border: none; border-top: 1px solid #3e3e3e; background: #252525; }
-            QTabBar::tab { background: #2d2d2d; color: #888888; padding: 10px 15px; border: none; font-weight: bold; font-size: 13px; }
-            QTabBar::tab:selected { color: #60cdff; border-bottom: 2px solid #60cdff; background: #252525; }
-            QTabBar::tab:hover:!selected { color: #eeeeee; background: #333333; }
-            QSlider::groove:horizontal { border: 1px solid #444; height: 4px; background: #1e1e1e; border-radius: 2px; }
-            QSlider::handle:horizontal { background: #60cdff; width: 14px; margin: -5px 0; border-radius: 7px; }
+            QFrame { background-color: #1e1e1e; border-left: 1px solid #333333; }
+            QLabel { background: transparent; border: none; font-family: "Segoe UI", sans-serif; }
         """)
         
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(0)
+        self.layout.setContentsMargins(20, 25, 20, 20)
+        self.layout.setSpacing(15)
 
-        # 建立分頁元件
-        self.tabs = QTabWidget()
-        self.layout.addWidget(self.tabs)
+        # --- 1. 頂部圖片預覽 ---
+        self.preview_lbl = QLabel()
+        self.preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_lbl.setMinimumHeight(180)
+        self.layout.addWidget(self.preview_lbl)
 
-        # --- 分頁 1: 搜尋控制 ---
-        self.tab_search = QWidget()
-        self._setup_search_tab()
-        self.tabs.addTab(self.tab_search, "🔎 搜尋")
+        # --- 2. 檔案名稱 ---
+        self.filename_lbl = QLabel("尚未選取檔案")
+        self.filename_lbl.setWordWrap(True)
+        self.filename_lbl.setStyleSheet("color: #ffffff; font-size: 16px; font-weight: 600;")
+        self.layout.addWidget(self.filename_lbl)
 
-        # --- 分頁 2: OCR 細節 ---
-        self.tab_ocr = QWidget()
-        self._setup_ocr_tab()
-        self.tabs.addTab(self.tab_ocr, "🔤 OCR")
+        # --- 3. 動作按鈕 (模仿"共用"按鈕的位置) ---
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        self.btn_open_folder = QPushButton("📂 開啟檔案位置")
+        self.btn_open_folder.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_open_folder.setStyleSheet("""
+            QPushButton { 
+                background-color: #2b2b2b; color: #eeeeee; border: 1px solid #444444; 
+                border-radius: 4px; padding: 6px 14px; font-size: 13px; font-weight: 500;
+            }
+            QPushButton:hover { background-color: #383838; border-color: #60cdff; color: #ffffff; }
+        """)
+        btn_layout.addWidget(self.btn_open_folder)
+        btn_layout.addStretch(1)
+        self.layout.addLayout(btn_layout)
 
-        # --- 分頁 3: 圖片資訊 ---
-        self.tab_info = QWidget()
-        self._setup_info_tab()
-        self.tabs.addTab(self.tab_info, "ℹ️ 資訊")
+        self.layout.addSpacing(15)
 
-        self.hide() # 預設隱藏，等待按鈕觸發
+        # --- 4. 詳細資料區塊 ---
+        details_title = QLabel("詳細資料")
+        details_title.setStyleSheet("color: #ffffff; font-size: 14px; font-weight: 600;")
+        self.layout.addWidget(details_title)
 
-    def _setup_search_tab(self):
-        layout = QVBoxLayout(self.tab_search)
-        layout.setSpacing(15); layout.setContentsMargins(20, 20, 20, 20)
+        # 建立 Grid 放置屬性鍵值對
+        self.grid = QGridLayout()
+        self.grid.setVerticalSpacing(12)
+        self.grid.setHorizontalSpacing(15)
+        self.grid.setColumnStretch(1, 1)
+
+        self.fields = {}
+        properties = ["類型", "大小", "檔案位置", "修改日期", "AI 相關度"]
         
-        layout.addWidget(QLabel("顯示數量限制 (Limit):"))
-        self.combo_limit = QComboBox()
-        self.combo_limit.addItems(["20", "50", "100", "All"])
-        layout.addWidget(self.combo_limit)
+        for i, key in enumerate(properties):
+            lbl_key = QLabel(key)
+            lbl_key.setStyleSheet("color: #cccccc; font-size: 13px;")
+            
+            lbl_value = QLabel("-")
+            lbl_value.setStyleSheet("color: #ffffff; font-size: 13px;")
+            lbl_value.setWordWrap(True)
+            
+            self.grid.addWidget(lbl_key, i, 0, Qt.AlignmentFlag.AlignTop)
+            self.grid.addWidget(lbl_value, i, 1, Qt.AlignmentFlag.AlignTop)
+            self.fields[key] = lbl_value
 
-        layout.addWidget(QLabel("排序方式 (Sort By):"))
-        self.combo_sort = QComboBox()
-        self.combo_sort.addItems(["相關度 (Relevance)", "日期 (Date - Newest)", "檔案名稱 (Name)"])
-        layout.addWidget(self.combo_sort)
+        self.layout.addLayout(self.grid)
+        self.layout.addStretch(1)
+        
+        self.hide() # 預設隱藏
 
-        layout.addStretch(1)
+    def update_info(self, item):
+        """當主畫面點擊圖片時，呼叫此函式更新右側資料"""
+        import os, datetime
+        
+        # 1. 更新名稱
+        self.filename_lbl.setText(item.filename)
+        
+        # 2. 更新預覽圖 (智慧縮放)
+        reader = QImageReader(item.path)
+        reader.setAutoTransform(True)
+        img_size = reader.size()
+        if img_size.isValid():
+            scaled_size = img_size.scaled(QSize(260, 180), Qt.AspectRatioMode.KeepAspectRatio)
+            reader.setScaledSize(scaled_size)
+            img = reader.read()
+            if not img.isNull():
+                self.preview_lbl.setPixmap(QPixmap.fromImage(img))
+        
+        # 3. 綁定開啟資料夾功能
+        self.btn_open_folder.disconnect() # 清除舊綁定
+        self.btn_open_folder.clicked.connect(lambda: self.open_in_explorer(item.path))
 
-    def _setup_ocr_tab(self):
-        layout = QVBoxLayout(self.tab_ocr)
-        layout.setSpacing(15); layout.setContentsMargins(20, 20, 20, 20)
+        # 4. 更新詳細屬性
+        try:
+            file_stat = os.stat(item.path)
+            # 類型
+            ext = os.path.splitext(item.filename)[1].upper()
+            self.fields["類型"].setText(f"{ext} 檔案" if ext else "未知檔案")
+            # 大小
+            size_mb = file_stat.st_size / (1024 * 1024)
+            self.fields["大小"].setText(f"{size_mb:.2f} MB")
+            # 位置
+            self.fields["檔案位置"].setText(os.path.dirname(item.path))
+            # 日期
+            dt = datetime.datetime.fromtimestamp(item.mtime)
+            self.fields["修改日期"].setText(dt.strftime("%Y/%m/%d %p %I:%M"))
+            # 分數
+            self.fields["AI 相關度"].setText(f"{item.score:.4f}" if item.score > 0 else "N/A")
+        except Exception as e:
+            pass
 
-        layout.addWidget(QLabel("OCR 信心度閥值 (Threshold):"))
-        self.slider_conf = QSlider(Qt.Orientation.Horizontal)
-        self.slider_conf.setRange(0, 100); self.slider_conf.setValue(50)
-        layout.addWidget(self.slider_conf)
-
-        layout.addWidget(QLabel("搜尋權重分配 (CLIP vs OCR):"))
-        self.slider_weight = QSlider(Qt.Orientation.Horizontal)
-        self.slider_weight.setRange(0, 100); self.slider_weight.setValue(50)
-        layout.addWidget(self.slider_weight)
-
-        layout.addStretch(1)
-
-    def _setup_info_tab(self):
-        layout = QVBoxLayout(self.tab_info)
-        layout.setSpacing(12); layout.setContentsMargins(20, 20, 20, 20)
-
-        self.info_preview = QLabel("尚未選取圖片")
-        self.info_preview.setFixedHeight(160)
-        self.info_preview.setStyleSheet("background-color: #1e1e1e; border: 1px solid #444; border-radius: 6px; color: #666;")
-        self.info_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.info_preview)
-
-        self.lbl_filename = QLabel("檔案名稱: -")
-        self.lbl_path = QLabel("路徑: -"); self.lbl_path.setWordWrap(True)
-        self.lbl_date = QLabel("修改日期: -")
-        self.lbl_score = QLabel("相關度分數: -")
-
-        layout.addWidget(self.lbl_filename); layout.addWidget(self.lbl_path)
-        layout.addWidget(self.lbl_date); layout.addWidget(self.lbl_score)
-        layout.addStretch(1)
+    def open_in_explorer(self, path):
+        import subprocess, os
+        if os.name == 'nt': # Windows
+            subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
 
 class MainWindow(QMainWindow):
     # 定義訊號
@@ -2309,8 +2339,8 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         
         # Top Bar
+        # ---------- 從這裡開始替換 ----------
         top_bar = QFrame()
-        # [修改] 高度改為 60，與側邊欄按鈕切齊
         top_bar.setFixedHeight(60) 
         top_bar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #333;")
         header_layout = QHBoxLayout(top_bar)
@@ -2323,7 +2353,6 @@ class MainWindow(QMainWindow):
         
         header_layout.addStretch(1)
         
-        # ... (中間搜尋區 search_container 設定保持不變) ...
         search_container = QWidget()
         search_container.setFixedWidth(500)
         search_container.setMinimumWidth(200)
@@ -2341,22 +2370,11 @@ class MainWindow(QMainWindow):
         # Status Label
         self.status = QLabel("Initializing..."); self.status.setStyleSheet("color: #888888; font-size: 12px; margin-left: 10px;")
         header_layout.addWidget(self.status)
-        right_layout.addWidget(top_bar)
 
-        # Status Label (原本就在的)
-        self.status = QLabel("Initializing...")
-        self.status.setStyleSheet("color: #888888; font-size: 12px; margin-left: 10px;")
-        header_layout.addWidget(self.status)
-
-        # ==========================================
-        # [新增] 右側控制台開關按鈕 (放置在 Top Bar 最右側)
-        # ==========================================
+        # [新增] 右側面板開關
         self.btn_toggle_inspector = QPushButton("🎛️ 面板")
         self.btn_toggle_inspector.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_toggle_inspector.setStyleSheet("""
-            QPushButton { background-color: transparent; border: 1px solid #444; border-radius: 4px; padding: 6px 12px; color: #ccc; }
-            QPushButton:hover { background-color: #333; color: white; border-color: #666; }
-        """)
+        self.btn_toggle_inspector.setStyleSheet("QPushButton { background-color: transparent; border: 1px solid #444; border-radius: 4px; padding: 6px 12px; color: #ccc; } QPushButton:hover { background-color: #333; color: white; border-color: #666; }")
         self.btn_toggle_inspector.clicked.connect(self.toggle_inspector)
         header_layout.addWidget(self.btn_toggle_inspector)
 
@@ -2365,12 +2383,10 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar(); self.progress.hide(); right_layout.addWidget(self.progress)
         
         # ==========================================
-        # [修改] 建立中央內容區的水平佈局 (左邊畫廊、右邊控制台)
+        # [核心修復] 使用 QSplitter 來完美分割左畫廊與右面板
         # ==========================================
-        content_container = QWidget()
-        content_layout = QHBoxLayout(content_container)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setStyleSheet("QSplitter::handle { background-color: #333333; width: 1px; }")
 
         # List View (畫廊)
         self.list_view = QListView()
@@ -2393,54 +2409,30 @@ class MainWindow(QMainWindow):
         self.list_view.setModel(self.model)
         self.list_view.setItemDelegate(self.delegate)
 
-        # [新增] 實例化右側控制台
-        self.inspector_panel = InspectorPanel(self)
+        # [新增] 右側詳細資料面板
+        self.inspector_panel = FileDetailsPanel(self)
 
-        # 將畫廊與右側面板加入 content_layout
-        content_layout.addWidget(self.list_view, stretch=1) # stretch=1 讓畫廊佔據所有剩餘空間
-        content_layout.addWidget(self.inspector_panel)
+        # 將畫廊與右側面板加入 Splitter
+        self.main_splitter.addWidget(self.list_view)
+        self.main_splitter.addWidget(self.inspector_panel)
+        self.main_splitter.setStretchFactor(0, 1) # 讓畫廊彈性佔據剩餘空間
+        self.main_splitter.setStretchFactor(1, 0) # 讓面板保持固定寬度
 
-        # 將包裹好的 content_container 加入到最外層的 right_layout
-        right_layout.addWidget(content_container)
-        main_layout.addWidget(right_container)
+        # [關鍵] 將 splitter 放入 right_layout
+        right_layout.addWidget(self.main_splitter)
         
-        self.progress = QProgressBar(); self.progress.hide(); right_layout.addWidget(self.progress)
-        
-        # List View
-        self.list_view = QListView()
-        self.list_view.setViewMode(QListView.ViewMode.IconMode)
-        self.list_view.setResizeMode(QListView.ResizeMode.Adjust)
-        self.list_view.setUniformItemSizes(True) 
-        self.list_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-        self.list_view.setSpacing(MIN_SPACING)
-        self.list_view.setMouseTracking(True)
-        self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.list_view.setStyleSheet("QListView { border: none; background-color: #1e1e1e; }")
-
-        self.current_card_size = QSize(CARD_SIZE[0], CARD_SIZE[1])
-        self.current_thumb_size = QSize(CARD_SIZE[0], THUMBNAIL_SIZE[1])
-        self.current_view_mode = "large"
-
-        self.model = SearchResultsModel(self.current_thumb_size)
-        self.delegate = ImageDelegate(self.current_card_size, THUMBNAIL_SIZE[1])
-        
-        self.list_view.setModel(self.model)
-        self.list_view.setItemDelegate(self.delegate)
-
         # ==========================================
-        # [新增] 套用儲存的顯示模式與側邊欄狀態
+        # 以下保留原有的事件綁定與狀態載入
         # ==========================================
         ui_state = self.config.get("ui_state", {})
         
-        # 套用顯示模式 (大中小)
         saved_mode = ui_state.get("view_mode", "large")
         if saved_mode != "large":
             self.change_view_mode(saved_mode)
 
-        # 套用側邊欄狀態 (收合或展開)
         saved_expanded = ui_state.get("sidebar_expanded", True)
         if not saved_expanded:
-            self.sidebar.toggle_sidebar() # 初始化時收合側邊欄
+            self.sidebar.toggle_sidebar() 
 
         self.resize(ui_state.get("window_width", 1280), ui_state.get("window_height", 900))
         if ui_state.get("is_maximized", False):
@@ -2452,8 +2444,8 @@ class MainWindow(QMainWindow):
         self.list_view.customContextMenuRequested.connect(self.show_context_menu)
         self.list_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
-        right_layout.addWidget(self.list_view)
         main_layout.addWidget(right_container)
+        # ---------- 到這裡結束替換 ----------
         
         # 其他浮動元件
         self.history_list = QListWidget(self); self.history_list.hide(); self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -2668,17 +2660,24 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.adjust_layout)
 
     def on_selection_changed(self, current, previous):
-        ui_state = self.config.get("ui_state", {})
-        nav_mode = ui_state.get("preview_wasd_mode", "nav")
-    
+        # ==========================================
+        # [新增] 1. 更新右側面板資訊 (如果面板存在且有選取項目)
+        # ==========================================
+        if hasattr(self, 'inspector_panel') and current.isValid():
+            item = current.data(Qt.ItemDataRole.UserRole)
+            if item:
+                self.inspector_panel.update_info(item)
+
+        # ==========================================
+        # 2. 原本的預覽同步邏輯 (維持不變)
+        # ==========================================
+        nav_mode = self.config.get("ui_state", {}).get("preview_wasd_mode", "nav")
         if self.preview_overlay.isVisible() and nav_mode == "sync":
             if current.isValid():
                 item = current.data(Qt.ItemDataRole.UserRole)
                 if item:
                     current_query = self.input.text().strip()
-                    # [新增] 從設定檔讀取是否開啟精確模式
-                    is_precise = ui_state.get("precise_ocr_highlight", False)
-                    # [修改] 傳遞參數
+                    is_precise = self.config.get("ui_state", {}).get("precise_ocr_highlight", False)
                     self.preview_overlay.show_image(item, current_query, is_precise)
                     self.is_ocr_locked = False
                     self.preview_overlay.set_ocr_visible(False)
