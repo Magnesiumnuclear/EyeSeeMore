@@ -77,6 +77,7 @@ WINDOW_TITLE = "EyeSeeMore-(Alpha)"
 # TODO: 資料夾加入會自動有OCR辨識改成加入後不自動辨識，改成在資料夾右鍵選單裡加入「OCR 辨識」的選項，點了才會去辨識，這樣就不會有大量資料夾加入時的OCR辨識塞車問題了
 # TODO: 加上Satisfactory主題的UI樣式
 # TODO: 加上BlueArchive主題的UI樣式
+# TODO: 刪除 Unicode 符號
 
 import sys
 import ctypes
@@ -2190,18 +2191,19 @@ class InspectorPanel(QFrame):
         self.hide() # 預設隱藏，等待按鈕觸發
 
     def _setup_search_tab(self):
-        # 讓主 Layout 緊湊，貼合 VSCode 邊界感
+        # 主 Layout 設為緊湊型，符合 VSCode 邊界感
         self.search_main_layout = QVBoxLayout(self.tab_search)
         self.search_main_layout.setContentsMargins(0, 0, 0, 0)
         self.search_main_layout.setSpacing(0)
         self.search_main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # --- 區塊 1: 🔍 檢索過濾 (Filter) ---
-        self.sec_filter = CollapsibleSection("檢索過濾 (FILTER)")
+        # --- 區塊 1: 🔍 檢索過濾 (FILTER) ---
+        # 控制「哪些圖會出現」
+        self.sec_filter = CollapsibleSection("檢索過濾")
         
         self.sec_filter.addWidget(QLabel("時間維度 (Time Range):"))
         self.combo_time = QComboBox()
-        self.combo_time.addItems(["全部時間", "今天", "過去 7 天", "本月", "自訂區間..."])
+        self.combo_time.addItems(["全部時間", "今天", "過去 7 天", "本月"])
         self.sec_filter.addWidget(self.combo_time)
         
         self.sec_filter.addWidget(QLabel("視覺規格 (Visual Specs):"))
@@ -2212,31 +2214,88 @@ class InspectorPanel(QFrame):
         self.search_main_layout.addWidget(self.sec_filter)
 
         # --- 區塊 2: ⚙️ 顯示設定 (DISPLAY) ---
-        self.sec_display = CollapsibleSection("顯示設定 (DISPLAY)")
+        self.sec_display = CollapsibleSection("顯示設定")
         
         self.sec_display.addWidget(QLabel("顯示數量限制 (Limit):"))
-        self.combo_limit_panel = QComboBox() # 保持原名，避免 start_search 報錯
+        self.combo_limit_panel = QComboBox()
         self.combo_limit_panel.addItems(["20", "50", "100", "All"])
         self.sec_display.addWidget(self.combo_limit_panel)
 
-        self.sec_display.addWidget(QLabel("排序方式 (Sort By):"))
+        self.sec_display.addWidget(QLabel("Gallery 排序方式 (Sort By):"))
+        
+        # 建立一個水平佈局來放置「下拉選單」與「方向按鈕」
+        sort_layout = QHBoxLayout()
+        sort_layout.setContentsMargins(0, 0, 0, 0)
+        sort_layout.setSpacing(8)
+
+        # 1. 純粹的排序依據選單 (移除 AI 相關度)
         self.combo_sort = QComboBox()
-        self.combo_sort.addItems(["相關度 (Relevance)", "日期 (Date - Newest)", "檔案名稱 (Name)"])
-        self.sec_display.addWidget(self.combo_sort)
+        self.combo_sort.addItems(["日期", "名稱", "類型", "大小"])
+        sort_layout.addWidget(self.combo_sort, stretch=1)
+
+        # 2. 正序/倒序切換按鈕
+        self.btn_sort_order = QPushButton("↓")
+        self.btn_sort_order.setFixedSize(32, 32) # 設定為正方形
+        self.btn_sort_order.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_sort_order.setStyleSheet("""
+            QPushButton {
+                background-color: #333333;
+                color: #eeeeee;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #454545;
+                border-color: #60cdff;
+                color: #ffffff;
+            }
+        """)
+        self.btn_sort_order.clicked.connect(self.toggle_sort_order)
+        sort_layout.addWidget(self.btn_sort_order)
+        
+        # 將水平佈局加入摺疊面板 (使用我們先前寫好的 addLayout 函式)
+        self.sec_display.addLayout(sort_layout)
         
         self.search_main_layout.addWidget(self.sec_display)
 
         # --- 區塊 3: 🧪 進階功能 (ADVANCED) ---
-        self.sec_advanced = CollapsibleSection("進階功能 (ADVANCED)")
+        # 這裡放置會改變「分數計算邏輯」的功能
+        self.sec_advanced = CollapsibleSection("相關度權重控制")
         self.sec_advanced.header.setChecked(False) # 預設收合
         self.sec_advanced.content.hide()
         
-        self.sec_advanced.addWidget(QLabel("此區塊保留給未來擴充使用\n(如：排除關鍵字、正則表達式)"))
+        self.sec_advanced.addWidget(QLabel("視覺權重 (CLIP Weight):"))
+        self.slider_clip_weight = QSlider(Qt.Orientation.Horizontal)
+        self.slider_clip_weight.setRange(0, 100); self.slider_clip_weight.setValue(100)
+        self.sec_advanced.addWidget(self.slider_clip_weight)
+        
+        self.sec_advanced.addWidget(QLabel("文字權重 (OCR Bonus):"))
+        self.slider_ocr_weight = QSlider(Qt.Orientation.Horizontal)
+        self.slider_ocr_weight.setRange(0, 100); self.slider_ocr_weight.setValue(50)
+        self.sec_advanced.addWidget(self.slider_ocr_weight)
+
+        self.sec_advanced.addWidget(QLabel("名稱權重 (Filename Bonus):"))
+        self.slider_name_weight = QSlider(Qt.Orientation.Horizontal)
+        self.slider_name_weight.setRange(0, 100); self.slider_name_weight.setValue(20)
+        self.sec_advanced.addWidget(self.slider_name_weight)
         
         self.search_main_layout.addWidget(self.sec_advanced)
 
-        # 最後加一個彈簧，讓所有區塊往上擠
+        # 底部彈簧
         self.search_main_layout.addStretch(1)
+
+    def toggle_sort_order(self):
+        """切換排序方向 (正序 ↑ / 倒序 ↓)"""
+        if self.btn_sort_order.text() == "↓":
+            self.btn_sort_order.setText("↑")
+            self.btn_sort_order.setToolTip("目前為：正序 (Ascending)")
+        else:
+            self.btn_sort_order.setText("↓")
+            self.btn_sort_order.setToolTip("目前為：倒序 (Descending)")
+            
+        # TODO: 這裡未來會發送訊號 (Signal) 通知 MainWindow 重新排列 ListWidget 內的圖片
 
     def _setup_clip_tab(self):
         layout = QVBoxLayout(self.tab_clip)
