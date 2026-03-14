@@ -78,6 +78,7 @@ WINDOW_TITLE = "EyeSeeMore-(Alpha)"
 # TODO: 加上Satisfactory主題的UI樣式
 # TODO: 加上BlueArchive主題的UI樣式
 # TODO: 刪除 Unicode 符號
+# TODO: BUG 相關度權重控制無法一開始就顯示
 
 import sys
 import ctypes
@@ -396,6 +397,12 @@ class SearchResultsModel(QAbstractListModel):
                     idx = self.index(row, 0)
                     self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
                     break
+    
+    def sort_items(self, key_func, reverse=False):
+        """根據指定的條件 (key_func) 重新排序目前的圖片列表"""
+        self.beginResetModel()
+        self.items.sort(key=key_func, reverse=reverse)
+        self.endResetModel()
 
 class ImageDelegate(QStyledItemDelegate):
     """負責繪製列表中的每一個項目 (支援動態調整大小)"""
@@ -2141,6 +2148,9 @@ from PyQt6.QtWidgets import QSlider  # 確保頂部或這裡有引入 QSlider
 
 class InspectorPanel(QFrame):
     """右側屬性與檢索控制台 (三層分頁架構)"""
+
+    sort_changed = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedWidth(320)
@@ -2231,6 +2241,9 @@ class InspectorPanel(QFrame):
         # 1. 純粹的排序依據選單 (移除 AI 相關度)
         self.combo_sort = QComboBox()
         self.combo_sort.addItems(["日期", "名稱", "類型", "大小"])
+
+        self.combo_sort.currentIndexChanged.connect(lambda: self.sort_changed.emit())
+        
         sort_layout.addWidget(self.combo_sort, stretch=1)
 
         # 2. 正序/倒序切換按鈕
@@ -2290,12 +2303,13 @@ class InspectorPanel(QFrame):
         """切換排序方向 (正序 ↑ / 倒序 ↓)"""
         if self.btn_sort_order.text() == "↓":
             self.btn_sort_order.setText("↑")
-            self.btn_sort_order.setToolTip("目前為：正序 (Ascending)")
+            self.btn_sort_order.setToolTip("目前為：正序 (由小到大 / 舊到新)")
         else:
             self.btn_sort_order.setText("↓")
-            self.btn_sort_order.setToolTip("目前為：倒序 (Descending)")
+            self.btn_sort_order.setToolTip("目前為：倒序 (由大到小 / 新到舊)")
             
-        # TODO: 這裡未來會發送訊號 (Signal) 通知 MainWindow 重新排列 ListWidget 內的圖片
+        
+        self.sort_changed.emit()
 
     def _setup_clip_tab(self):
         layout = QVBoxLayout(self.tab_clip)
@@ -2732,6 +2746,8 @@ class MainWindow(QMainWindow):
         # 實例化分頁式右側面板
         self.inspector_panel = InspectorPanel(self)
 
+        self.inspector_panel.sort_changed.connect(self.apply_gallery_sort)
+
         # 將畫廊與右側面板加入 Splitter
         self.main_splitter.addWidget(self.list_view)
         self.main_splitter.addWidget(self.inspector_panel)
@@ -2994,6 +3010,43 @@ class MainWindow(QMainWindow):
                     self.preview_overlay.show_image(item, current_query, is_precise)
                     self.is_ocr_locked = False
                     self.preview_overlay.set_ocr_visible(False)
+
+    def apply_gallery_sort(self):
+        """對目前的 Gallery 圖片進行洗牌排序"""
+        # 如果目前畫面上沒圖片，就不需要排
+        if not hasattr(self, 'model') or not self.model.items:
+            return
+
+        # 1. 取得使用者的設定狀態
+        sort_by = self.inspector_panel.combo_sort.currentText()
+        is_descending = (self.inspector_panel.btn_sort_order.text() == "↓")
+
+        import os
+
+        # 2. 根據不同的條件，定義 Python list sort 的 key 函數
+        if sort_by == "日期":
+            key_func = lambda item: item.mtime
+        elif sort_by == "名稱":
+            key_func = lambda item: item.filename.lower() # 轉小寫讓 a 和 A 視為相同
+        elif sort_by == "類型":
+            # 取得副檔名並轉小寫，例如 '.png', '.jpg'
+            key_func = lambda item: os.path.splitext(item.filename)[1].lower()
+        elif sort_by == "大小":
+            # 動態取得檔案大小 (加上 try-except 防呆，以防檔案剛好被刪除)
+            def get_size(item):
+                try:
+                    return os.path.getsize(item.path)
+                except:
+                    return 0
+            key_func = get_size
+        else:
+            key_func = lambda item: item.mtime # 防呆預設
+
+        # 3. 呼叫 Model 的排序方法
+        self.model.sort_items(key_func, reverse=is_descending)
+        
+        # 4. 排序完後，自動將視窗滾動回到最上方，體驗更好
+        self.list_view.scrollToTop()
 
     def on_ai_loaded(self):
         """當 AI 模型載入完成後被呼叫 (會在主執行緒執行)"""
