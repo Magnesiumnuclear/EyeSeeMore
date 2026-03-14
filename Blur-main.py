@@ -2469,9 +2469,9 @@ class InspectorPanel(QFrame):
         sort_layout.setContentsMargins(0, 0, 0, 0)
         sort_layout.setSpacing(8)
 
-        # 1. 純粹的排序依據選單 (移除 AI 相關度)
+        # 1. 純粹的排序依據選單 (新增 OCR 優先)
         self.combo_sort = QComboBox()
-        self.combo_sort.addItems(["日期", "名稱", "類型", "大小"])
+        self.combo_sort.addItems(["OCR 優先", "日期", "名稱", "類型", "大小"])
 
         self.combo_sort.currentIndexChanged.connect(lambda: self.sort_changed.emit())
         
@@ -3131,6 +3131,11 @@ class MainWindow(QMainWindow):
         if not self.engine: return
         
         print(f"Filtering by: {path}")
+
+        self.inspector_panel.combo_sort.blockSignals(True)
+        self.inspector_panel.combo_sort.setCurrentText("日期")
+        self.inspector_panel.btn_sort_order.setText("↓")
+        self.inspector_panel.combo_sort.blockSignals(False)
         
         # 1. 如果是 "ALL"，顯示全部 (依時間排序)
         if path == "ALL":
@@ -3314,7 +3319,10 @@ class MainWindow(QMainWindow):
         import os
 
         # 2. 根據不同的條件，定義 Python list sort 的 key 函數
-        if sort_by == "日期":
+        if sort_by == "OCR 優先":
+            # 🌟 複合鍵排序：第一優先比 is_ocr_match (True=1, False=0)，第二優先比 AI 分數
+            key_func = lambda item: (item.is_ocr_match, item.score)
+        elif sort_by == "日期":
             key_func = lambda item: item.mtime
         elif sort_by == "名稱":
             key_func = lambda item: item.filename.lower() # 轉小寫讓 a 和 A 視為相同
@@ -3730,6 +3738,11 @@ class MainWindow(QMainWindow):
         
         limit = self.inspector_panel.combo_limit_panel.currentText()
         k = 100000 if limit == "All" else int(limit)
+
+        self.inspector_panel.combo_sort.blockSignals(True)
+        self.inspector_panel.combo_sort.setCurrentText("OCR 優先")
+        self.inspector_panel.btn_sort_order.setText("↓")
+        self.inspector_panel.combo_sort.blockSignals(False)
         
         # [修改] 從新版膠囊按鈕讀取 OCR 狀態 (self.btn_ocr_toggle)
         self.worker = SearchWorker(self.engine, q, k, search_mode="text", use_ocr=self.btn_ocr_toggle.isChecked())
