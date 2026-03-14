@@ -2144,6 +2144,176 @@ class CollapsibleSection(QWidget):
     def addLayout(self, layout):
         self.content_layout.addLayout(layout)
 
+import calendar
+from datetime import date, timedelta
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLabel
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QCursor
+
+class RangeCalendarWidget(QWidget):
+    """純手工打造的暗色系區間日曆"""
+    range_selected = pyqtSignal(date, date) 
+    cleared = pyqtSignal()
+    selection_started = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            QWidget { background-color: transparent; }
+            QLabel { color: #eeeeee; font-weight: bold; font-size: 13px; }
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                color: #dddddd;
+                font-size: 13px;
+                border-radius: 14px;
+            }
+            QPushButton:hover { background-color: #383838; }
+            QPushButton:disabled { color: #555555; background-color: transparent; }
+            
+            QPushButton[is_endpoint="true"] {
+                background-color: #60cdff;
+                color: #111111;
+                font-weight: bold;
+            }
+            QPushButton[in_range="true"] {
+                background-color: rgba(96, 205, 255, 0.2);
+                border-radius: 0px; 
+            }
+            QPushButton[is_today="true"] {
+                border: 1px solid #60cdff;
+            }
+        """)
+
+        self.today = date.today()
+        self.current_year = self.today.year
+        self.current_month = self.today.month
+        
+        self.start_date = None
+        self.end_date = None
+        self.btn_dates_map = {} # 記錄按鈕與日期的對應
+
+        self.init_ui()
+        self.update_calendar()
+
+    def init_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(10)
+
+        # 頂部標頭
+        header_layout = QHBoxLayout()
+        self.btn_prev = QPushButton("◀")
+        self.btn_prev.setFixedSize(28, 28)
+        self.btn_prev.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_prev.clicked.connect(self.prev_month)
+
+        self.lbl_month_year = QLabel("")
+        self.lbl_month_year.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_month_year.setStyleSheet("font-size: 15px;")
+
+        self.btn_next = QPushButton("▶")
+        self.btn_next.setFixedSize(28, 28)
+        self.btn_next.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_next.clicked.connect(self.next_month)
+
+        header_layout.addWidget(self.btn_prev)
+        header_layout.addWidget(self.lbl_month_year, stretch=1)
+        header_layout.addWidget(self.btn_next)
+        main_layout.addLayout(header_layout)
+
+        # 星期標籤
+        week_layout = QHBoxLayout()
+        for wd in ["日", "一", "二", "三", "四", "五", "六"]:
+            lbl = QLabel(wd)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("color: #888888; font-size: 12px;")
+            week_layout.addWidget(lbl)
+        main_layout.addLayout(week_layout)
+
+        # 日期網格
+        self.grid_layout = QGridLayout()
+        self.grid_layout.setSpacing(2)
+        self.day_buttons = []
+
+        for row in range(6):
+            for col in range(7):
+                btn = QPushButton()
+                btn.setFixedSize(28, 28)
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.clicked.connect(self.on_day_clicked)
+                self.grid_layout.addWidget(btn, row, col)
+                self.day_buttons.append(btn)
+                
+        main_layout.addLayout(self.grid_layout)
+
+    def update_calendar(self):
+        self.lbl_month_year.setText(f"{self.current_year} 年 {self.current_month} 月")
+        cal = calendar.Calendar(firstweekday=6)
+        month_days = cal.monthdatescalendar(self.current_year, self.current_month)
+        flat_days = [day for week in month_days for day in week]
+
+        for i, btn in enumerate(self.day_buttons):
+            if i < len(flat_days):
+                day_obj = flat_days[i]
+                btn.setText(str(day_obj.day))
+                self.btn_dates_map[btn] = day_obj
+
+                btn.setProperty("is_endpoint", "false")
+                btn.setProperty("in_range", "false")
+                btn.setProperty("is_today", "false")
+
+                if day_obj.month != self.current_month:
+                    btn.setStyleSheet("color: #555555;")
+                else:
+                    btn.setStyleSheet("") 
+
+                if day_obj == self.today:
+                    btn.setProperty("is_today", "true")
+
+                if self.start_date and self.end_date:
+                    if day_obj == self.start_date or day_obj == self.end_date:
+                        btn.setProperty("is_endpoint", "true")
+                    elif self.start_date < day_obj < self.end_date:
+                        btn.setProperty("in_range", "true")
+                elif self.start_date and day_obj == self.start_date:
+                    btn.setProperty("is_endpoint", "true")
+
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+
+    def on_day_clicked(self):
+        btn = self.sender()
+        clicked_date = self.btn_dates_map.get(btn)
+        if not clicked_date: return
+
+        if self.start_date is None or (self.start_date and self.end_date):
+            self.start_date = clicked_date
+            self.end_date = None
+        else:
+            if clicked_date < self.start_date:
+                self.start_date = clicked_date
+            else:
+                self.end_date = clicked_date
+                self.range_selected.emit(self.start_date, self.end_date)
+        self.update_calendar()
+
+    def prev_month(self):
+        if self.current_month == 1:
+            self.current_month = 12
+            self.current_year -= 1
+        else:
+            self.current_month -= 1
+        self.update_calendar()
+
+    def next_month(self):
+        if self.current_month == 12:
+            self.current_month = 1
+            self.current_year += 1
+        else:
+            self.current_month += 1
+        self.update_calendar()
+
 from PyQt6.QtWidgets import QSlider  # 確保頂部或這裡有引入 QSlider
 
 class InspectorPanel(QFrame):
@@ -2208,18 +2378,36 @@ class InspectorPanel(QFrame):
         self.search_main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # --- 區塊 1: 🔍 檢索過濾 (FILTER) ---
-        # 控制「哪些圖會出現」
         self.sec_filter = CollapsibleSection("檢索過濾")
         
         self.sec_filter.addWidget(QLabel("時間維度 (Time Range):"))
-        self.combo_time = QComboBox()
-        self.combo_time.addItems(["全部時間", "今天", "過去 7 天", "本月"])
-        self.sec_filter.addWidget(self.combo_time)
         
-        self.sec_filter.addWidget(QLabel("視覺規格 (Visual Specs):"))
-        self.combo_aspect = QComboBox()
-        self.combo_aspect.addItems(["不限比例", "橫圖 (Landscape)", "直圖 (Portrait)", "正方形 (Square)"])
-        self.sec_filter.addWidget(self.combo_aspect)
+        # 1. 將下拉選單改為「觸發按鈕」
+        self.btn_time_range = QPushButton("📅 全部時間 (All Time)")
+        self.btn_time_range.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_time_range.setCheckable(True)
+        self.btn_time_range.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2b2b;
+                color: #eeeeee;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 8px 12px;
+                text-align: left;
+                font-size: 13px;
+            }
+            QPushButton:hover { background-color: #383838; border-color: #60cdff; }
+            QPushButton:checked { background-color: #383838; border-color: #60cdff; color: #60cdff; }
+        """)
+        self.btn_time_range.clicked.connect(self.toggle_calendar)
+        self.sec_filter.addWidget(self.btn_time_range)
+
+        # 2. 嵌入自訂日曆 (預設隱藏)
+        self.calendar_widget = RangeCalendarWidget()
+        self.calendar_widget.hide()
+        # 綁定選取完成的訊號
+        self.calendar_widget.range_selected.connect(self.on_date_range_selected)
+        self.sec_filter.addWidget(self.calendar_widget)
         
         self.search_main_layout.addWidget(self.sec_filter)
 
@@ -2437,6 +2625,32 @@ class InspectorPanel(QFrame):
         import subprocess, os
         if os.name == 'nt':
             subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+    
+    def toggle_calendar(self):
+        """控制日曆的展開與收合，並動態更新按鈕文字"""
+        is_checked = self.btn_time_range.isChecked()
+        self.calendar_widget.setVisible(is_checked)
+        
+        if is_checked:
+            if "全部時間" in self.btn_time_range.text():
+                self.btn_time_range.setText("📅 自訂區間 (請在下方點選起訖日)...")
+        else:
+            # 如果使用者收起日曆，且沒有完成選取，就恢復為「全部時間」
+            if not (self.calendar_widget.start_date and self.calendar_widget.end_date):
+                self.btn_time_range.setText("📅 全部時間 (All Time)")
+                self.calendar_widget.start_date = None
+
+    def on_date_range_selected(self, start_date, end_date):
+        """本日曆選好範圍後觸發"""
+        # 1. 更新按鈕文字為所選的日期區間
+        date_str = f"📅 {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
+        self.btn_time_range.setText(date_str)
+        
+        # 2. 自動收起日曆，提升流暢體驗
+        self.btn_time_range.setChecked(False)
+        self.calendar_widget.hide()
+
+        # TODO: 未來這裡會發送 self.filter_changed.emit() 通知引擎重新撈取圖片
 
 class MainWindow(QMainWindow):
     # 定義訊號
