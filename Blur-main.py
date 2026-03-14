@@ -2062,6 +2062,63 @@ class SidebarWidget(QFrame):
     def on_sub_folder_clicked(self, path):
         self.folder_selected.emit(path)
 
+class CollapsibleSection(QWidget):
+    """自定義摺疊區塊，仿 VSCode 樣式"""
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+
+        # 1. 標頭按鈕 (Header)
+        self.header = QPushButton(f"▼  {title}")
+        self.header.setCheckable(True)
+        self.header.setChecked(True) # 預設展開
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header.setStyleSheet("""
+            QPushButton {
+                background-color: #333333; /* 淡淡的背景塊 */
+                color: #cccccc;
+                border: none;
+                text-align: left;
+                padding: 8px 12px;
+                font-size: 13px;
+                font-weight: bold;
+                border-top: 1px solid #3c3c3c;
+            }
+            QPushButton:hover {
+                background-color: #3c3c3c;
+                color: #ffffff;
+            }
+            QPushButton:checked {
+                color: #eeeeee;
+                border-bottom: 1px solid #333333;
+            }
+        """)
+        
+        # 2. 內容容器 (Content)
+        self.content = QWidget()
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(20, 15, 20, 15)
+        self.content_layout.setSpacing(12)
+        
+        self.layout.addWidget(self.header)
+        self.layout.addWidget(self.content)
+        
+        # 連結點擊事件
+        self.header.clicked.connect(self.toggle_content)
+
+    def toggle_content(self):
+        is_expanded = self.header.isChecked()
+        self.content.setVisible(is_expanded)
+        self.header.setText(f"▼  {self.header.text()[3:]}" if is_expanded else f"▶  {self.header.text()[3:]}")
+
+    def addWidget(self, widget):
+        self.content_layout.addWidget(widget)
+
+    def addLayout(self, layout):
+        self.content_layout.addLayout(layout)
+
 from PyQt6.QtWidgets import QSlider  # 確保頂部或這裡有引入 QSlider
 
 class InspectorPanel(QFrame):
@@ -2116,20 +2173,53 @@ class InspectorPanel(QFrame):
         self.hide() # 預設隱藏，等待按鈕觸發
 
     def _setup_search_tab(self):
-        layout = QVBoxLayout(self.tab_search)
-        layout.setSpacing(15); layout.setContentsMargins(20, 25, 20, 20)
-        
-        layout.addWidget(QLabel("顯示數量限制 (Limit):"))
-        self.combo_limit_panel = QComboBox()
-        self.combo_limit_panel.addItems(["20", "50", "100", "All"])
-        layout.addWidget(self.combo_limit_panel)
+        # 讓主 Layout 緊湊，貼合 VSCode 邊界感
+        self.search_main_layout = QVBoxLayout(self.tab_search)
+        self.search_main_layout.setContentsMargins(0, 0, 0, 0)
+        self.search_main_layout.setSpacing(0)
+        self.search_main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        layout.addWidget(QLabel("排序方式 (Sort By):"))
+        # --- 區塊 1: 🔍 檢索過濾 (Filter) ---
+        self.sec_filter = CollapsibleSection("檢索過濾 (FILTER)")
+        
+        self.sec_filter.addWidget(QLabel("時間維度 (Time Range):"))
+        self.combo_time = QComboBox()
+        self.combo_time.addItems(["全部時間", "今天", "過去 7 天", "本月", "自訂區間..."])
+        self.sec_filter.addWidget(self.combo_time)
+        
+        self.sec_filter.addWidget(QLabel("視覺規格 (Visual Specs):"))
+        self.combo_aspect = QComboBox()
+        self.combo_aspect.addItems(["不限比例", "橫圖 (Landscape)", "直圖 (Portrait)", "正方形 (Square)"])
+        self.sec_filter.addWidget(self.combo_aspect)
+        
+        self.search_main_layout.addWidget(self.sec_filter)
+
+        # --- 區塊 2: ⚙️ 顯示設定 (DISPLAY) ---
+        self.sec_display = CollapsibleSection("顯示設定 (DISPLAY)")
+        
+        self.sec_display.addWidget(QLabel("顯示數量限制 (Limit):"))
+        self.combo_limit_panel = QComboBox() # 保持原名，避免 start_search 報錯
+        self.combo_limit_panel.addItems(["20", "50", "100", "All"])
+        self.sec_display.addWidget(self.combo_limit_panel)
+
+        self.sec_display.addWidget(QLabel("排序方式 (Sort By):"))
         self.combo_sort = QComboBox()
         self.combo_sort.addItems(["相關度 (Relevance)", "日期 (Date - Newest)", "檔案名稱 (Name)"])
-        layout.addWidget(self.combo_sort)
+        self.sec_display.addWidget(self.combo_sort)
+        
+        self.search_main_layout.addWidget(self.sec_display)
 
-        layout.addStretch(1)
+        # --- 區塊 3: 🧪 進階功能 (ADVANCED) ---
+        self.sec_advanced = CollapsibleSection("進階功能 (ADVANCED)")
+        self.sec_advanced.header.setChecked(False) # 預設收合
+        self.sec_advanced.content.hide()
+        
+        self.sec_advanced.addWidget(QLabel("此區塊保留給未來擴充使用\n(如：排除關鍵字、正則表達式)"))
+        
+        self.search_main_layout.addWidget(self.sec_advanced)
+
+        # 最後加一個彈簧，讓所有區塊往上擠
+        self.search_main_layout.addStretch(1)
 
     def _setup_clip_tab(self):
         layout = QVBoxLayout(self.tab_clip)
