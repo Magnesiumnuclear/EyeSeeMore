@@ -2311,12 +2311,20 @@ class RangeCalendarWidget(QWidget):
         if not clicked_date: return
 
         if self.start_date is None or (self.start_date and self.end_date):
+            # 狀態 1：選取第一下 (設定起點)
             self.start_date = clicked_date
             self.end_date = None
             self.selection_started.emit()
         else:
-            if clicked_date < self.start_date: self.start_date = clicked_date
-            else: self.end_date = clicked_date
+            # 狀態 2：選取第二下 (完成範圍)
+            if clicked_date < self.start_date:
+                # 🌟 【關鍵修正】如果第二下點得比第一下早，自動反轉起訖日！
+                self.end_date = self.start_date
+                self.start_date = clicked_date
+            else:
+                # 正常從早點到晚
+                self.end_date = clicked_date
+                
         self.update_calendar()
 
     def clear_selection(self):
