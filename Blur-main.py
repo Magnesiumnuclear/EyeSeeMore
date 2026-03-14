@@ -2707,21 +2707,22 @@ class InspectorPanel(QFrame):
         self.time_filter_applied.emit(start_ts, end_ts)
 
     def on_calendar_search(self, start_date, end_date):
-        """點擊 [直接搜尋]：轉換為 Timestamp 並發送訊號"""
+        """點擊 [直接搜尋]：轉換為 Timestamp 並發送訊號 (不自動收合日曆)"""
         date_str = f"📅 {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
         self.btn_time_range.setText(date_str)
-        self.calendar_widget.set_status("🔍 正在直接搜尋資料庫...", "success")
         
         from datetime import datetime, time as dt_time
         start_ts = datetime.combine(start_date, dt_time.min).timestamp()
         end_ts = datetime.combine(end_date, dt_time.max).timestamp()
         
+        # 發送訊號讓 MainWindow 去要資料
         self.time_search_requested.emit(start_ts, end_ts)
         
-        # 這是一個全新檢索任務，所以直接收合日曆
-        self.btn_time_range.setChecked(False)
-        self.calendar_widget.hide()
-
+        # 🌟 更改狀態文字：因為過濾是瞬間完成的，直接顯示完成狀態
+        self.calendar_widget.set_status("✅ 搜尋完成，已列出此時間段的所有圖片。", "success")
+        
+        # 🌟 移除自動收合日曆的程式碼，把控制權完全交還給使用者
+        # (已刪除 self.btn_time_range.setChecked(False) 與 self.calendar_widget.hide())
 class MainWindow(QMainWindow):
     # 定義訊號
     random_data_ready = pyqtSignal(list)
