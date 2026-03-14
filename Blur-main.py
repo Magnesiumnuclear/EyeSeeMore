@@ -2684,34 +2684,35 @@ class InspectorPanel(QFrame):
     def on_calendar_cleared(self):
         """使用者按下清除日期"""
         self.btn_time_range.setText("📅 全部時間 (All Time)")
-        # 注意：這裡不呼叫 hide()，讓日曆保持開啟！
+        self.time_filter_cleared.emit()
 
     def on_calendar_apply(self, start_date, end_date):
-        """點擊 [套用結果]：進行過濾，並回報結果到狀態區"""
-        # 更新按鈕文字
+        """點擊 [套用結果]：轉換為 Timestamp 並發送訊號"""
         date_str = f"📅 {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
         self.btn_time_range.setText(date_str)
         
-        # TODO: 這裡未來會發送訊號讓 MainWindow 去過濾 Gallery 圖片
-        # 目前我們先做假資料測試防呆顯示
-        mock_result_count = 0 # 假設過濾後是 0 張圖
+        # 將日期轉為 Unix Timestamp (包含當天的 00:00:00 到 23:59:59)
+        from datetime import datetime, time as dt_time
+        start_ts = datetime.combine(start_date, dt_time.min).timestamp()
+        end_ts = datetime.combine(end_date, dt_time.max).timestamp()
         
-        if mock_result_count > 0:
-            self.calendar_widget.set_status(f"✅ 已成功過濾，顯示 {mock_result_count} 張圖片。", "success")
-            # 成功也不收合，讓使用者可以繼續拉動日期微調！
-        else:
-            self.calendar_widget.set_status(f"⚠️ 您的搜尋結果中，此時間段內沒有圖片。", "error")
+        self.time_filter_applied.emit(start_ts, end_ts)
 
     def on_calendar_search(self, start_date, end_date):
-        """點擊 [直接搜尋]：全域重置搜尋"""
+        """點擊 [直接搜尋]：轉換為 Timestamp 並發送訊號"""
         date_str = f"📅 {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
         self.btn_time_range.setText(date_str)
         self.calendar_widget.set_status("🔍 正在直接搜尋資料庫...", "success")
         
-        # TODO: 這裡未來會清空文字搜尋框，並下達 SQL 指令去撈圖
-        # 由於這是一個新的重置動作，你也可以在這裡決定是否要收起日曆
-        # self.btn_time_range.setChecked(False)
-        # self.calendar_widget.hide()
+        from datetime import datetime, time as dt_time
+        start_ts = datetime.combine(start_date, dt_time.min).timestamp()
+        end_ts = datetime.combine(end_date, dt_time.max).timestamp()
+        
+        self.time_search_requested.emit(start_ts, end_ts)
+        
+        # 這是一個全新檢索任務，所以直接收合日曆
+        self.btn_time_range.setChecked(False)
+        self.calendar_widget.hide()
 
 class MainWindow(QMainWindow):
     # 定義訊號
@@ -2732,6 +2733,9 @@ class MainWindow(QMainWindow):
         self.current_selected_path = None
 
         self.is_ocr_locked = False
+
+        self.last_search_results = [] # 儲存最近一次檢索回來的原始資料
+        self.active_time_range = None # 目前選取的時間區間 (start_ts, end_ts)
         
         # 設定歷史紀錄檔路徑
         self.history_file_path = os.path.join(self.config.app_root, "search_history.json")
@@ -2748,11 +2752,9 @@ class MainWindow(QMainWindow):
         self.indexer_worker.all_finished.connect(self.on_indexing_finished)
 
         # [修改 2] 連接訊號：當 AI 準備好時，執行 on_ai_loaded
-        self.random_data_ready.connect(self.model.set_search_results)
+        self.random_data_ready.connect(self.set_base_results)
         self.ai_ready.connect(self.on_ai_loaded)
 
-        # 連接訊號
-        self.random_data_ready.connect(self.model.set_search_results)
 
         QApplication.instance().installEventFilter(self)
         
@@ -3023,6 +3025,10 @@ class MainWindow(QMainWindow):
 
         self.inspector_panel.sort_changed.connect(self.apply_gallery_sort)
 
+        self.inspector_panel.time_filter_applied.connect(self.apply_time_filter_to_gallery)
+        self.inspector_panel.time_search_requested.connect(self.search_by_time_range)
+        self.inspector_panel.time_filter_cleared.connect(self.clear_time_filter)
+
         # 將畫廊與右側面板加入 Splitter
         self.main_splitter.addWidget(self.list_view)
         self.main_splitter.addWidget(self.inspector_panel)
@@ -3120,7 +3126,7 @@ class MainWindow(QMainWindow):
         # 1. 如果是 "ALL"，顯示全部 (依時間排序)
         if path == "ALL":
             all_imgs = self.engine.get_all_images_sorted()
-            self.model.set_search_results(all_imgs)
+            self.set_base_results(all_imgs)
             self.status.setText(f"Showing all {len(all_imgs)} images")
             return
 
@@ -3146,7 +3152,7 @@ class MainWindow(QMainWindow):
             # 按時間排序
             results.sort(key=lambda x: x["mtime"], reverse=True)
             
-            self.model.set_search_results(results)
+            self.set_base_results(results)
             self.status.setText(f"Folder: {os.path.basename(path)} ({len(results)} items)")
 
         # [修改] MainWindow.eventFilter
@@ -3323,6 +3329,78 @@ class MainWindow(QMainWindow):
         # 4. 排序完後，自動將視窗滾動回到最上方，體驗更好
         self.list_view.scrollToTop()
 
+    # ==========================================
+    #  [NEW] 核心過濾器與資料派發機制
+    # ==========================================
+    def set_base_results(self, results):
+        """所有搜尋或載入資料的統一入口，保存最原始的結果，並自動套用目前的過濾器"""
+        self.last_search_results = results
+        self.apply_current_filters_and_show()
+
+    def apply_current_filters_and_show(self, test_mode=False):
+        """套用時間等過濾器到 self.last_search_results，然後丟給 Model 顯示"""
+        filtered = self.last_search_results
+        
+        # 1. 時間區間過濾 (極速記憶體內過濾)
+        if self.active_time_range:
+            start_ts, end_ts = self.active_time_range
+            filtered = [item for item in filtered if start_ts <= item["mtime"] <= end_ts]
+            
+        if test_mode:
+            return len(filtered) # 測試模式只回傳數量，不更新畫面
+            
+        # 2. 丟給畫面更新
+        self.model.set_search_results(filtered)
+        
+        # 3. 順便套用目前的排序設定 (例如按大小、日期等)
+        self.apply_gallery_sort() 
+        return len(filtered)
+
+    def apply_time_filter_to_gallery(self, start_ts, end_ts):
+        """點擊 [套用結果]：測試過濾數量，若為 0 顯示防呆警告，否則套用"""
+        # 先暫存原本的時間區間 (為了防呆退回)
+        old_range = self.active_time_range
+        self.active_time_range = (start_ts, end_ts)
+        
+        # 進入 Test Mode 測試這刀切下去剩幾張圖
+        count = self.apply_current_filters_and_show(test_mode=True)
+        
+        if count > 0:
+            # 成功！正式更新畫面
+            self.apply_current_filters_and_show(test_mode=False)
+            self.inspector_panel.calendar_widget.set_status(f"✅ 已成功過濾，顯示 {count} 張圖片。", "success")
+            self.status.setText(f"Filtered: {count} images")
+        else:
+            # 防呆啟動：找不到圖，退回上一個狀態並報錯，不收合日曆
+            self.active_time_range = old_range
+            self.inspector_panel.calendar_widget.set_status(f"⚠️ 您的搜尋結果中，此時間段內沒有圖片。", "error")
+
+    def clear_time_filter(self):
+        """點擊 [清除]：移除過濾器並還原畫廊"""
+        self.active_time_range = None
+        self.apply_current_filters_and_show()
+        self.status.setText(f"Time filter cleared. Showing {len(self.model.items)} images")
+
+    def search_by_time_range(self, start_ts, end_ts):
+        """點擊 [直接搜尋]：忽略關鍵字，直接全域抓出該時段的圖"""
+        if not self.engine: return
+        
+        # 1. 清空文字搜尋框
+        self.input.setText("")
+        
+        # 2. 記錄啟用的時間區間
+        self.active_time_range = (start_ts, end_ts)
+
+        # 3. 直接從 engine 裡面拿「全部」的資料，偽裝成搜尋結果丟進去
+        all_imgs = self.engine.get_all_images_sorted()
+        self.set_base_results(all_imgs)
+        
+        # 4. 強制切換右側排序選單為「日期」，倒序 (↓)
+        self.inspector_panel.combo_sort.setCurrentText("日期")
+        self.inspector_panel.btn_sort_order.setText("↓")
+        
+        self.status.setText(f"Direct Time Search: {len(self.model.items)} items")
+
     def on_ai_loaded(self):
         """當 AI 模型載入完成後被呼叫 (會在主執行緒執行)"""
         count = len(self.engine.data_store) if self.engine else 0
@@ -3368,7 +3446,7 @@ class MainWindow(QMainWindow):
             print("Reloading engine data...")
             self.engine.load_data_from_db()
             all_imgs = self.engine.get_all_images_sorted()
-            self.model.set_search_results(all_imgs)
+            self.set_base_results(all_imgs)
             self.refresh_sidebar()
             self.status.setText(f"System Ready ({len(all_imgs)} images)")
 
@@ -3646,7 +3724,7 @@ class MainWindow(QMainWindow):
         
         # [修改] 從新版膠囊按鈕讀取 OCR 狀態 (self.btn_ocr_toggle)
         self.worker = SearchWorker(self.engine, q, k, search_mode="text", use_ocr=self.btn_ocr_toggle.isChecked())
-        self.worker.batch_ready.connect(self.model.set_search_results)
+        self.worker.batch_ready.connect(self.set_base_results)
         self.worker.finished_search.connect(self.on_finished)
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
@@ -3661,7 +3739,7 @@ class MainWindow(QMainWindow):
         k = 100000 if limit == "All" else int(limit)
         
         self.worker = SearchWorker(self.engine, image_path, k, search_mode="image")
-        self.worker.batch_ready.connect(self.model.set_search_results)
+        self.worker.batch_ready.connect(self.set_base_results)
         self.worker.finished_search.connect(self.on_finished)
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
