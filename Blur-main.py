@@ -2063,39 +2063,55 @@ class SidebarWidget(QFrame):
         self.folder_selected.emit(path)
 
 class CollapsibleSection(QWidget):
-    """自定義摺疊區塊，仿 VSCode 樣式"""
+    """自定義摺疊區塊，仿 VSCode 樣式 (解決文字跳動問題)"""
     def __init__(self, title, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
 
-        # 1. 標頭按鈕 (Header)
-        self.header = QPushButton(f"▼  {title}")
+        # 1. 標頭按鈕 (Header) - 這次我們不直接在按鈕上寫字
+        self.header = QPushButton()
+        self.header.setFixedHeight(36)
         self.header.setCheckable(True)
         self.header.setChecked(True) # 預設展開
         self.header.setCursor(Qt.CursorShape.PointingHandCursor)
         self.header.setStyleSheet("""
             QPushButton {
-                background-color: #333333; /* 淡淡的背景塊 */
-                color: #cccccc;
+                background-color: #333333;
                 border: none;
-                text-align: left;
-                padding: 8px 12px;
-                font-size: 13px;
-                font-weight: bold;
                 border-top: 1px solid #3c3c3c;
             }
-            QPushButton:hover {
-                background-color: #3c3c3c;
-                color: #ffffff;
-            }
-            QPushButton:checked {
-                color: #eeeeee;
-                border-bottom: 1px solid #333333;
-            }
+            QPushButton:hover { background-color: #3c3c3c; }
+            QPushButton:checked { border-bottom: 1px solid #333333; }
         """)
         
+        # --- 解決跳動的魔法：在按鈕內部建立專屬 Layout ---
+        self.header_layout = QHBoxLayout(self.header)
+        self.header_layout.setContentsMargins(12, 8, 12, 8)
+        self.header_layout.setSpacing(5) # 箭頭與文字的距離
+
+        # A. 獨立的箭頭標籤
+        self.lbl_arrow = QLabel("▼")
+        self.lbl_arrow.setFixedWidth(16) # 🔒 鎖死寬度，文字絕對不會亂跑
+        self.lbl_arrow.setAlignment(Qt.AlignmentFlag.AlignCenter) # 讓箭頭在 16px 內乖乖置中
+        
+        # B. 獨立的標題標籤
+        self.lbl_title = QLabel(title)
+        
+        # 統一設定標籤樣式，並讓滑鼠點擊「穿透」標籤，確保按鈕能正常被點擊
+        label_style = "color: #cccccc; font-size: 13px; font-weight: bold; background: transparent;"
+        self.lbl_arrow.setStyleSheet(label_style)
+        self.lbl_title.setStyleSheet(label_style)
+        self.lbl_arrow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.lbl_title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        # 把標籤加入按鈕內部
+        self.header_layout.addWidget(self.lbl_arrow)
+        self.header_layout.addWidget(self.lbl_title)
+        self.header_layout.addStretch(1) # 彈簧把文字往左推
+        # ------------------------------------------------
+
         # 2. 內容容器 (Content)
         self.content = QWidget()
         self.content_layout = QVBoxLayout(self.content)
@@ -2111,7 +2127,8 @@ class CollapsibleSection(QWidget):
     def toggle_content(self):
         is_expanded = self.header.isChecked()
         self.content.setVisible(is_expanded)
-        self.header.setText(f"▼  {self.header.text()[3:]}" if is_expanded else f"▶  {self.header.text()[3:]}")
+        # 程式碼變乾淨了，直接改獨立箭頭的字就好！
+        self.lbl_arrow.setText("▼" if is_expanded else "▶")
 
     def addWidget(self, widget):
         self.content_layout.addWidget(widget)
