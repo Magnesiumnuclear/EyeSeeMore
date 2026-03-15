@@ -1063,6 +1063,28 @@ class OCRDownloadWorker(QThread):
 class FloatingWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        self.setFixedWidth(320)
+        
+        # 🌟 加入層級一 (分頁) 的動態底線樣式
+        self.setStyleSheet("""
+            QFrame { background-color: #1e1e1e; border-left: 1px solid #333333; }
+            QLabel { color: #cccccc; font-size: 13px; border: none; background: transparent; }
+            QTabWidget::pane { border: none; border-top: 1px solid #333333; background: #1e1e1e; }
+            QTabBar::tab { background: #252525; color: #888888; padding: 10px 15px; border: none; font-weight: bold; font-size: 13px; }
+            QTabBar::tab:selected { color: #60cdff; border-bottom: 2px solid #60cdff; background: #1e1e1e; }
+            QTabBar::tab:hover:!selected { color: #eeeeee; background: #2d2d2d; }
+            QSlider::groove:horizontal { border: 1px solid #444; height: 4px; background: #2b2b2b; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #60cdff; width: 14px; margin: -5px 0; border-radius: 7px; }
+            QComboBox { background-color: #2b2b2b; border: 1px solid #444; color: white; padding: 6px; border-radius: 4px; }
+            
+            /* 🌟 層級一：搜尋分頁的專屬動態底線 */
+            QTabWidget[filter_active="true"] QTabBar::tab:first {
+                color: #60cdff;
+                border-bottom: 3px solid #60cdff;
+            }
+        """)
+
         # 讓滑鼠點擊可以直接穿透這個標籤，避免擋住底下的紅框
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.hide()
@@ -2152,6 +2174,22 @@ class CollapsibleSection(QWidget):
     def addLayout(self, layout):
         self.content_layout.addLayout(layout)
 
+    def set_status_active(self, is_active):
+        """層級二：控制檢索過濾區塊的動態底線"""
+        if is_active:
+            self.lbl_title.setStyleSheet("color: #60cdff; font-size: 13px; font-weight: bold; background: transparent;")
+            self.header.setStyleSheet("""
+                QPushButton { background-color: #333333; border: none; border-bottom: 2px solid #60cdff; }
+                QPushButton:hover { background-color: #3c3c3c; }
+            """)
+        else:
+            self.lbl_title.setStyleSheet("color: #cccccc; font-size: 13px; font-weight: bold; background: transparent;")
+            self.header.setStyleSheet("""
+                QPushButton { background-color: #333333; border: none; border-top: 1px solid #3c3c3c; border-bottom: none; }
+                QPushButton:hover { background-color: #3c3c3c; }
+                QPushButton:checked { border-bottom: 1px solid #333333; }
+            """)
+
 import calendar
 from datetime import date, timedelta
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLabel
@@ -2437,16 +2475,14 @@ class InspectorPanel(QFrame):
         self.btn_time_range.setCheckable(True)
         self.btn_time_range.setStyleSheet("""
             QPushButton {
-                background-color: #2b2b2b;
-                color: #eeeeee;
-                border: 1px solid #444;
-                border-radius: 4px;
-                padding: 8px 12px;
-                text-align: left;
-                font-size: 13px;
+                background-color: #2b2b2b; color: #eeeeee; border: 1px solid #444; border-radius: 4px; padding: 8px 12px; text-align: left; font-size: 13px;
             }
             QPushButton:hover { background-color: #383838; border-color: #60cdff; }
             QPushButton:checked { background-color: #383838; border-color: #60cdff; color: #60cdff; }
+            /* 🌟 層級三：時間維度的動態底線 */
+            QPushButton[filter_active="true"] { 
+                border-bottom: 2px solid #60cdff; color: #60cdff; 
+            }
         """)
         self.btn_time_range.clicked.connect(self.toggle_calendar)
         self.sec_filter.addWidget(self.btn_time_range)
@@ -2478,8 +2514,7 @@ class InspectorPanel(QFrame):
             self.aspect_changed = pyqtSignal()
             
         # 綁定切換事件：只要下拉選單改變，立刻發送洗牌訊號
-        self.combo_aspect.currentIndexChanged.connect(lambda: self.aspect_changed.emit())
-        
+        self.combo_aspect.currentIndexChanged.connect(self.on_aspect_changed)
         self.sec_filter.addWidget(self.combo_aspect)
         
         self.search_main_layout.addWidget(self.sec_filter)
@@ -2558,8 +2593,22 @@ class InspectorPanel(QFrame):
 
         self.sec_advanced.set_expanded(True) # 預設展開，讓使用者一眼就看到這些重要的控制項
 
-        # 底部彈簧
+        # 底部彈簧 (把上面的元件往上推)
         self.search_main_layout.addStretch(1)
+
+        # 🌟 置底清除按鈕：放在彈簧下方，保證永遠貼齊底部
+        self.btn_clear_all = QPushButton("🗑️ 清除所有過濾條件")
+        self.btn_clear_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_all.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 71, 71, 0.05); color: #ff6b6b; border: 1px solid #802020; 
+                border-radius: 4px; padding: 10px; font-weight: bold; font-size: 13px; margin: 10px 20px;
+            }
+            QPushButton:hover { background-color: rgba(255, 71, 71, 0.2); border-color: #ff6b6b; color: #ffffff; }
+        """)
+        self.btn_clear_all.clicked.connect(self.clear_all_filters)
+        self.btn_clear_all.hide() # 預設隱藏
+        self.search_main_layout.addWidget(self.btn_clear_all)
 
     def toggle_sort_order(self):
         """切換排序方向 (正序 ↑ / 倒序 ↓)"""
@@ -2725,6 +2774,8 @@ class InspectorPanel(QFrame):
         self.btn_time_range.setText("📅 全部時間 (All Time)")
         self.time_filter_cleared.emit()
 
+        self.check_filters_active()
+
     def on_calendar_apply(self, start_date, end_date):
         """點擊 [套用結果]：轉換為 Timestamp 並發送訊號"""
         date_str = f"📅 {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
@@ -2736,6 +2787,8 @@ class InspectorPanel(QFrame):
         end_ts = datetime.combine(end_date, dt_time.max).timestamp()
         
         self.time_filter_applied.emit(start_ts, end_ts)
+
+        self.check_filters_active()
 
     def on_calendar_search(self, start_date, end_date):
         """點擊 [直接搜尋]：轉換為 Timestamp 並發送訊號 (不自動收合日曆)"""
@@ -2754,6 +2807,59 @@ class InspectorPanel(QFrame):
         
         # 🌟 移除自動收合日曆的程式碼，把控制權完全交還給使用者
         # (已刪除 self.btn_time_range.setChecked(False) 與 self.calendar_widget.hide())
+
+        self.check_filters_active()
+
+    # ==========================================
+    # 🌟 神經中樞：過濾狀態檢查與清除
+    # ==========================================
+    def on_aspect_changed(self):
+        """長寬比改變時，觸發狀態檢查，並通知 MainWindow 洗牌"""
+        self.check_filters_active()
+        self.aspect_changed.emit()
+
+    def check_filters_active(self):
+        """檢查是否有任何過濾器正在運作，並更新三層 UI 的底線狀態"""
+        is_time_filtered = ("全部時間" not in self.btn_time_range.text() and "等待操作" not in self.btn_time_range.text())
+        is_aspect_filtered = (self.combo_aspect.currentText() != "不限比例")
+        
+        any_active = is_time_filtered or is_aspect_filtered
+
+        # 1. 層級三：時間維度按鈕底線
+        self.btn_time_range.setProperty("filter_active", is_time_filtered)
+        self.btn_time_range.style().unpolish(self.btn_time_range)
+        self.btn_time_range.style().polish(self.btn_time_range)
+
+        # 2. 層級二：檢索過濾區塊底線
+        self.sec_filter.set_status_active(any_active)
+
+        # 3. 層級一：搜尋分頁標籤底線
+        self.tabs.setProperty("filter_active", any_active)
+        self.tabs.style().unpolish(self.tabs)
+        self.tabs.style().polish(self.tabs)
+        self.tabs.tabBar().style().unpolish(self.tabs.tabBar())
+        self.tabs.tabBar().style().polish(self.tabs.tabBar())
+
+        # 4. 底部：顯示/隱藏清除按鈕
+        self.btn_clear_all.setVisible(any_active)
+
+    def clear_all_filters(self):
+        """一鍵清除所有過濾狀態"""
+        # 1. 靜默重置長寬比 (不觸發訊號)
+        self.combo_aspect.blockSignals(True)
+        self.combo_aspect.setCurrentText("不限比例")
+        self.combo_aspect.blockSignals(False)
+        
+        # 2. 重置日曆
+        self.btn_time_range.setText("📅 全部時間 (All Time)")
+        self.calendar_widget.clear_selection()
+        
+        # 3. 發送訊號給 MainWindow 執行還原
+        self.time_filter_cleared.emit()
+        
+        # 4. 自我更新 UI 底線狀態
+        self.check_filters_active()
+
 class MainWindow(QMainWindow):
     # 定義訊號
     random_data_ready = pyqtSignal(list)
