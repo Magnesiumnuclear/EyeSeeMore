@@ -93,8 +93,40 @@ class IndexerService:
         conn = self._get_conn()
         cursor = conn.cursor()
         
-        # 1. 建立主檔案表
-        cursor.execute('''CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT UNIQUE, filename TEXT, folder_path TEXT, mtime REAL, ocr_text TEXT, ocr_data TEXT)''')
+        # 1. 建立主檔案表 (🌟 新增 width, height, file_size 欄位，移除 ocr_text, ocr_data)
+        cursor.execute('''CREATE TABLE IF NOT EXISTS files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            file_path TEXT UNIQUE, 
+            filename TEXT, 
+            folder_path TEXT, 
+            mtime REAL,
+            width INTEGER,
+            height INTEGER,
+            file_size INTEGER
+        )''')
+        
+        # ==========================================
+        # 🌟 自動資料庫遷移 (Migration)
+        # ==========================================
+        cursor.execute("PRAGMA table_info(files)")
+        columns = [info[1] for info in cursor.fetchall()]
+
+        # A. 補齊缺失的寬高與大小欄位 (針對舊資料庫)
+        if 'width' not in columns:
+            perf_print("[Indexer] 升級資料庫：新增尺寸與大小欄位...")
+            cursor.execute("ALTER TABLE files ADD COLUMN width INTEGER")
+            cursor.execute("ALTER TABLE files ADD COLUMN height INTEGER")
+            cursor.execute("ALTER TABLE files ADD COLUMN file_size INTEGER")
+
+        # B. 砍掉殘留的 OCR 欄位 (瘦身)
+        if 'ocr_text' in columns:
+            try:
+                perf_print("[Indexer] 升級資料庫：清除殘留的舊版 OCR 欄位...")
+                cursor.execute("ALTER TABLE files DROP COLUMN ocr_text")
+                cursor.execute("ALTER TABLE files DROP COLUMN ocr_data")
+            except Exception as e:
+                perf_print(f"[Indexer] 欄位清理略過 (SQLite 版本可能過舊不支援 DROP COLUMN): {e}")
+        # ==========================================
         
         # 2. 建立 CLIP 向量表
         cursor.execute('''CREATE TABLE IF NOT EXISTS embeddings (file_id INTEGER, model_name TEXT, embedding BLOB, PRIMARY KEY (file_id, model_name), FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE)''')
@@ -102,7 +134,7 @@ class IndexerService:
         # 3. 建立統計表
         cursor.execute('''CREATE TABLE IF NOT EXISTS model_stats (model_name TEXT, folder_path TEXT, image_count INTEGER, last_scanned TEXT, PRIMARY KEY (model_name, folder_path))''')
         
-        # 4. [關鍵修復] 建立多語系 OCR 子表
+        # 4. 建立多語系 OCR 子表
         cursor.execute('''CREATE TABLE IF NOT EXISTS ocr_results (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER, lang TEXT, ocr_text TEXT, ocr_data TEXT, confidence REAL, FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE)''')
         
         conn.commit()
@@ -195,6 +227,28 @@ class IndexerService:
                 
         # [Debug 日誌 4] 最終分類結果
         print(f"[Debug] 掃描分類結果 -> 全新圖(Full): {len(files_full)}, 缺向量(Emb): {len(files_emb_only)}, 缺OCR(Ocr): {len(files_ocr_only)}\n")
+
+        # ==========================================
+        # 🌟 軌道 D (已搬家): 在這裡確保每次掃描都會補齊缺失的尺寸資訊！
+        # ==========================================
+        cursor.execute("SELECT id, file_path FROM files WHERE width IS NULL OR file_size IS NULL")
+        missing_meta_rows = cursor.fetchall()
+        if missing_meta_rows:
+            perf_print(f"[Indexer] 發現 {len(missing_meta_rows)} 張圖片缺少尺寸資訊，開始光速補齊...")
+            meta_updates = []
+            for row_id, path in missing_meta_rows:
+                try:
+                    file_size = os.path.getsize(path)
+                    with Image.open(path) as img:
+                        w, h = img.size
+                    meta_updates.append((w, h, file_size, row_id))
+                except Exception: pass
+            
+            if meta_updates:
+                cursor.executemany("UPDATE files SET width=?, height=?, file_size=? WHERE id=?", meta_updates)
+                conn.commit()
+            perf_print(f"[Indexer] 已成功補齊 {len(meta_updates)} 張圖片的尺寸與大小資訊！")
+        # ==========================================
         
         self.update_folder_stats(conn)
         conn.close()
@@ -261,24 +315,34 @@ class IndexerService:
         for i in range(0, len(files_full), BATCH_SIZE):
             batch_paths = files_full[i : i + BATCH_SIZE]
             batch_images = []
+            batch_meta = [] # 新增：用來裝 metadata
             if progress_callback: progress_callback(current_progress, total_files, f"Full AI: {current_progress}/{total_files}...")
 
             for path in batch_paths:
                 try:
-                    img = Image.open(path).convert('RGB')
-                    batch_images.append(np.expand_dims(preprocess(img), axis=0))
+                    file_size = os.path.getsize(path)
+                    with Image.open(path) as pil_img:
+                        w, h = pil_img.size
+                        img_rgb = pil_img.convert('RGB')
+                        
+                    batch_images.append(np.expand_dims(preprocess(img_rgb), axis=0))
+                    # 將基本屬性一起打包
+                    batch_meta.append((path, os.path.basename(path), os.path.dirname(path), os.path.getmtime(path), w, h, file_size))
                 except Exception: continue
 
             if batch_images:
                 try:
-                    # 1. 寫入 files (移除舊有的 ocr_text, ocr_data)
-                    cursor.executemany('INSERT OR IGNORE INTO files (file_path, filename, folder_path, mtime) VALUES (?, ?, ?, ?)', 
-                                       [(p, os.path.basename(p), os.path.dirname(p), os.path.getmtime(p)) for p in batch_paths])
+                    # 寫入 files：包含 width, height, file_size
+                    cursor.executemany(
+                        'INSERT OR IGNORE INTO files (file_path, filename, folder_path, mtime, width, height, file_size) VALUES (?, ?, ?, ?, ?, ?, ?)', 
+                        batch_meta
+                    )
                     conn.commit()
                 except sqlite3.Error as e: print(f"DB Error: {e}")
 
                 paths_tuple = tuple(batch_paths)
                 placeholders = ','.join(['?'] * len(paths_tuple))
+                # ... 後面寫入 CLIP 與 OCR 的程式碼維持不變 ...
                 cursor.execute(f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders})", paths_tuple)
                 id_map = {row[0]: row[1] for row in cursor.fetchall()}
                 

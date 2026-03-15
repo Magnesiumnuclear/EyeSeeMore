@@ -78,7 +78,7 @@ EyeSeeMore
 # TODO: 加上Satisfactory主題的UI樣式
 # TODO: 加上BlueArchive主題的UI樣式
 # TODO: 刪除 Unicode 符號
-# TODO: BUG 相關度權重控制無法一開始就顯示
+
 
 import sys
 import ctypes
