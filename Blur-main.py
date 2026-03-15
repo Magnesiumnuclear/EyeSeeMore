@@ -80,6 +80,7 @@ EyeSeeMore
 # TODO: 刪除 Unicode 符號
 # TODO: BUG 用 Search Similar 要把Gallery 排序方式改成OCR優先，這樣才不會有搜尋相似圖片時OCR分數高的圖片被排在後面了
 # TODO: BUG 由手機相機拍的圖片視覺規格都是width > height 的導致橫圖直圖 塞選沒用
+# TODO: BUG [重大BUG] 跑完Rescan all folders 後再搜尋高機率崩潰
 
 
 import sys
