@@ -74,7 +74,7 @@ EyeSeeMore
 # TODO: 控制欄的UIUX優化
 # TODO: OCR 紅框互動能直接在預覽端修改OCR辨識的結果
 # TODO: BUG 預覽時用WASD移動會丟失OCR黃色高亮功能
-# TODO: 資料夾加入會自動有OCR辨識改成加入後不自動辨識，改成在資料夾右鍵選單裡加入「OCR 辨識」的選項，點了才會去辨識，這樣就不會有大量資料夾加入時的OCR辨識塞車問題了
+# TODO: 資料夾加入會自動有OCR辨識改成加入後不自動辨識，改成在資料夾右鍵選單裡加入「OCR 辨識」的選項，點了才會去辨識
 # TODO: 加上Satisfactory主題的UI樣式
 # TODO: 加上BlueArchive主題的UI樣式
 # TODO: 刪除 Unicode 符號
@@ -1079,10 +1079,7 @@ class FloatingWidget(QWidget):
             QSlider::handle:horizontal { background: #60cdff; width: 14px; margin: -5px 0; border-radius: 7px; }
             QComboBox { background-color: #2b2b2b; border: 1px solid #444; color: white; padding: 6px; border-radius: 4px; }
             
-            /* 🌟 層級一：搜尋分頁的專屬動態底線 */
-            QTabWidget[filter_active="true"] QTabBar::tab:first {
-                color: #60cdff; border-bottom: 3px solid #60cdff;
-            }
+            
             /* 🌟 層級三：標題文字的動態底線 */
             QLabel[filter_active="true"] {
                 color: #60cdff; border-bottom: 2px solid #60cdff; padding-bottom: 4px;
@@ -2801,13 +2798,18 @@ class InspectorPanel(QFrame):
         self.aspect_changed.emit()
 
     def check_filters_active(self):
-        """檢查是否有任何過濾器正在運作，並更新三層 UI 的底線狀態"""
+        """檢查是否有任何過濾器正在運作，並更新 UI 狀態 (包含分頁計數徽章)"""
         is_time_filtered = ("全部時間" not in self.btn_time_range.text() and "等待操作" not in self.btn_time_range.text())
         is_aspect_filtered = (self.combo_aspect.currentText() != "不限比例")
         
-        any_active = is_time_filtered or is_aspect_filtered
+        # 🌟 計算啟用的過濾條件數量
+        active_count = 0
+        if is_time_filtered: active_count += 1
+        if is_aspect_filtered: active_count += 1
+        
+        any_active = (active_count > 0)
 
-        # 🌟 1. 層級三：直接強制切換 StyleSheet (最穩定，保證 Qt 會立刻重繪 QLabel)
+        # 1. 層級三：強制切換 StyleSheet (維持上一版的穩定解法)
         active_lbl_style = "color: #60cdff; border-bottom: 2px solid #60cdff; font-size: 13px; font-weight: bold; padding-bottom: 4px;"
         normal_lbl_style = "color: #cccccc; font-size: 13px; border: none; font-weight: normal; padding-bottom: 0px;"
 
@@ -2817,12 +2819,12 @@ class InspectorPanel(QFrame):
         # 2. 層級二：檢索過濾區塊底線
         self.sec_filter.set_status_active(any_active)
 
-        # 3. 層級一：搜尋分頁標籤底線 (保險起見，明確傳入字串 "true" / "false")
-        self.tabs.setProperty("filter_active", "true" if any_active else "false")
-        self.tabs.style().unpolish(self.tabs)
-        self.tabs.style().polish(self.tabs)
-        self.tabs.tabBar().style().unpolish(self.tabs.tabBar())
-        self.tabs.tabBar().style().polish(self.tabs.tabBar())
+        # 🌟 3. 層級一：分頁標籤數字計數徽章 (Badge Count)
+        # 取代原本容易衝突的底線做法，直接動態修改分頁文字
+        if active_count > 0:
+            self.tabs.setTabText(0, f"🔎 搜尋 ({active_count})")
+        else:
+            self.tabs.setTabText(0, "🔎 搜尋")
 
         # 4. 底部：顯示/隱藏置底的清除按鈕
         self.btn_clear_all.setVisible(any_active)
