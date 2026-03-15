@@ -260,13 +260,15 @@ QRadioButton:hover {
 
 class ImageItem:
     """單張圖片的資料結構，統一管理所有屬性"""
-    def __init__(self, path, filename, score, ocr_text="", ocr_data=None, mtime=0):
+    def __init__(self, path, filename, score, ocr_text="", ocr_data=None, mtime=0, width=0, height=0):
         self.path = path
         self.filename = filename
         self.score = score
         self.ocr_text = ocr_text
         self.ocr_data = ocr_data if ocr_data else []
         self.mtime = mtime
+        self.width = width
+        self.height = height
         self.is_ocr_match = False 
 
 class WorkerSignals(QObject):
@@ -341,7 +343,9 @@ class SearchResultsModel(QAbstractListModel):
                 score=res['score'],
                 ocr_text=res.get('ocr_text', ""),
                 ocr_data=res.get('ocr_data', []),
-                mtime=res.get('mtime', 0)
+                mtime=res.get('mtime', 0),
+                width=res.get('width', 0),  # 🌟 新增
+                height=res.get('height', 0) # 🌟 新增
             )
             if res.get('is_ocr_match', False):
                 item.is_ocr_match = True
@@ -656,17 +660,12 @@ class ImageSearchEngine:
         results = []
         for item in sorted_data:
             results.append({
-                "score": 0.0, # 初始顯示沒有相似度分數
-                "clip_score": 0.0,
-                "ocr_bonus": 0.0,
-                "name_bonus": 0.0,
-                "is_ocr_match": False,
-                "path": item["path"],
-                "filename": item["filename"],
-                "ocr_data": item.get("ocr_data", []),
-                "mtime": item.get("mtime", 0)
+                "score": 0.0, "clip_score": 0.0, "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
+                "path": item["path"], "filename": item["filename"],
+                "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0),
+                "width": item.get("width", 0),   # 🌟 補上
+                "height": item.get("height", 0)  # 🌟 補上
             })
-            
         return results
 
     def load_data_from_db(self):
@@ -680,7 +679,7 @@ class ImageSearchEngine:
             # [升級 1] SQL 動態 JSON 封裝：將 lang 標籤與資料綁定
             # ==========================================
             cursor.execute("""
-                SELECT f.file_path, e.embedding, f.mtime, 
+                SELECT f.file_path, e.embedding, f.mtime, f.width, f.height, 
                        GROUP_CONCAT(o.ocr_text, ' '), 
                        '[' || GROUP_CONCAT('{"lang":"' || o.lang || '", "data":' || o.ocr_data || '}', ',') || ']' 
                 FROM files f
@@ -694,7 +693,7 @@ class ImageSearchEngine:
             self.data_store = [] 
             embeddings_list = []
             
-            for path, blob, mtime, combined_text, combined_data_json in rows:
+            for path, blob, mtime, width, height, combined_text, combined_data_json in rows:
                 if not os.path.exists(path): continue 
                 
                 emb_array = np.frombuffer(blob, dtype=np.float32)
@@ -722,7 +721,9 @@ class ImageSearchEngine:
                     "filename": os.path.basename(path),
                     "ocr_text": text_content.lower(),
                     "ocr_data": ocr_boxes,
-                    "mtime": mtime
+                    "mtime": mtime,
+                    "width": width if width else 0,   # 🌟 確保有預設值 0
+                    "height": height if height else 0 # 🌟 確保有預設值 0
                 })
             
             if self.data_store and embeddings_list:
@@ -811,7 +812,9 @@ class ImageSearchEngine:
                 results.append({
                     "score": final_score, "clip_score": clip_score, "ocr_bonus": ocr_bonus, "name_bonus": name_bonus,
                     "is_ocr_match": (ocr_bonus > 0), "path": item["path"], "filename": item["filename"],
-                    "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0)
+                    "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0),
+                    "width": item.get("width", 0),  # 🌟 打包寬度
+                    "height": item.get("height", 0) # 🌟 打包高度
                 })
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
@@ -822,20 +825,16 @@ class ImageSearchEngine:
             
         try:
             image = Image.open(image_path).convert('RGB')
-            # 轉 Numpy
             processed_image = np.expand_dims(self.preprocess(image), axis=0)
             
-            # ONNX 提取影像特徵
             input_name = self.clip_image_session.get_inputs()[0].name
             image_features = self.clip_image_session.run(None, {input_name: processed_image})[0]
             image_features = image_features / np.linalg.norm(image_features, axis=-1, keepdims=True)
             
-            # Numpy 矩陣相乘
             similarity = np.dot(image_features, self.stored_embeddings.T).squeeze(0)
             
-            # 找出 Top K
             k = min(top_k, len(self.data_store))
-            indices = np.argsort(similarity)[::-1][:k] # Numpy 排序遞減
+            indices = np.argsort(similarity)[::-1][:k] 
             values = similarity[indices]
             
             results = []
@@ -843,7 +842,11 @@ class ImageSearchEngine:
                 idx = indices[i]; item = self.data_store[idx]; score = values[i]
                 results.append({
                     "score": float(score), "clip_score": float(score), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
-                    "path": item["path"], "filename": item["filename"], "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0)
+                    "path": item["path"], "filename": item["filename"], 
+                    "ocr_data": item.get("ocr_data", []), 
+                    "mtime": item.get("mtime", 0),
+                    "width": item.get("width", 0),   # 🌟 補上這行
+                    "height": item.get("height", 0)  # 🌟 補上這行
                 })
             return results
         except Exception as e:
@@ -2359,6 +2362,8 @@ from PyQt6.QtWidgets import QSlider  # 確保頂部或這裡有引入 QSlider
 class InspectorPanel(QFrame):
     """右側屬性與檢索控制台 (三層分頁架構)"""
 
+    aspect_changed = pyqtSignal()
+
     sort_changed = pyqtSignal()
 
     time_filter_applied = pyqtSignal(float, float) 
@@ -2456,6 +2461,26 @@ class InspectorPanel(QFrame):
         self.calendar_widget.selection_started.connect(self.on_calendar_picking)
 
         self.sec_filter.addWidget(self.calendar_widget)
+
+        # ==========================================
+        # 🌟 視覺規格過濾器 (長寬比)
+        # ==========================================
+        self.sec_filter.addWidget(QLabel("視覺規格 (Visual Specs):"))
+        self.combo_aspect = QComboBox()
+        self.combo_aspect.addItems(["不限比例", "橫圖 (Landscape)", "直圖 (Portrait)", "正方形 (Square)"])
+        self.combo_aspect.setStyleSheet("""
+            QComboBox { background-color: #2b2b2b; border: 1px solid #444; color: white; padding: 6px; border-radius: 4px; }
+            QComboBox:hover { background-color: #383838; border-color: #60cdff; }
+        """)
+        
+        # 宣告一個新訊號
+        if not hasattr(self, 'aspect_changed'):
+            self.aspect_changed = pyqtSignal()
+            
+        # 綁定切換事件：只要下拉選單改變，立刻發送洗牌訊號
+        self.combo_aspect.currentIndexChanged.connect(lambda: self.aspect_changed.emit())
+        
+        self.sec_filter.addWidget(self.combo_aspect)
         
         self.search_main_layout.addWidget(self.sec_filter)
 
@@ -2531,7 +2556,7 @@ class InspectorPanel(QFrame):
         
         self.search_main_layout.addWidget(self.sec_advanced)
 
-        self.sec_advanced.set_expanded(False)
+        self.sec_advanced.set_expanded(True) # 預設展開，讓使用者一眼就看到這些重要的控制項
 
         # 底部彈簧
         self.search_main_layout.addStretch(1)
@@ -3043,6 +3068,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel.time_filter_applied.connect(self.apply_time_filter_to_gallery)
         self.inspector_panel.time_search_requested.connect(self.search_by_time_range)
         self.inspector_panel.time_filter_cleared.connect(self.clear_time_filter)
+        self.inspector_panel.aspect_changed.connect(self.apply_current_filters_and_show)
 
         # 將畫廊與右側面板加入 Splitter
         self.main_splitter.addWidget(self.list_view)
@@ -3166,7 +3192,9 @@ class MainWindow(QMainWindow):
                     "path": item["path"],
                     "filename": item["filename"],
                     "ocr_data": item.get("ocr_data", []),
-                    "mtime": item.get("mtime", 0)
+                    "mtime": item.get("mtime", 0),
+                    "width": item.get("width", 0),   # 🌟 補上
+                    "height": item.get("height", 0)  # 🌟 補上
                 })
             
             # 按時間排序
@@ -3364,18 +3392,37 @@ class MainWindow(QMainWindow):
         """套用時間等過濾器到 self.last_search_results，然後丟給 Model 顯示"""
         filtered = self.last_search_results
         
-        # 1. 時間區間過濾 (極速記憶體內過濾)
+        # 1. 時間區間過濾
         if self.active_time_range:
             start_ts, end_ts = self.active_time_range
             filtered = [item for item in filtered if start_ts <= item["mtime"] <= end_ts]
             
+        # ==========================================
+        # 🌟 2. 長寬比過濾 (容差 5%)
+        # ==========================================
+        aspect_mode = self.inspector_panel.combo_aspect.currentText()
+        if aspect_mode != "不限比例":
+            temp_filtered = []
+            for item in filtered:
+                w, h = item.get("width", 0), item.get("height", 0)
+                if w > 0 and h > 0:
+                    ratio = w / h
+                    if aspect_mode == "橫圖 (Landscape)" and ratio > 1.05:
+                        temp_filtered.append(item)
+                    elif aspect_mode == "直圖 (Portrait)" and ratio < 0.95:
+                        temp_filtered.append(item)
+                    elif aspect_mode == "正方形 (Square)" and 0.95 <= ratio <= 1.05:
+                        temp_filtered.append(item)
+            filtered = temp_filtered
+        # ==========================================
+
         if test_mode:
-            return len(filtered) # 測試模式只回傳數量，不更新畫面
+            return len(filtered) 
             
-        # 2. 丟給畫面更新
+        # 3. 丟給畫面更新
         self.model.set_search_results(filtered)
         
-        # 3. 順便套用目前的排序設定 (例如按大小、日期等)
+        # 4. 順便套用目前的排序設定
         self.apply_gallery_sort() 
         return len(filtered)
 
