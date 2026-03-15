@@ -2138,6 +2138,11 @@ class CollapsibleSection(QWidget):
         # 程式碼變乾淨了，直接改獨立箭頭的字就好！
         self.lbl_arrow.setText("▼" if is_expanded else "▶")
 
+    def set_expanded(self, expanded: bool):
+        self.header.setChecked(expanded)
+        self.content.setVisible(expanded)
+        self.lbl_arrow.setText("▼" if expanded else "▶")
+
     def addWidget(self, widget):
         self.content_layout.addWidget(widget)
 
@@ -2507,8 +2512,7 @@ class InspectorPanel(QFrame):
         # --- 區塊 3: 🧪 進階功能 (ADVANCED) ---
         # 這裡放置會改變「分數計算邏輯」的功能
         self.sec_advanced = CollapsibleSection("相關度權重控制")
-        self.sec_advanced.header.setChecked(False) # 預設收合
-        self.sec_advanced.content.hide()
+        
         
         self.sec_advanced.addWidget(QLabel("視覺權重 (CLIP Weight):"))
         self.slider_clip_weight = QSlider(Qt.Orientation.Horizontal)
@@ -2526,6 +2530,8 @@ class InspectorPanel(QFrame):
         self.sec_advanced.addWidget(self.slider_name_weight)
         
         self.search_main_layout.addWidget(self.sec_advanced)
+
+        self.sec_advanced.set_expanded(False)
 
         # 底部彈簧
         self.search_main_layout.addStretch(1)
