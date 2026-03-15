@@ -79,6 +79,7 @@ EyeSeeMore
 # TODO: 加上BlueArchive主題的UI樣式
 # TODO: 刪除 Unicode 符號
 # TODO: BUG 用 Search Similar 要把Gallery 排序方式改成OCR優先，這樣才不會有搜尋相似圖片時OCR分數高的圖片被排在後面了
+# TODO: BUG 由手機相機拍的圖片視覺規格都是width > height 的導致橫圖直圖 塞選沒用
 
 
 import sys
@@ -2533,7 +2534,7 @@ class InspectorPanel(QFrame):
         sort_layout.setContentsMargins(0, 0, 0, 0)
         sort_layout.setSpacing(8)
         self.combo_sort = QComboBox()
-        self.combo_sort.addItems(["OCR 優先", "日期", "名稱", "類型", "大小"])
+        self.combo_sort.addItems(["搜尋", "日期", "名稱", "類型", "大小"])
         self.combo_sort.currentIndexChanged.connect(lambda: self.sort_changed.emit())
         sort_layout.addWidget(self.combo_sort, stretch=1)
 
