@@ -78,6 +78,7 @@ EyeSeeMore
 # TODO: 加上Satisfactory主題的UI樣式
 # TODO: 加上BlueArchive主題的UI樣式
 # TODO: 刪除 Unicode 符號
+# TODO: BUG 用 Search Similar 要把Gallery 排序方式改成OCR優先，這樣才不會有搜尋相似圖片時OCR分數高的圖片被排在後面了
 
 
 import sys
@@ -2806,20 +2807,18 @@ class InspectorPanel(QFrame):
         
         any_active = is_time_filtered or is_aspect_filtered
 
-        # 🌟 1. 層級三：將底線改為顯示在標題文字 (QLabel) 上，避免干擾按鈕
-        self.lbl_time_title.setProperty("filter_active", is_time_filtered)
-        self.lbl_time_title.style().unpolish(self.lbl_time_title)
-        self.lbl_time_title.style().polish(self.lbl_time_title)
+        # 🌟 1. 層級三：直接強制切換 StyleSheet (最穩定，保證 Qt 會立刻重繪 QLabel)
+        active_lbl_style = "color: #60cdff; border-bottom: 2px solid #60cdff; font-size: 13px; font-weight: bold; padding-bottom: 4px;"
+        normal_lbl_style = "color: #cccccc; font-size: 13px; border: none; font-weight: normal; padding-bottom: 0px;"
 
-        self.lbl_aspect_title.setProperty("filter_active", is_aspect_filtered)
-        self.lbl_aspect_title.style().unpolish(self.lbl_aspect_title)
-        self.lbl_aspect_title.style().polish(self.lbl_aspect_title)
+        self.lbl_time_title.setStyleSheet(active_lbl_style if is_time_filtered else normal_lbl_style)
+        self.lbl_aspect_title.setStyleSheet(active_lbl_style if is_aspect_filtered else normal_lbl_style)
 
         # 2. 層級二：檢索過濾區塊底線
         self.sec_filter.set_status_active(any_active)
 
-        # 3. 層級一：搜尋分頁標籤底線
-        self.tabs.setProperty("filter_active", any_active)
+        # 3. 層級一：搜尋分頁標籤底線 (保險起見，明確傳入字串 "true" / "false")
+        self.tabs.setProperty("filter_active", "true" if any_active else "false")
         self.tabs.style().unpolish(self.tabs)
         self.tabs.style().polish(self.tabs)
         self.tabs.tabBar().style().unpolish(self.tabs.tabBar())
