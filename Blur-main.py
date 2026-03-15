@@ -2534,7 +2534,7 @@ class InspectorPanel(QFrame):
         sort_layout.setContentsMargins(0, 0, 0, 0)
         sort_layout.setSpacing(8)
         self.combo_sort = QComboBox()
-        self.combo_sort.addItems(["搜尋", "日期", "名稱", "類型", "大小"])
+        self.combo_sort.addItems(["搜尋相關度", "日期", "名稱", "類型", "大小"])
         self.combo_sort.currentIndexChanged.connect(lambda: self.sort_changed.emit())
         sort_layout.addWidget(self.combo_sort, stretch=1)
 
@@ -2771,7 +2771,7 @@ class InspectorPanel(QFrame):
         self.check_filters_active()
 
     def on_calendar_search(self, start_date, end_date):
-        """點擊 [直接搜尋]：轉換為 Timestamp 並發送訊號 (不自動收合日曆)"""
+        """點擊 [直接搜尋]：轉換為 Timestamp 並發送訊號 (狀態交由 MainWindow 判定)"""
         date_str = f"📅 {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
         self.btn_time_range.setText(date_str)
         
@@ -2779,15 +2779,9 @@ class InspectorPanel(QFrame):
         start_ts = datetime.combine(start_date, dt_time.min).timestamp()
         end_ts = datetime.combine(end_date, dt_time.max).timestamp()
         
-        # 發送訊號讓 MainWindow 去要資料
+        # 發送訊號讓 MainWindow 去要資料並驗證
         self.time_search_requested.emit(start_ts, end_ts)
         
-        # 🌟 更改狀態文字：因為過濾是瞬間完成的，直接顯示完成狀態
-        self.calendar_widget.set_status("✅ 搜尋完成，已列出此時間段的所有圖片。", "success")
-        
-        # 🌟 移除自動收合日曆的程式碼，把控制權完全交還給使用者
-        # (已刪除 self.btn_time_range.setChecked(False) 與 self.calendar_widget.hide())
-
         self.check_filters_active()
 
     # ==========================================
@@ -3446,7 +3440,7 @@ class MainWindow(QMainWindow):
         import os
 
         # 2. 根據不同的條件，定義 Python list sort 的 key 函數
-        if sort_by == "OCR 優先":
+        if sort_by == "搜尋相關度":
             # 🌟 複合鍵排序：第一優先比 is_ocr_match (True=1, False=0)，第二優先比 AI 分數
             key_func = lambda item: (item.is_ocr_match, item.score)
         elif sort_by == "日期":
@@ -3545,24 +3539,39 @@ class MainWindow(QMainWindow):
         self.status.setText(f"Time filter cleared. Showing {len(self.model.items)} images")
 
     def search_by_time_range(self, start_ts, end_ts):
-        """點擊 [直接搜尋]：忽略關鍵字，直接全域抓出該時段的圖"""
+        """點擊 [直接搜尋]：忽略關鍵字，直接全域抓出該時段的圖，並加入防呆檢查"""
         if not self.engine: return
         
-        # 1. 清空文字搜尋框
-        self.input.setText("")
-        
-        # 2. 記錄啟用的時間區間
-        self.active_time_range = (start_ts, end_ts)
+        # 1. 先暫存目前的畫廊狀態 (為了防呆退回)
+        old_results = self.last_search_results
+        old_range = self.active_time_range
 
-        # 3. 直接從 engine 裡面拿「全部」的資料，偽裝成搜尋結果丟進去
-        all_imgs = self.engine.get_all_images_sorted()
-        self.set_base_results(all_imgs)
+        # 2. 模擬全域搜尋狀態
+        self.last_search_results = self.engine.get_all_images_sorted()
+        self.active_time_range = (start_ts, end_ts)
         
-        # 4. 強制切換右側排序選單為「日期」，倒序 (↓)
-        self.inspector_panel.combo_sort.setCurrentText("日期")
-        self.inspector_panel.btn_sort_order.setText("↓")
+        # 3. 進入 Test Mode 測試這刀切下去剩幾張圖 (會連同長寬比等設定一起算)
+        count = self.apply_current_filters_and_show(test_mode=True)
         
-        self.status.setText(f"Direct Time Search: {len(self.model.items)} items")
+        if count > 0:
+            # 成功！正式更新畫面
+            self.input.setText("") # 清空關鍵字搜尋框
+            self.apply_current_filters_and_show(test_mode=False)
+            
+            # 強制切換右側排序選單為「日期」，倒序 (↓) (阻擋訊號以避免重複洗牌)
+            self.inspector_panel.combo_sort.blockSignals(True)
+            self.inspector_panel.combo_sort.setCurrentText("日期")
+            self.inspector_panel.btn_sort_order.setText("↓")
+            self.inspector_panel.combo_sort.blockSignals(False)
+            self.apply_gallery_sort() # 正式套用排序
+            
+            self.inspector_panel.calendar_widget.set_status(f"✅ 搜尋完成，已列出 {count} 張圖片。", "success")
+            self.status.setText(f"Direct Time Search: {count} items")
+        else:
+            # 防呆啟動：資料庫中找不到圖，退回上一個狀態並報錯，不變動畫廊
+            self.last_search_results = old_results
+            self.active_time_range = old_range
+            self.inspector_panel.calendar_widget.set_status(f"⚠️ 資料庫中，此時間段內沒有符合的圖片。", "error")
 
     def on_ai_loaded(self):
         """當 AI 模型載入完成後被呼叫 (會在主執行緒執行)"""
@@ -3886,7 +3895,7 @@ class MainWindow(QMainWindow):
         k = 100000 if limit == "All" else int(limit)
 
         self.inspector_panel.combo_sort.blockSignals(True)
-        self.inspector_panel.combo_sort.setCurrentText("OCR 優先")
+        self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
         self.inspector_panel.btn_sort_order.setText("↓")
         self.inspector_panel.combo_sort.blockSignals(False)
         
