@@ -1080,8 +1080,11 @@ class FloatingWidget(QWidget):
             
             /* 🌟 層級一：搜尋分頁的專屬動態底線 */
             QTabWidget[filter_active="true"] QTabBar::tab:first {
-                color: #60cdff;
-                border-bottom: 3px solid #60cdff;
+                color: #60cdff; border-bottom: 3px solid #60cdff;
+            }
+            /* 🌟 層級三：標題文字的動態底線 */
+            QLabel[filter_active="true"] {
+                color: #60cdff; border-bottom: 2px solid #60cdff; padding-bottom: 4px;
             }
         """)
 
@@ -2458,8 +2461,20 @@ class InspectorPanel(QFrame):
         self.hide() # 預設隱藏，等待按鈕觸發
 
     def _setup_search_tab(self):
-        # 主 Layout 設為緊湊型，符合 VSCode 邊界感
-        self.search_main_layout = QVBoxLayout(self.tab_search)
+        # 1. Tab 的主佈局 (包含 滾動區 + 置底按鈕)
+        tab_layout = QVBoxLayout(self.tab_search)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
+
+        # 2. 建立滾動區
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        
+        # 3. 建立滾動區內部的容器
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        self.search_main_layout = QVBoxLayout(container)
         self.search_main_layout.setContentsMargins(0, 0, 0, 0)
         self.search_main_layout.setSpacing(0)
         self.search_main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -2467,113 +2482,78 @@ class InspectorPanel(QFrame):
         # --- 區塊 1: 🔍 檢索過濾 (FILTER) ---
         self.sec_filter = CollapsibleSection("檢索過濾")
         
-        self.sec_filter.addWidget(QLabel("時間維度 (Time Range):"))
+        # 🌟 將標題存為變數，以利後續操作底線
+        self.lbl_time_title = QLabel("時間維度 (Time Range):")
+        self.sec_filter.addWidget(self.lbl_time_title)
         
-        # 1. 將下拉選單改為「觸發按鈕」
         self.btn_time_range = QPushButton("📅 全部時間 (All Time)")
         self.btn_time_range.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_time_range.setCheckable(True)
+        # 🌟 移除按鈕上的 filter_active 樣式
         self.btn_time_range.setStyleSheet("""
             QPushButton {
                 background-color: #2b2b2b; color: #eeeeee; border: 1px solid #444; border-radius: 4px; padding: 8px 12px; text-align: left; font-size: 13px;
             }
             QPushButton:hover { background-color: #383838; border-color: #60cdff; }
             QPushButton:checked { background-color: #383838; border-color: #60cdff; color: #60cdff; }
-            /* 🌟 層級三：時間維度的動態底線 */
-            QPushButton[filter_active="true"] { 
-                border-bottom: 2px solid #60cdff; color: #60cdff; 
-            }
         """)
         self.btn_time_range.clicked.connect(self.toggle_calendar)
         self.sec_filter.addWidget(self.btn_time_range)
 
-        # 2. 嵌入自訂日曆 (預設隱藏)
         self.calendar_widget = RangeCalendarWidget()
         self.calendar_widget.hide()
-
         self.calendar_widget.apply_requested.connect(self.on_calendar_apply)
         self.calendar_widget.search_requested.connect(self.on_calendar_search)
         self.calendar_widget.cleared.connect(self.on_calendar_cleared)
         self.calendar_widget.selection_started.connect(self.on_calendar_picking)
-
         self.sec_filter.addWidget(self.calendar_widget)
 
-        # ==========================================
-        # 🌟 視覺規格過濾器 (長寬比)
-        # ==========================================
-        self.sec_filter.addWidget(QLabel("視覺規格 (Visual Specs):"))
+        # 🌟 將視覺規格的標題也存為變數
+        self.lbl_aspect_title = QLabel("視覺規格 (Visual Specs):")
+        self.sec_filter.addWidget(self.lbl_aspect_title)
+        
         self.combo_aspect = QComboBox()
         self.combo_aspect.addItems(["不限比例", "橫圖 (Landscape)", "直圖 (Portrait)", "正方形 (Square)"])
         self.combo_aspect.setStyleSheet("""
             QComboBox { background-color: #2b2b2b; border: 1px solid #444; color: white; padding: 6px; border-radius: 4px; }
             QComboBox:hover { background-color: #383838; border-color: #60cdff; }
         """)
-        
-        # 宣告一個新訊號
-        if not hasattr(self, 'aspect_changed'):
-            self.aspect_changed = pyqtSignal()
-            
-        # 綁定切換事件：只要下拉選單改變，立刻發送洗牌訊號
+        if not hasattr(self, 'aspect_changed'): self.aspect_changed = pyqtSignal()
         self.combo_aspect.currentIndexChanged.connect(self.on_aspect_changed)
         self.sec_filter.addWidget(self.combo_aspect)
-        
         self.search_main_layout.addWidget(self.sec_filter)
 
         # --- 區塊 2: ⚙️ 顯示設定 (DISPLAY) ---
         self.sec_display = CollapsibleSection("顯示設定")
-        
         self.sec_display.addWidget(QLabel("顯示數量限制 (Limit):"))
         self.combo_limit_panel = QComboBox()
         self.combo_limit_panel.addItems(["20", "50", "100", "All"])
         self.sec_display.addWidget(self.combo_limit_panel)
 
         self.sec_display.addWidget(QLabel("Gallery 排序方式 (Sort By):"))
-        
-        # 建立一個水平佈局來放置「下拉選單」與「方向按鈕」
         sort_layout = QHBoxLayout()
         sort_layout.setContentsMargins(0, 0, 0, 0)
         sort_layout.setSpacing(8)
-
-        # 1. 純粹的排序依據選單 (新增 OCR 優先)
         self.combo_sort = QComboBox()
         self.combo_sort.addItems(["OCR 優先", "日期", "名稱", "類型", "大小"])
-
         self.combo_sort.currentIndexChanged.connect(lambda: self.sort_changed.emit())
-        
         sort_layout.addWidget(self.combo_sort, stretch=1)
 
-        # 2. 正序/倒序切換按鈕
         self.btn_sort_order = QPushButton("↓")
-        self.btn_sort_order.setFixedSize(32, 32) # 設定為正方形
+        self.btn_sort_order.setFixedSize(32, 32)
         self.btn_sort_order.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_sort_order.setStyleSheet("""
-            QPushButton {
-                background-color: #333333;
-                color: #eeeeee;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                font-size: 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #454545;
-                border-color: #60cdff;
-                color: #ffffff;
-            }
+            QPushButton { background-color: #333333; color: #eeeeee; border: 1px solid #555555; border-radius: 4px; font-size: 16px; font-weight: bold; }
+            QPushButton:hover { background-color: #454545; border-color: #60cdff; color: #ffffff; }
         """)
         self.btn_sort_order.clicked.connect(self.toggle_sort_order)
         sort_layout.addWidget(self.btn_sort_order)
         
-        # 將水平佈局加入摺疊面板 (使用我們先前寫好的 addLayout 函式)
         self.sec_display.addLayout(sort_layout)
-        
         self.search_main_layout.addWidget(self.sec_display)
 
         # --- 區塊 3: 🧪 進階功能 (ADVANCED) ---
-        # 這裡放置會改變「分數計算邏輯」的功能
         self.sec_advanced = CollapsibleSection("相關度權重控制")
-        
-        
         self.sec_advanced.addWidget(QLabel("視覺權重 (CLIP Weight):"))
         self.slider_clip_weight = QSlider(Qt.Orientation.Horizontal)
         self.slider_clip_weight.setRange(0, 100); self.slider_clip_weight.setValue(100)
@@ -2590,13 +2570,14 @@ class InspectorPanel(QFrame):
         self.sec_advanced.addWidget(self.slider_name_weight)
         
         self.search_main_layout.addWidget(self.sec_advanced)
+        self.sec_advanced.set_expanded(True)
 
-        self.sec_advanced.set_expanded(True) # 預設展開，讓使用者一眼就看到這些重要的控制項
-
-        # 底部彈簧 (把上面的元件往上推)
+        # 4. 將滾動容器組合
         self.search_main_layout.addStretch(1)
+        scroll_area.setWidget(container)
+        tab_layout.addWidget(scroll_area)
 
-        # 🌟 置底清除按鈕：放在彈簧下方，保證永遠貼齊底部
+        # 🌟 5. 置底清除按鈕：放在 tab_layout 的最下方 (永遠懸浮貼底)
         self.btn_clear_all = QPushButton("🗑️ 清除所有過濾條件")
         self.btn_clear_all.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear_all.setStyleSheet("""
@@ -2607,8 +2588,8 @@ class InspectorPanel(QFrame):
             QPushButton:hover { background-color: rgba(255, 71, 71, 0.2); border-color: #ff6b6b; color: #ffffff; }
         """)
         self.btn_clear_all.clicked.connect(self.clear_all_filters)
-        self.btn_clear_all.hide() # 預設隱藏
-        self.search_main_layout.addWidget(self.btn_clear_all)
+        self.btn_clear_all.hide()
+        tab_layout.addWidget(self.btn_clear_all)
 
     def toggle_sort_order(self):
         """切換排序方向 (正序 ↑ / 倒序 ↓)"""
@@ -2825,10 +2806,14 @@ class InspectorPanel(QFrame):
         
         any_active = is_time_filtered or is_aspect_filtered
 
-        # 1. 層級三：時間維度按鈕底線
-        self.btn_time_range.setProperty("filter_active", is_time_filtered)
-        self.btn_time_range.style().unpolish(self.btn_time_range)
-        self.btn_time_range.style().polish(self.btn_time_range)
+        # 🌟 1. 層級三：將底線改為顯示在標題文字 (QLabel) 上，避免干擾按鈕
+        self.lbl_time_title.setProperty("filter_active", is_time_filtered)
+        self.lbl_time_title.style().unpolish(self.lbl_time_title)
+        self.lbl_time_title.style().polish(self.lbl_time_title)
+
+        self.lbl_aspect_title.setProperty("filter_active", is_aspect_filtered)
+        self.lbl_aspect_title.style().unpolish(self.lbl_aspect_title)
+        self.lbl_aspect_title.style().polish(self.lbl_aspect_title)
 
         # 2. 層級二：檢索過濾區塊底線
         self.sec_filter.set_status_active(any_active)
@@ -2840,7 +2825,7 @@ class InspectorPanel(QFrame):
         self.tabs.tabBar().style().unpolish(self.tabs.tabBar())
         self.tabs.tabBar().style().polish(self.tabs.tabBar())
 
-        # 4. 底部：顯示/隱藏清除按鈕
+        # 4. 底部：顯示/隱藏置底的清除按鈕
         self.btn_clear_all.setVisible(any_active)
 
     def clear_all_filters(self):
