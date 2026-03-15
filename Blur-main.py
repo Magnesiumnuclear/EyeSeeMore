@@ -1763,9 +1763,12 @@ class FolderHoverMenu(QWidget):
     refresh_clicked = pyqtSignal() # [新增] 重新整理訊號
     add_clicked = pyqtSignal()
 
+    mouse_entered = pyqtSignal()
+    mouse_left = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
         # 主佈局
@@ -1850,6 +1853,15 @@ class FolderHoverMenu(QWidget):
                 font-family: "Segoe UI", sans-serif; /* 強制鎖定字型 */
             }
         """)
+
+    # 🌟 [新增] 覆寫滑鼠進出事件，通知上層 Sidebar
+    def enterEvent(self, event):
+        self.mouse_entered.emit()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.mouse_left.emit()
+        super().leaveEvent(event)
 
     def update_menu(self, stats, config_folders): 
         while self.container_layout.count():
@@ -2000,7 +2012,13 @@ class SidebarWidget(QFrame):
         self.btn_all_images.setIconSize(QSize(24, 24))
         
         self.btn_all_images.clicked.connect(self.on_row1_clicked)
+
+        self.btn_all_images.installEventFilter(self)
         
+        self.hover_timer = QTimer(self)
+        self.hover_timer.setSingleShot(True)
+        self.hover_timer.timeout.connect(self.check_and_hide_menu)
+
         self.row1_layout.addWidget(self.btn_all_images)
         self.layout.addWidget(self.row1_container)
 
@@ -2008,6 +2026,9 @@ class SidebarWidget(QFrame):
         self.hover_menu = FolderHoverMenu(self)
         self.hover_menu.folder_clicked.connect(self.on_sub_folder_clicked)
         self.hover_menu.add_clicked.connect(self.add_folder_requested.emit)
+
+        self.hover_menu.mouse_entered.connect(self.hover_timer.stop)
+        self.hover_menu.mouse_left.connect(lambda: self.hover_timer.start(150))
         
         # ==========================================
         # [新增] 側邊欄底部的設定入口
@@ -2096,6 +2117,55 @@ class SidebarWidget(QFrame):
 
     def on_sub_folder_clicked(self, path):
         self.folder_selected.emit(path)
+
+    # 🌟 [新增] 事件過濾器：攔截主按鈕的進出
+    def eventFilter(self, obj, event):
+        if obj == self.btn_all_images:
+            if event.type() == QEvent.Type.Enter:
+                self.hover_timer.stop()
+                self.show_hover_menu()
+            elif event.type() == QEvent.Type.Leave:
+                self.hover_timer.start(150)
+        return super().eventFilter(obj, event)
+    
+    # 🌟 [新增] 顯示、隱藏與檢查邏輯
+    def show_hover_menu(self):
+        sidebar_global_pos = self.mapToGlobal(QPoint(0, 0))
+        row1_y = self.btn_toggle.height()
+        
+        # 往左微調 5px 形成物理重疊，徹底避免滑鼠掉進縫隙
+        target_x = sidebar_global_pos.x() + self.width() - 1
+        target_y = sidebar_global_pos.y() + row1_y
+        self.hover_menu.show_at(QPoint(target_x, target_y), 60)
+
+    def hide_hover_menu(self):
+        self.hover_menu.close()
+
+    def check_and_hide_menu(self):
+        """🌟 150ms 倒數結束後的絕對座標防呆檢查"""
+        cursor_pos = QCursor.pos()
+        
+        # 1. 如果滑鼠還在選單上
+        if self.hover_menu.isVisible() and self.hover_menu.geometry().contains(cursor_pos):
+            return
+            
+        # 2. 如果滑鼠又回到了主按鈕上
+        btn_rect = QRect(self.btn_all_images.mapToGlobal(QPoint(0, 0)), self.btn_all_images.size())
+        if btn_rect.contains(cursor_pos):
+            return
+            
+        # 3. 確定滑鼠離開了戰區，收起選單
+        self.hide_hover_menu()
+
+    # 🌟 [修改] 純粹派發訊號，關閉交由 Hover 邏輯處理
+    def on_row1_clicked(self):
+        self.folder_selected.emit("ALL")
+        self.hide_hover_menu()
+
+    def on_sub_folder_clicked(self, path):
+        self.folder_selected.emit(path)
+
+    
 
 class CollapsibleSection(QWidget):
     """自定義摺疊區塊，仿 VSCode 樣式 (解決文字跳動問題)"""
