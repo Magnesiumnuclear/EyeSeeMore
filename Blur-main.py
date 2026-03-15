@@ -4055,56 +4055,76 @@ class MainWindow(QMainWindow):
     def on_finished(self, elapsed, total): self.progress.hide(); self.status.setText(f"Found {total} items ({elapsed:.2f}s)")
 
 class OnboardingDialog(QDialog):
-    """首次開啟的引導面板"""
+    """首次開啟的引導與自動硬體設定面板"""
     def __init__(self, config, parent=None):
         super().__init__(parent)
-        self.config = config # 接收設定庫
-        self.setWindowTitle("歡迎使用 Local AI Search")
-        self.setFixedSize(550, 480)
+        self.config = config 
+        self.setWindowTitle("歡迎使用 EyeSeeMore")
+        self.setFixedSize(550, 420)
         self.setStyleSheet("background-color: #1e1e1e;")
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 30, 30, 30); layout.setSpacing(20)
+        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setSpacing(20)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        title = QLabel("初始化設定"); title.setStyleSheet("color: white; font-size: 24px; font-weight: bold;")
+        # 視覺引導圖示
+        lbl_icon = QLabel("🖼️")
+        lbl_icon.setStyleSheet("font-size: 80px; background: transparent; margin-bottom: 10px;")
+        lbl_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(lbl_icon)
+
+        title = QLabel("尚未加入任何圖片資料夾")
+        title.setStyleSheet("color: white; font-size: 24px; font-weight: bold; background: transparent;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
         
-        # 區塊 A: OCR 開關 (條件分流)
-        group_ocr_main = QGroupBox("步驟一：圖片文字辨識 (OCR) 需求")
-        layout_ocr_main = QVBoxLayout(group_ocr_main)
-        self.chk_enable_ocr = QCheckBox("啟用文字辨識 (支援從圖片中搜尋字元，首次啟動將下載語言包)")
-        self.chk_enable_ocr.setChecked(True)
-        self.chk_enable_ocr.setStyleSheet("font-size: 14px; font-weight: bold; color: #60cdff;")
-        layout_ocr_main.addWidget(self.chk_enable_ocr)
-        layout.addWidget(group_ocr_main)
+        subtitle = QLabel("讓 EyeSeeMore 透過 AI 幫您理解與檢索所有圖片。\n請先新增一個包含圖片的資料夾來建立索引。")
+        subtitle.setStyleSheet("color: #aaaaaa; font-size: 14px; background: transparent;")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(subtitle)
 
-        # 區塊 B: OCR 硬體 (動態隱藏)
-        self.ocr_hw_widget = QWidget()
-        layout_ocr_hw = QVBoxLayout(self.ocr_hw_widget); layout_ocr_hw.setContentsMargins(0,0,0,0)
-        group_hw = QGroupBox("步驟二：選擇 OCR 運算硬體 (若無 NVIDIA 顯卡請選 CPU)")
-        layout_hw = QVBoxLayout(group_hw); layout_hw.setSpacing(12)
+        layout.addSpacing(30)
         
-        self.rb_ocr_cpu = QRadioButton("純 CPU 模式 (預設/相容性最高)")
-        self.rb_ocr_cpu.setChecked(True)
-        self.rb_ocr_gpu = QRadioButton("GPU 加速模式 (僅限配備 CUDA 環境的專業使用者)")
-        self.rb_ocr_gpu.setStyleSheet("color: #ff6b6b;")
-        layout_hw.addWidget(self.rb_ocr_cpu); layout_hw.addWidget(self.rb_ocr_gpu)
-        layout_ocr_hw.addWidget(group_hw)
-        layout.addWidget(self.ocr_hw_widget)
+        # 核心動作按鈕
+        btn_add = QPushButton("➕ 立即新增圖片資料夾")
+        btn_add.setFixedHeight(50)
+        btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_add.setStyleSheet("""
+            QPushButton { background-color: #005fb8; color: white; font-weight: bold; font-size: 16px; border-radius: 8px; } 
+            QPushButton:hover { background-color: #0078d4; }
+        """)
+        btn_add.clicked.connect(self.on_add_folder_clicked) 
+        layout.addWidget(btn_add)
+
+        # 執行背景自動化設定
+        self.auto_configure_hardware()
+
+    def auto_configure_hardware(self):
+        """在背景默默完成硬體偵測與預設值設定，不干擾使用者"""
+        # 1. OCR 預設為關閉 (避免首次啟動偷載模型)
+        self.config.set("use_ocr", False)
         
-        self.chk_enable_ocr.toggled.connect(self.ocr_hw_widget.setVisible)
+        # 2. GPU 自動化偵測 (DirectML)
+        import onnxruntime as ort
+        providers = ort.get_available_providers()
+        if 'DmlExecutionProvider' in providers:
+            self.config.set("use_gpu_ocr", True)
+            print("[Auto-Config] Detected DirectML. GPU Acceleration Enabled.")
+        else:
+            self.config.set("use_gpu_ocr", False)
+            print("[Auto-Config] DirectML not found. Fallback to CPU.")
 
-        layout.addStretch(1)
-        btn_finish = QPushButton("完成設定並開始使用")
-        btn_finish.setFixedHeight(45)
-        btn_finish.setStyleSheet("QPushButton { background-color: #005fb8; color: white; font-weight: bold; font-size: 16px; border-radius: 6px; } QPushButton:hover { background-color: #0078d4; }")
-        btn_finish.clicked.connect(self.accept) 
-        layout.addWidget(btn_finish)
-
-    def accept(self):
-        self.config.set("use_ocr", self.chk_enable_ocr.isChecked())
-        self.config.set("use_gpu_ocr", self.rb_ocr_gpu.isChecked())
-        super().accept()
+    def on_add_folder_clicked(self):
+        from PyQt6.QtWidgets import QFileDialog
+        # 直接呼叫作業系統的選擇資料夾視窗
+        folder = QFileDialog.getExistingDirectory(self, "選擇要加入的圖片資料夾")
+        
+        if folder:
+            # 將資料夾寫入設定檔
+            self.config.add_source_folder(folder)
+            # 關閉對話框，這會讓程式自然進入 MainWindow 並觸發掃描
+            self.accept()
 
 class TransparentDragListWidget(QListWidget):
     """自訂的 ListWidget，用於在拖曳時產生半透明的視覺效果"""
