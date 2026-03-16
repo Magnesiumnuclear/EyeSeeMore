@@ -627,6 +627,8 @@ class ImageSearchEngine:
         self.stored_embeddings = None 
         self.data_store = []
 
+        self.shared_ocr_engines = {}
+
         # 1. 初始化資料庫
         print(f"[Engine] Initializing Database...")
         if os.path.exists(self.config.db_path):
@@ -935,11 +937,14 @@ class IndexerWorker(QThread):
             # 現在明確指定借用主程式的 clip_image_session！
             shared_model = self.main_window.engine.clip_image_session
             shared_preprocess = self.main_window.engine.preprocess
+
+            shared_ocr_engines = self.main_window.engine.shared_ocr_engines
             
             # [修正] 傳入雙軌參數與 mapping
             self.service.run_ai_processing(
                 files_full, files_emb_only, files_ocr_only, folder_ocr_map,
-                progress_callback=callback, shared_model=shared_model, shared_preprocess=shared_preprocess
+                progress_callback=callback, shared_model=shared_model, shared_preprocess=shared_preprocess,
+                shared_ocr_engines=shared_ocr_engines
             )
             self.status_update.emit("Indexing completed."); self.all_finished.emit()
         except Exception as e:

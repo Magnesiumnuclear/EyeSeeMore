@@ -266,7 +266,7 @@ class IndexerService:
         return enabled_langs
 
     @optional_mem_profile
-    def run_ai_processing(self, files_full, files_emb_only, files_ocr_only, folder_ocr_map, progress_callback=None, shared_model=None, shared_preprocess=None):
+    def run_ai_processing(self, files_full, files_emb_only, files_ocr_only, folder_ocr_map, progress_callback=None, shared_model=None, shared_preprocess=None, shared_ocr_engines=None):
         if ENABLE_PROFILING:
             process = psutil.Process(os.getpid())
             start_mem = process.memory_info().rss / (1024 * 1024)
@@ -297,8 +297,11 @@ class IndexerService:
             else:
                 model, preprocess, _ = self.load_ai_models(need_ocr=False)
 
-            # [修改 2] 動態載入需要的 OCR 模型 (可能同時載入中、日文)
-            ocr_engines = {}
+
+            #這裡改成從避風港抓取，如果沒有才建立，建立後存回避風港！
+            # [修改 2] OCR 引擎的載入也改成共享模式
+            ocr_engines = shared_ocr_engines if shared_ocr_engines is not None else {}
+
             for lang in needed_langs:
                 try:
                     ocr_engines[lang] = ONNXOCR(lang=lang, use_gpu=self.use_gpu_ocr)
@@ -457,10 +460,11 @@ class IndexerService:
         conn.close()
 
         # ==========================================
-        # [修改 4] 任務結束，強制銷毀所有 OCR 引擎釋放 VRAM
+        # [修改 4] 任務結束，強制銷毀所有 OCR 引擎釋放 VRAM(💥 已廢棄)
         # ==========================================
-        ocr_engines.clear()
-        gc.collect()
+        # 🌟🌟🌟 絕對不能清空！DirectML 銷毀 Session 會導致 GPU 狀態毒化
+        # ocr_engines.clear()
+        # gc.collect()
         perf_print("[Indexer] OCR 任務結束，模型實例已銷毀，VRAM 釋放完畢。")
 
         if ENABLE_PROFILING:
