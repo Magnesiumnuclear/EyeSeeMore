@@ -274,6 +274,19 @@ class ImageItem:
         self.height = height
         self.is_ocr_match = False 
 
+        # 🌟 [Opt 6] 預先格式化與轉換分數，杜絕 paint 迴圈的轉換開銷
+        self.score_val = float(score)
+        self.score_str = f"{self.score_val:.4f}" if self.score_val > 0.0001 else ""
+        
+        # 🌟 [Opt 6] 檔名省略 (Elided Text) 快取字典
+        self._elided_name_cache = {}
+
+    def get_elided_name(self, fm, width):
+        """動態快取省略檔名，相同寬度的卡片只需要計算一次"""
+        if width not in self._elided_name_cache:
+            self._elided_name_cache[width] = fm.elidedText(self.filename, Qt.TextElideMode.ElideRight, width)
+        return self._elided_name_cache[width]
+
 class WorkerSignals(QObject):
     result = pyqtSignal(str, QPixmap) 
 
@@ -467,6 +480,8 @@ class ImageDelegate(QStyledItemDelegate):
         self.font_name = QFont("Segoe UI", 10, QFont.Weight.Medium)
         self.font_score = QFont("Consolas", 9)
         self.font_tag = QFont("Segoe UI", 8, QFont.Weight.Bold)
+
+        self.fm_name = QFontMetrics(self.font_name)
         
         self.card_size = card_size
         self.thumb_height = thumb_height
@@ -598,24 +613,24 @@ class ImageDelegate(QStyledItemDelegate):
         # 3. 繪製文字
         painter.setFont(self.font_name)
         painter.setPen(QColor("#ffffff"))
+        elided_name = item.get_elided_name(self.fm_name, text_rect.width())
         fm = QFontMetrics(self.font_name)
         elided_name = fm.elidedText(item.filename, Qt.TextElideMode.ElideRight, text_rect.width())
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, elided_name)
 
         # 4. 繪製分數
         painter.setFont(self.font_score)
-        score_val = float(item.score)
         
-        # 只有分數大於 0 才顯示高亮顏色 (0.0 通常代表剛載入還沒搜尋)
-        if score_val > 0.0001:
-            if score_val > 0.3:
+        # 🌟 [Opt 6] 直接使用預先處理好的 float 數值與 string 字串
+        if item.score_val > 0.0001:
+            if item.score_val > 0.3:
                 painter.setPen(QColor("#60cdff"))
             else:
                 painter.setPen(QColor("#999999"))
-            painter.drawText(score_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"{score_val:.4f}")
+            # 不再呼叫 f"{score_val:.4f}"，直接畫出預存好的字串
+            painter.drawText(score_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, item.score_str)
         else:
             # 如果分數是 0 (例如剛啟動顯示全部圖片時)，顯示日期可能比較實用，或者留白
-            # 這裡示範顯示日期
             pass
 
         # 5. OCR 標籤
