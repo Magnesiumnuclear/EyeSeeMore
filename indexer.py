@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from PIL import Image, ExifTags, ImageOps
 from PIL import Image
 import numpy as np
 import logging
@@ -8,6 +9,44 @@ import datetime
 import psutil
 import onnxruntime as ort  # <--- 新增
 from onnx_ocr import ONNXOCR
+
+
+# ==========================================
+# [新增] 讀取照片原始尺寸與 EXIF 旋轉標記
+# ==========================================
+def get_image_metadata(path):
+    w, h, orientation = 0, 0, 1
+    try:
+        with Image.open(path) as pil_img:
+            w, h = pil_img.size
+            exif = pil_img.getexif()
+            if exif:
+                for k, v in exif.items():
+                    if ExifTags.TAGS.get(k) == 'Orientation':
+                        orientation = v
+                        break
+    except:
+        pass
+    return w, h, orientation
+
+# ==========================================
+# [新增] 根據 EXIF 將 OCR 原始座標翻轉為視覺正確座標
+# ==========================================
+def rotate_ocr_box(box, orientation, raw_w, raw_h):
+    if orientation == 1: return box
+    new_box = []
+    for pt in box:
+        x, y = pt[0], pt[1]
+        if orientation == 2:   nx, ny = raw_w - x, y
+        elif orientation == 3: nx, ny = raw_w - x, raw_h - y
+        elif orientation == 4: nx, ny = x, raw_h - y
+        elif orientation == 5: nx, ny = y, x
+        elif orientation == 6: nx, ny = raw_h - y, x
+        elif orientation == 7: nx, ny = raw_h - y, raw_w - x
+        elif orientation == 8: nx, ny = y, raw_w - x
+        else:                  nx, ny = x, y
+        new_box.append([nx, ny])
+    return new_box
 
 # ==========================================
 # [新增] 純 Numpy 的圖片預處理 (完全取代 PyTorch & open_clip)
@@ -239,8 +278,13 @@ class IndexerService:
             for row_id, path in missing_meta_rows:
                 try:
                     file_size = os.path.getsize(path)
-                    with Image.open(path) as img:
-                        w, h = img.size
+                    
+                    # 🌟 [Opt] 讀取 EXIF 並交換長寬
+                    raw_w, raw_h, orientation = get_image_metadata(path)
+                    w, h = raw_w, raw_h
+                    if orientation in [5, 6, 7, 8]:
+                        w, h = raw_h, raw_w
+                        
                     meta_updates.append((w, h, file_size, row_id))
                 except Exception: pass
             
@@ -324,12 +368,17 @@ class IndexerService:
             for path in batch_paths:
                 try:
                     file_size = os.path.getsize(path)
+                    # 🌟 [Opt] 讀取 EXIF 並交換長寬
+                    raw_w, raw_h, orientation = get_image_metadata(path)
+                    w, h = raw_w, raw_h
+                    if orientation in [5, 6, 7, 8]:
+                        w, h = raw_h, raw_w
+
                     with Image.open(path) as pil_img:
-                        w, h = pil_img.size
-                        img_rgb = pil_img.convert('RGB')
+                        # 🌟 [AI 準確度升級] 使用 exif_transpose 把圖片轉正再送給 AI
+                        img_rgb = ImageOps.exif_transpose(pil_img).convert('RGB')
                         
                     batch_images.append(np.expand_dims(preprocess(img_rgb), axis=0))
-                    # 將基本屬性一起打包
                     batch_meta.append((path, os.path.basename(path), os.path.dirname(path), os.path.getmtime(path), w, h, file_size))
                 except Exception: continue
 
@@ -362,6 +411,8 @@ class IndexerService:
                 for path in batch_paths:
                     file_id = id_map.get(path)
                     if not file_id: continue
+
+                    raw_w, raw_h, orientation = get_image_metadata(path)
                     
                     required_langs = self._get_folder_ocr_setting(path, folder_ocr_map)
                     for target_lang in required_langs:
@@ -373,12 +424,16 @@ class IndexerService:
                                 json_data_list = []
                                 for line in ocr_result[0]:
                                     box, (text, conf) = line[0], line[1]
+                                    
+                                    # 🌟 將紅框座標進行 EXIF 翻轉校正後再存入資料庫
+                                    if orientation != 1 and raw_w > 0:
+                                        box = rotate_ocr_box(box, orientation, raw_w, raw_h)
+                                        
                                     detected_text_list.append(text)
                                     json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
                                 ocr_text_final = " ".join(detected_text_list)
                                 ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
                             
-                            # 準備寫入新表 ocr_results
                             ocr_insert_data.append((file_id, target_lang, ocr_text_final, ocr_data_final, 1.0))
                 
                 if ocr_insert_data:
@@ -393,8 +448,10 @@ class IndexerService:
             if progress_callback: progress_callback(current_progress, total_files, f"Fast CLIP: {current_progress}/{total_files}...")
             for path in batch_paths:
                 try:
-                    img = Image.open(path).convert('RGB')
-                    batch_images.append(np.expand_dims(preprocess(img), axis=0)); valid_paths.append(path)
+                    with Image.open(path) as pil_img:
+                        # 🌟 [AI 準確度升級] 轉正送給 CLIP
+                        img_rgb = ImageOps.exif_transpose(pil_img).convert('RGB')
+                    batch_images.append(np.expand_dims(preprocess(img_rgb), axis=0)); valid_paths.append(path)
                 except Exception: continue
 
             if batch_images:
@@ -432,6 +489,9 @@ class IndexerService:
                     # 針對缺少的語系補跑
                     for target_lang in missing_langs:
                         if target_lang in ocr_engines:
+                            # 🌟 取得照片 EXIF
+                            raw_w, raw_h, orientation = get_image_metadata(path) 
+                            
                             ocr_text_final, ocr_data_final = "[NONE]", "[]"
                             ocr_result = ocr_engines[target_lang].ocr(path, cls=False)
                             if ocr_result and ocr_result[0]:
@@ -439,12 +499,16 @@ class IndexerService:
                                 json_data_list = []
                                 for line in ocr_result[0]:
                                     box, (text, conf) = line[0], line[1]
+                                    
+                                    # 🌟 將紅框座標進行 EXIF 翻轉校正
+                                    if orientation != 1 and raw_w > 0:
+                                        box = rotate_ocr_box(box, orientation, raw_w, raw_h)
+                                        
                                     detected_text_list.append(text)
                                     json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
                                 ocr_text_final = " ".join(detected_text_list)
                                 ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
                             
-                            # 準備寫入新表 ocr_results
                             ocr_insert_data.append((file_id, target_lang, ocr_text_final, ocr_data_final, 1.0))
                 except Exception as e: print(f"Skipping OCR {path}: {e}")
             

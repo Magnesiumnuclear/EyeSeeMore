@@ -1660,40 +1660,9 @@ class PreviewOverlay(QWidget):
         if img.isNull(): return
         
         import copy
-        from PIL import Image, ExifTags
-        
         processed_boxes = copy.deepcopy(ocr_boxes)
         
-        try:
-            with Image.open(path) as pil_img:
-                raw_w, raw_h = pil_img.size
-                exif = pil_img.getexif()
-                orientation = 1
-                if exif:
-                    for k, v in exif.items():
-                        if ExifTags.TAGS.get(k) == 'Orientation':
-                            orientation = v
-                            break
-                
-                # 如果圖片有 EXIF 旋轉標記，對 OCR 座標執行矩陣轉換
-                if orientation != 1 and processed_boxes:
-                    for item in processed_boxes:
-                        box_pts = item.get("box", [])
-                        new_box = []
-                        for pt in box_pts:
-                            x, y = pt[0], pt[1]
-                            if orientation == 2:   nx, ny = raw_w - x, y
-                            elif orientation == 3: nx, ny = raw_w - x, raw_h - y
-                            elif orientation == 4: nx, ny = x, raw_h - y
-                            elif orientation == 5: nx, ny = y, x
-                            elif orientation == 6: nx, ny = raw_h - y, x  # 右轉 90 度
-                            elif orientation == 7: nx, ny = raw_h - y, raw_w - x
-                            elif orientation == 8: nx, ny = y, raw_w - x  # 左轉 90 度
-                            else:                  nx, ny = x, y
-                            new_box.append([nx, ny])
-                        item["box"] = new_box
-        except Exception as e:
-            print(f"EXIF rotation parsing error: {e}")
+        # 🌟 以前這裡一大堆 EXIF 矩陣計算的程式碼，現在全被砍掉了！
         
         screen_size = self.parent().size()
         max_w = int(screen_size.width() * 0.85)
@@ -1704,7 +1673,6 @@ class PreviewOverlay(QWidget):
         
         self.image_label.setPixmap(pixmap)
         
-        # [修改] 傳入 current_query 讓 OCRLabel 知道目前在搜什麼
         orig_w, orig_h = img.width(), img.height()
         self.image_label.set_ocr_data(processed_boxes, orig_w, orig_h, current_query, is_precise_mode)
         
@@ -2813,6 +2781,10 @@ class InspectorPanel(QFrame):
         """)
         layout.addWidget(self.btn_open_folder)
 
+        # 🌟 [修正 1] 新增一個變數來記住現在點到哪張圖，並只在初始化時綁定一次訊號！
+        self.current_info_path = ""
+        self.btn_open_folder.clicked.connect(self._on_open_folder_clicked)
+
         # 詳細屬性網格
         self.grid = QGridLayout()
         self.grid.setVerticalSpacing(10); self.grid.setHorizontalSpacing(10)
@@ -2851,10 +2823,11 @@ class InspectorPanel(QFrame):
             if not img.isNull():
                 self.preview_lbl.setPixmap(QPixmap.fromImage(img))
                 self.preview_lbl.setStyleSheet("background-color: transparent; border: none;")
+
+        # 🌟 [修正 2] 拔掉原本的 disconnect() 和 lambda，改為單純更新路徑變數
+        self.current_info_path = item.path
         
-        # 綁定按鈕
-        self.btn_open_folder.disconnect() 
-        self.btn_open_folder.clicked.connect(lambda: self.open_in_explorer(item.path))
+        
 
         # 更新文字屬性
         try:
@@ -2866,6 +2839,11 @@ class InspectorPanel(QFrame):
             self.fields["修改日期"].setText(dt.strftime("%Y/%m/%d %H:%M"))
             self.fields["AI 相關度"].setText(f"{item.score:.4f}" if item.score > 0 else "N/A")
         except: pass
+    
+    # 🌟 [新增] 專門處理按鈕點擊的函式
+    def _on_open_folder_clicked(self):
+        if self.current_info_path:
+            self.open_in_explorer(self.current_info_path)
 
     def open_in_explorer(self, path):
         import subprocess, os
