@@ -278,7 +278,7 @@ class WorkerSignals(QObject):
     result = pyqtSignal(str, QPixmap) 
 
 class ThumbnailLoader(QRunnable):
-    """背景圖片讀取器 (智慧縮放版)"""
+    """背景圖片讀取器 (智慧縮放 + GPU 材質加速版)"""
     def __init__(self, file_path, target_size):
         super().__init__()
         self.file_path = file_path
@@ -293,10 +293,10 @@ class ThumbnailLoader(QRunnable):
                 self.signals.result.emit(self.file_path, QPixmap())
                 return
 
-            # 智慧縮放
+            # 🌟 [Opt 1] 在背景執行緒直接計算好完美符合 UI 的長寬比
             scaled_size = orig_size.scaled(
                 self.target_size, 
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding
+                Qt.AspectRatioMode.KeepAspectRatio  # 改用 KeepAspectRatio 避免變形
             )
             
             reader.setScaledSize(scaled_size)
@@ -304,6 +304,9 @@ class ThumbnailLoader(QRunnable):
 
             image = reader.read()
             if not image.isNull():
+                # 🌟 [Opt 7] 強制轉換為 GPU 渲染最快的「預乘 Alpha」格式
+                # 這樣 QPainter 畫圖時就不需要再透過 CPU 轉換格式了！
+                image = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
                 self.signals.result.emit(self.file_path, QPixmap.fromImage(image))
             else:
                 self.signals.result.emit(self.file_path, QPixmap())
@@ -315,9 +318,9 @@ class SearchResultsModel(QAbstractListModel):
     """核心 Model：管理搜尋結果列表、圖片快取與增量載入 (Incremental Loading)"""
     def __init__(self, item_size):
         super().__init__()
-        self.all_items = []      # 🌟 肚子裡完整的資料 (可能是上萬筆)
-        self.display_items = []  # 🌟 目前丟給畫面的資料 (例如只有 50 筆)
-        self.CHUNK_SIZE = 50     # 🌟 每次滾動新增的數量
+        self.all_items = []      
+        self.display_items = []  
+        self.CHUNK_SIZE = 50     
         
         self.item_size = item_size 
         self._thumbnail_cache = OrderedDict()
@@ -325,6 +328,13 @@ class SearchResultsModel(QAbstractListModel):
         self._loading_set = set() 
         self.thread_pool = QThreadPool.globalInstance()
         self.thread_pool.setMaxThreadCount(4) 
+
+        # 🌟 [Opt 5] 信號減壓緩衝區與計時器 (50毫秒 = 20FPS 的刷新率)
+        self._pending_updates = set()
+        self.update_timer = QTimer()
+        self.update_timer.setInterval(50)
+        self.update_timer.setSingleShot(True)
+        self.update_timer.timeout.connect(self._flush_updates)
 
     def update_target_size(self, new_size):
         self.item_size = new_size
@@ -425,12 +435,28 @@ class SearchResultsModel(QAbstractListModel):
             if len(self._thumbnail_cache) > self.CACHE_SIZE:
                 self._thumbnail_cache.popitem(last=False)
 
-            # 遍歷 display_items 尋找要更新的 UI 項目
+            # 🌟 [Opt 5] 找到要更新的列，丟進緩衝區，而不是直接發射訊號
             for row, item in enumerate(self.display_items):
                 if item.path == file_path:
-                    idx = self.index(row, 0)
-                    self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
+                    self._pending_updates.add(row)
+                    if not self.update_timer.isActive():
+                        self.update_timer.start()
                     break
+
+    def _flush_updates(self):
+        """🌟 [Opt 5] 減壓閥：一次性更新所有剛載好的圖片，杜絕訊號風暴"""
+        if not self._pending_updates:
+            return
+            
+        # 找出這批更新中，最上面和最下面的列，一次性要求 UI 重繪這個區間
+        min_row = min(self._pending_updates)
+        max_row = max(self._pending_updates)
+        
+        start_idx = self.index(min_row, 0)
+        end_idx = self.index(max_row, 0)
+        
+        self.dataChanged.emit(start_idx, end_idx, [Qt.ItemDataRole.DecorationRole])
+        self._pending_updates.clear()
 
 class ImageDelegate(QStyledItemDelegate):
     """負責繪製列表中的每一個項目 (支援動態調整大小)"""
@@ -530,18 +556,16 @@ class ImageDelegate(QStyledItemDelegate):
         painter.setClipPath(path) 
         
         if pixmap and not pixmap.isNull():
-            # 有縮圖時：繪製縮圖
-            scaled_pixmap = pixmap.scaled(
-                img_rect.size(), 
-                Qt.AspectRatioMode.KeepAspectRatio, 
-                Qt.TransformationMode.SmoothTransformation
-            )
-            x_off = (img_rect.width() - scaled_pixmap.width()) / 2
-            y_off = (img_rect.height() - scaled_pixmap.height()) / 2
+            # 🌟 [Opt 1] 移除高耗能的 pixmap.scaled(...)
+            # 因為 ThumbnailLoader 已經在背景幫我們縮放到完美尺寸了
+            # 我們只要做簡單的置中數學運算，然後直接畫上去！
+            x_off = (img_rect.width() - pixmap.width()) / 2
+            y_off = (img_rect.height() - pixmap.height()) / 2
+            
             painter.drawPixmap(
                 img_rect.left() + int(x_off), 
                 img_rect.top() + int(y_off), 
-                scaled_pixmap
+                pixmap
             )
         else:
             # ==========================================
