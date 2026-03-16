@@ -910,8 +910,11 @@ class IndexerWorker(QThread):
             self.progress_update.emit(current, total); self.status_update.emit(msg)
 
         try:
-            shared_model = self.main_window.engine.model
+            # 🌟 [關鍵修復] 以前這裡是 .engine.model (因為改版變成 None 了)
+            # 現在明確指定借用主程式的 clip_image_session！
+            shared_model = self.main_window.engine.clip_image_session
             shared_preprocess = self.main_window.engine.preprocess
+            
             # [修正] 傳入雙軌參數與 mapping
             self.service.run_ai_processing(
                 files_full, files_emb_only, files_ocr_only, folder_ocr_map,
