@@ -651,13 +651,15 @@ class ImageSearchEngine:
         [高效能] 取得資料庫中所有圖片，並依時間 (新->舊) 排序。
         用於冷啟動時的瀑布流顯示。
         """
-        if not hasattr(self, 'data_store') or not self.data_store:
+        # 🌟 [終極防呆：取得當下的指標快照，防止被雙緩衝覆蓋]
+        current_data = getattr(self, 'data_store', [])
+        if not current_data:
             return []
         
-        print(f"[Engine] Sorting {len(self.data_store)} images by date...")
+        print(f"[Engine] Sorting {len(current_data)} images by date...")
         
         # 1. 使用 Python 內建 Timsort 進行快速排序 (mtime 大的排前面)
-        sorted_data = sorted(self.data_store, key=lambda x: x["mtime"], reverse=True)
+        sorted_data = sorted(current_data, key=lambda x: x["mtime"], reverse=True)
         
         # 2. 轉換為 UI 需要的格式
         results = []
@@ -666,8 +668,8 @@ class ImageSearchEngine:
                 "score": 0.0, "clip_score": 0.0, "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
                 "path": item["path"], "filename": item["filename"],
                 "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0),
-                "width": item.get("width", 0),   # 🌟 補上
-                "height": item.get("height", 0)  # 🌟 補上
+                "width": item.get("width", 0),   
+                "height": item.get("height", 0)  
             })
         return results
 
@@ -678,9 +680,7 @@ class ImageSearchEngine:
         try:
             current_model = self.config.get("model_name")
             
-            # ==========================================
-            # [升級 1] SQL 動態 JSON 封裝：將 lang 標籤與資料綁定
-            # ==========================================
+            # [升級 1] SQL 動態 JSON 封裝
             cursor.execute("""
                 SELECT f.file_path, e.embedding, f.mtime, f.width, f.height, 
                        GROUP_CONCAT(o.ocr_text, ' '), 
@@ -693,18 +693,18 @@ class ImageSearchEngine:
             """, (current_model,))
             rows = cursor.fetchall()
             
-            self.data_store = [] 
-            embeddings_list = []
+            # 🌟 [方案 B：雙緩衝機制] 使用暫存變數進行載入，不干擾主線程的搜尋
+            temp_data_store = [] 
+            temp_embeddings_list = []
             
             for path, blob, mtime, width, height, combined_text, combined_data_json in rows:
                 if not os.path.exists(path): continue 
                 
                 emb_array = np.frombuffer(blob, dtype=np.float32)
-                embeddings_list.append(emb_array)
+                temp_embeddings_list.append(emb_array)
                 text_content = combined_text if combined_text else ""
                 
                 ocr_boxes = []
-                # [升級 2] 解析多語系 JSON 並把 lang 注入到每一個 box 中
                 if combined_data_json and combined_data_json != "[]" and combined_data_json != "[NULL]":
                     try:
                         parsed_lists = json.loads(combined_data_json)
@@ -719,26 +719,28 @@ class ImageSearchEngine:
                     except Exception as e: 
                         print(f"JSON Parse error: {e}")
 
-                self.data_store.append({
+                temp_data_store.append({
                     "path": path,
                     "filename": os.path.basename(path),
                     "ocr_text": text_content.lower(),
                     "ocr_data": ocr_boxes,
                     "mtime": mtime,
-                    "width": width if width else 0,   # 🌟 確保有預設值 0
-                    "height": height if height else 0 # 🌟 確保有預設值 0
+                    "width": width if width else 0,
+                    "height": height if height else 0
                 })
             
-            if self.data_store and embeddings_list:
-                emb_matrix = np.stack(embeddings_list)
-                if self.data_store and embeddings_list:
-                    emb_matrix = np.stack(embeddings_list)
-                    # [關鍵修改] 直接保留為 Numpy 陣列，不再轉換成 PyTorch Tensor！
-                    self.stored_embeddings = emb_matrix
-                    print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
+            # 🌟 [方案 B] 資料準備完成後，進行「極速切換 (Atomic Swap)」
+            if temp_data_store and temp_embeddings_list:
+                temp_emb_matrix = np.stack(temp_embeddings_list)
+                
+                # 在 Python 中，物件參照替換是原子操作，搜尋執行緒瞬間拿到新資料，絕不崩潰
+                self.stored_embeddings = temp_emb_matrix
+                self.data_store = temp_data_store
+                print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
             else:
                 print(f"[Engine] No records found for model '{current_model}'.")
                 self.stored_embeddings = None
+                self.data_store = []
                 
         except sqlite3.Error as e:
             print(f"[Error] Database query failed: {e}")
@@ -775,22 +777,21 @@ class ImageSearchEngine:
         except Exception as e: return False, str(e)
 
     def search_hybrid(self, query, top_k=50, use_ocr=True):
-        if not self.is_ready or self.stored_embeddings is None: 
+        # 🌟 [終極防呆：取得當下指標。這樣就算背景切換了資料庫，這次搜尋依然能安全跑完]
+        current_embeddings = self.stored_embeddings
+        current_data = self.data_store
+
+        if not self.is_ready or current_embeddings is None: 
             return [] 
             
         results = []; query_lower = query.lower()
         try:
             # 1. 文字轉 Token 並轉為 Numpy
             if getattr(self, 'is_hf_tokenizer', False):
-                # 多語系模式：使用 HuggingFace 官方的 Tokenizer 語法
                 text_tokens = self.tokenizer([query], padding=True, truncation=True, return_tensors="np").input_ids
             else:
-                # 標準模式：使用 CLIP 預設的 Tokenizer 語法
                 text_tokens = self.tokenizer([query]).cpu().numpy()
             
-            # ==========================================
-            # [關鍵修復] 強制轉為 ONNX 要求的 64 位元整數 (int64)
-            # ==========================================
             text_tokens = text_tokens.astype(np.int64)
             
             # 2. ONNX 提取文字特徵
@@ -800,13 +801,13 @@ class ImageSearchEngine:
             # 3. L2 正規化
             text_features = text_features / np.linalg.norm(text_features, axis=-1, keepdims=True)
             
-            # 4. 極速 Numpy 矩陣相乘計算相似度 (取代 PyTorch @ 運算)
-            scores = np.dot(text_features, self.stored_embeddings.T).squeeze(0)
+            # 4. 極速 Numpy 矩陣相乘計算相似度 (使用快照 current_embeddings)
+            scores = np.dot(text_features, current_embeddings.T).squeeze(0)
             
         except Exception as e:
-            print(f"CLIP Search Error: {e}"); scores = np.zeros(len(self.data_store))
+            print(f"CLIP Search Error: {e}"); scores = np.zeros(len(current_data))
 
-        for idx, item in enumerate(self.data_store):
+        for idx, item in enumerate(current_data):
             clip_score = float(scores[idx]); ocr_bonus = 0.0; name_bonus = 0.0
             if use_ocr and query_lower in item["ocr_text"]: ocr_bonus = 0.5
             if query_lower in item["filename"].lower(): name_bonus = 0.2
@@ -816,14 +817,18 @@ class ImageSearchEngine:
                     "score": final_score, "clip_score": clip_score, "ocr_bonus": ocr_bonus, "name_bonus": name_bonus,
                     "is_ocr_match": (ocr_bonus > 0), "path": item["path"], "filename": item["filename"],
                     "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0),
-                    "width": item.get("width", 0),  # 🌟 打包寬度
-                    "height": item.get("height", 0) # 🌟 打包高度
+                    "width": item.get("width", 0),  
+                    "height": item.get("height", 0) 
                 })
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
     def search_image(self, image_path, top_k=50):
-        if not self.is_ready or self.stored_embeddings is None: 
+        # 🌟 [終極防呆：取得當下指標快照]
+        current_embeddings = self.stored_embeddings
+        current_data = self.data_store
+
+        if not self.is_ready or current_embeddings is None: 
             return []
             
         try:
@@ -834,22 +839,23 @@ class ImageSearchEngine:
             image_features = self.clip_image_session.run(None, {input_name: processed_image})[0]
             image_features = image_features / np.linalg.norm(image_features, axis=-1, keepdims=True)
             
-            similarity = np.dot(image_features, self.stored_embeddings.T).squeeze(0)
+            # 這裡也必須使用 current_embeddings
+            similarity = np.dot(image_features, current_embeddings.T).squeeze(0)
             
-            k = min(top_k, len(self.data_store))
+            k = min(top_k, len(current_data))
             indices = np.argsort(similarity)[::-1][:k] 
             values = similarity[indices]
             
             results = []
             for i in range(k):
-                idx = indices[i]; item = self.data_store[idx]; score = values[i]
+                idx = indices[i]; item = current_data[idx]; score = values[i]
                 results.append({
                     "score": float(score), "clip_score": float(score), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
                     "path": item["path"], "filename": item["filename"], 
                     "ocr_data": item.get("ocr_data", []), 
                     "mtime": item.get("mtime", 0),
-                    "width": item.get("width", 0),   # 🌟 補上這行
-                    "height": item.get("height", 0)  # 🌟 補上這行
+                    "width": item.get("width", 0),   
+                    "height": item.get("height", 0)  
                 })
             return results
         except Exception as e:
@@ -2916,6 +2922,7 @@ class MainWindow(QMainWindow):
     # 定義訊號
     random_data_ready = pyqtSignal(list)
     ai_ready = pyqtSignal()
+    db_reloaded = pyqtSignal()
 
     def __init__(self, config: ConfigManager):
         # [關鍵修正] 這行一定要在第一行，且不能漏掉！
@@ -2952,7 +2959,7 @@ class MainWindow(QMainWindow):
         # [修改 2] 連接訊號：當 AI 準備好時，執行 on_ai_loaded
         self.random_data_ready.connect(self.set_base_results)
         self.ai_ready.connect(self.on_ai_loaded)
-
+        self.db_reloaded.connect(self.on_db_reloaded)
 
         QApplication.instance().installEventFilter(self)
         
@@ -3672,9 +3679,8 @@ class MainWindow(QMainWindow):
     def on_scan_finished(self, added, deleted):
         if added > 0 or deleted > 0:
             print(f"[Indexer] Scan found {added} new, {deleted} deleted.")
-            if deleted > 0 and self.engine:
-                self.engine.load_data_from_db()
-                self.on_folder_filter("ALL")
+            # 🌟 [防呆修復] 移除原本這裡同步呼叫 load_data_from_db 的動作
+            # 避免在開始索引前卡死畫面，統一交給 on_indexing_finished 處理！
         else:
             print("[Indexer] No changes detected.")
 
@@ -3685,13 +3691,31 @@ class MainWindow(QMainWindow):
         self.taskbar_ctrl.set_state(TBPF_NOPROGRESS)
         
         self.status.setText("Index Updated.")
-        if self.engine:
-            print("Reloading engine data...")
-            self.engine.load_data_from_db()
-            all_imgs = self.engine.get_all_images_sorted()
-            self.set_base_results(all_imgs)
-            self.refresh_sidebar()
-            self.status.setText(f"System Ready ({len(all_imgs)} images)")
+        self.trigger_background_db_reload() # 🌟 觸發雙緩衝背景載入
+
+    def trigger_background_db_reload(self):
+        """🌟 [方案 B：雙緩衝核心] 在背景執行緒讀取資料庫，確保 UI 與搜尋功能不中斷"""
+        if not self.engine: return
+        self.status.setText("Synchronizing database in background...")
+        
+        def bg_reload():
+            print("[Engine] Reloading engine data in background (Double Buffering)...")
+            self.engine.load_data_from_db() # 此處內部已實作 Atomic Swap
+            
+            # 🌟 [關鍵修復] 改為發送空訊號，讓主執行緒自己去撈，徹底杜絕跨執行緒崩潰
+            self.db_reloaded.emit()
+            
+        threading.Thread(target=bg_reload, daemon=True).start()
+    
+    def on_db_reloaded(self):
+        """背景載入完畢，安全跳回主執行緒更新畫面"""
+        if not self.engine: return
+        # 🌟 主執行緒自己去取得最新資料
+        all_imgs = self.engine.get_all_images_sorted()
+        
+        self.set_base_results(all_imgs)
+        self.refresh_sidebar()
+        self.status.setText(f"System Ready ({len(all_imgs)} images)")
 
     # 右鍵選單邏輯
     def show_context_menu(self, pos):
@@ -4430,11 +4454,13 @@ class SettingsDialog(QDialog):
                     cursor.execute("DELETE FROM files WHERE folder_path = ?", (path,))
                     conn.commit()
                     conn.close()
-                    self.main_window.engine.load_data_from_db() 
+                    
+                    # 🌟 改為觸發背景雙緩衝載入
+                    self.main_window.trigger_background_db_reload()
                 except Exception as e:
                     print(f"Delete DB error: {e}")
             self.refresh_folder_list()
-            self.main_window.refresh_sidebar()
+            # sidebar 的 refresh 會交由 db_reloaded 訊號統一處理
 
     def on_edit_icon(self):
         item = self.folder_list.currentItem()
