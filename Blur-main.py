@@ -68,7 +68,6 @@ EyeSeeMore
 # TODO: [互動邏輯] 實作左側「收合選單資料夾」的點擊與右鍵行為
 # TODO: 介面與顯示優化：在圖片卡片上顯示更多資訊（如修改日期、OCR 文字預覽等），並優化分數顯示的視覺效果
 # TODO: Help -> About 內加入版本資訊、開發者聯繫方式、GitHub 頁面連結等GPL (General Public License) 協議要求的資訊
-# TODO: 關鍵優化 Opt 1 (預先縮放與 Paint 優化) Opt 5 (信號風暴)Opt 6 (Python 邊界稅與字串預處理)Opt 7 (材質上傳與 QImage 格式)Opt 8 (增量載入 Incremental Loading)
 # TODO: 搜尋介面的ORC控制的分數控制
 # TODO: 搜尋結果的limit控制
 # TODO: 控制欄的UIUX優化
@@ -80,7 +79,6 @@ EyeSeeMore
 # TODO: 刪除 Unicode 符號
 # TODO: BUG 用 Search Similar 要把Gallery 排序方式改成OCR優先，這樣才不會有搜尋相似圖片時OCR分數高的圖片被排在後面了
 # TODO: BUG 由手機相機拍的圖片視覺規格都是width > height 的導致橫圖直圖 塞選沒用
-# TODO: BUG [重大BUG] 跑完Rescan all folders 後再搜尋高機率崩潰
 
 
 import sys
