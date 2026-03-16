@@ -3551,13 +3551,28 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.adjust_layout)
 
     def on_selection_changed(self, current, previous):
-        # ==========================================
-        # [新增] 1. 更新右側面板資訊 (如果面板存在且有選取項目)
-        # ==========================================
+        # 1. 更新右側面板資訊 (如果面板存在且有選取項目)
         if hasattr(self, 'inspector_panel') and current.isValid():
             item = current.data(Qt.ItemDataRole.UserRole)
             if item:
                 self.inspector_panel.update_info(item)
+
+        # 2. 預覽畫面同步邏輯 (沉浸模式)
+        nav_mode = self.config.get("ui_state", {}).get("preview_wasd_mode", "nav")
+        if self.preview_overlay.isVisible() and nav_mode == "sync":
+            if current.isValid():
+                item = current.data(Qt.ItemDataRole.UserRole)
+                if item:
+                    # 🌟 [關鍵修復 1] 把搜尋框的字和精確模式狀態抓出來
+                    current_query = self.input.text().strip()
+                    is_precise = self.config.get("ui_state", {}).get("precise_ocr_highlight", False)
+                    
+                    # 🌟 [關鍵修復 2] 完整傳遞給顯示層，讓它知道要高亮什麼字！
+                    self.preview_overlay.show_image(item, current_query, is_precise)
+                    
+                    # 🌟 [加碼優化] 保持 OCR 鎖定狀態！
+                    # 如果使用者原本就是開著紅框 (Toggle 模式)，切換下一張圖片時就繼續維持開啟，體驗更好
+                    self.preview_overlay.set_ocr_visible(self.is_ocr_locked)
 
         # ==========================================
         # 2. 原本的預覽同步邏輯 (維持不變)
@@ -4143,17 +4158,6 @@ class MainWindow(QMainWindow):
         self.config.set("ui_state", ui_state)
         super().closeEvent(event)
 
-    def on_selection_changed(self, current, previous):
-        # 只有在預覽畫面開啟，且設定為同步切換時，才自動更新圖片
-        nav_mode = self.config.get("ui_state", {}).get("preview_wasd_mode", "nav")
-        if self.preview_overlay.isVisible() and nav_mode == "sync":
-            if current.isValid():
-                item = current.data(Qt.ItemDataRole.UserRole)
-                if item:
-                    self.preview_overlay.show_image(item)
-                    # 如果希望切換圖片時維持 OCR 紅框顯示狀態，就把下面兩行註解掉
-                    self.is_ocr_locked = False
-                    self.preview_overlay.set_ocr_visible(False)
 
     def on_finished(self, elapsed, total): self.progress.hide(); self.status.setText(f"Found {total} items ({elapsed:.2f}s)")
 
