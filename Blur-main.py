@@ -58,12 +58,9 @@ EyeSeeMore
 無視亂碼檔名：打破「檔名即搜尋關鍵字」的傳統限制，即便圖片檔名是隨機生成的字串，系統也能精準命中。
 「看」而非「讀」：傳統軟體是在「讀」標籤，EyeSeeMore 則是透過視覺模型在「看」內容，提取抽象的語義特徵。
 '''
-# ==========================================
-#  [NEW] Windows Taskbar 進度條控制器 (純 ctypes 實作)
-# ==========================================
 
 
-# TODO: [架構清理] 移除舊版 InitSetupDialog 類別與相關呼叫
+
 # TODO: [UI 改造] 將「AI 引擎設定」頁面重構為「模型管理中心」
 # TODO: [互動邏輯] 實作左側「收合選單資料夾」的點擊與右鍵行為
 # TODO: 介面與顯示優化：在圖片卡片上顯示更多資訊（如修改日期、OCR 文字預覽等），並優化分數顯示的視覺效果
@@ -72,14 +69,12 @@ EyeSeeMore
 # TODO: 搜尋結果的limit控制
 # TODO: 控制欄的UIUX優化
 # TODO: OCR 紅框互動能直接在預覽端修改OCR辨識的結果
-# TODO: BUG 預覽時用WASD移動會丟失OCR黃色高亮功能
-# TODO: 資料夾加入會自動有OCR辨識改成加入後不自動辨識，改成在資料夾右鍵選單裡加入「OCR 辨識」的選項，點了才會去辨識
 # TODO: 加上Satisfactory主題的UI樣式
 # TODO: 加上BlueArchive主題的UI樣式
 # TODO: 刪除 Unicode 符號
 # TODO: BUG 用 Search Similar 要把Gallery 排序方式改成OCR優先，這樣才不會有搜尋相似圖片時OCR分數高的圖片被排在後面了
 # TODO: BUG 由手機相機拍的圖片視覺規格都是width > height 的導致橫圖直圖 塞選沒用
-
+# TODO: 離線啟動模型的功能
 
 import sys
 import ctypes
