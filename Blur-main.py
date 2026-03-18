@@ -2714,45 +2714,52 @@ class InspectorPanel(QFrame):
         
         self.sort_changed.emit()
 
-    def _setup_clip_tab(self):
-        layout = QVBoxLayout(self.tab_clip)
-        layout.setSpacing(15); layout.setContentsMargins(20, 25, 20, 20)
-
-        # 建立一個測試按鈕
-        self.btn_test_clip = QPushButton("這是一個 CLIP 測試按鈕沒有功能")
-        self.btn_test_clip.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_test_clip.setStyleSheet("""
+    # ==========================
+    # [優化] 抽離重複的按鈕樣式
+    # ==========================
+    def _create_construction_button(self, text):
+        btn = QPushButton(text)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet("""
             QPushButton { 
                 background-color: #2b2b2b; 
-                color: #eee; 
-                border: 1px solid #444; 
+                color: #888888; 
+                border: 1px dashed #444; 
                 border-radius: 4px; 
-                padding: 10px; 
+                padding: 15px;
+                font-weight: bold;
             } 
             QPushButton:hover { 
-                background-color: #383838; 
+                background-color: #333333; 
                 border-color: #60cdff; 
-                color: #fff; 
+                color: #60cdff; 
             }
         """)
+        return btn
+
+    def _setup_clip_tab(self):
+        # 修正：確保 layout 綁定在正確的 tab 上
+        layout = QVBoxLayout(self.tab_clip)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 25, 20, 20)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # 使用統一的樣式產生按鈕
+        self.btn_test_clip = self._create_construction_button("🚧 施工中：進階 CLIP 向量過濾")
         layout.addWidget(self.btn_test_clip)
 
-        # 彈簧：把按鈕往上推
         layout.addStretch(1)
 
     def _setup_ocr_tab(self):
-        layout = QVBoxLayout(self.tab_ocr)
-        layout.setSpacing(15); layout.setContentsMargins(20, 25, 20, 20)
+        # 修正：原代碼誤寫為 self.tab_clip，現已改回 self.tab_ocr
+        layout = QVBoxLayout(self.tab_ocr) 
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 25, 20, 20)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        layout.addWidget(QLabel("OCR 信心度閥值 (Threshold):"))
-        self.slider_conf = QSlider(Qt.Orientation.Horizontal)
-        self.slider_conf.setRange(0, 100); self.slider_conf.setValue(50)
-        layout.addWidget(self.slider_conf)
-
-        layout.addWidget(QLabel("搜尋權重分配 (CLIP vs OCR):"))
-        self.slider_weight = QSlider(Qt.Orientation.Horizontal)
-        self.slider_weight.setRange(0, 100); self.slider_weight.setValue(50)
-        layout.addWidget(self.slider_weight)
+        # 修正：使用正確的按鈕變數名稱
+        self.btn_test_ocr = self._create_construction_button("🚧 施工中：進階 OCR 屬性分析")
+        layout.addWidget(self.btn_test_ocr)
 
         layout.addStretch(1)
 
