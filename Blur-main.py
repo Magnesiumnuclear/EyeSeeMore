@@ -66,15 +66,13 @@ EyeSeeMore
 # TODO: 介面與顯示優化：在圖片卡片上顯示更多資訊（如修改日期、OCR 文字預覽等），並優化分數顯示的視覺效果
 # TODO: Help -> About 內加入版本資訊、開發者聯繫方式、GitHub 頁面連結等GPL (General Public License) 協議要求的資訊
 # TODO: 搜尋介面的ORC控制的分數控制
-# TODO: 搜尋結果的limit控制
 # TODO: 控制欄的UIUX優化
 # TODO: OCR 紅框互動能直接在預覽端修改OCR辨識的結果
-# TODO: 加上Satisfactory主題的UI樣式
-# TODO: 加上BlueArchive主題的UI樣式
-# TODO: 刪除 Unicode 符號
+# TODO: 想要加上Satisfactory主題的UI樣式
+# TODO: 想要加上BlueArchive主題的UI樣式
+# TODO: 刪除 Unicode 符號 減少AI味
 # TODO: BUG 用 Search Similar 要把Gallery 排序方式改成OCR優先，這樣才不會有搜尋相似圖片時OCR分數高的圖片被排在後面了
 # TODO: BUG 由手機相機拍的圖片視覺規格都是width > height 的導致橫圖直圖 塞選沒用
-# TODO: 離線啟動模型的功能
 # TODO: 分隔正向量與負向量的拖拽功能
 
 import sys
@@ -850,7 +848,7 @@ class ImageSearchEngine:
         except Exception as e: return False, str(e)
 
     def search_hybrid(self, query, top_k=50, use_ocr=True):
-        # 🌟 [終極防呆：取得當下指標。這樣就算背景切換了資料庫，這次搜尋依然能安全跑完]
+        # 🌟 [終極防呆：取得當下指標快照。這樣就算背景切換了資料庫，這次搜尋依然能安全跑完]
         current_embeddings = self.stored_embeddings
         current_data = self.data_store
 
@@ -859,13 +857,18 @@ class ImageSearchEngine:
             
         results = []; query_lower = query.lower()
         try:
-            # 1. 文字轉 Token 並轉為 Numpy
-            if getattr(self, 'is_hf_tokenizer', False):
-                text_tokens = self.tokenizer([query], padding=True, truncation=True, return_tensors="np").input_ids
-            else:
-                text_tokens = self.tokenizer([query]).cpu().numpy()
-            
-            text_tokens = text_tokens.astype(np.int64)
+            # ==========================================
+            # [關鍵修復] 統一使用 transformers 格式，移除舊版 open_clip 的 PyTorch 語法
+            # ==========================================
+            # 💡 加入 padding="max_length" 與 max_length=77，滿足 CLIP 的嚴格長度限制
+            inputs = self.tokenizer(
+                [query], 
+                padding="max_length", 
+                max_length=77, 
+                truncation=True, 
+                return_tensors="np"
+            )
+            text_tokens = inputs.input_ids.astype(np.int64)
             
             # 2. ONNX 提取文字特徵
             input_name = self.clip_text_session.get_inputs()[0].name
@@ -874,11 +877,12 @@ class ImageSearchEngine:
             # 3. L2 正規化
             text_features = text_features / np.linalg.norm(text_features, axis=-1, keepdims=True)
             
-            # 4. 極速 Numpy 矩陣相乘計算相似度 (使用快照 current_embeddings)
+            # 4. 極速 Numpy 矩陣相乘計算相似度
             scores = np.dot(text_features, current_embeddings.T).squeeze(0)
             
         except Exception as e:
-            print(f"CLIP Search Error: {e}"); scores = np.zeros(len(current_data))
+            print(f"CLIP Search Error: {e}")
+            scores = np.zeros(len(current_data))
 
         for idx, item in enumerate(current_data):
             clip_score = float(scores[idx]); ocr_bonus = 0.0; name_bonus = 0.0
@@ -4043,13 +4047,14 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         
-        # 隱藏浮動視窗
-        self.history_list.hide()
-        if self.preview_overlay.isVisible():
+        # 隱藏浮動視窗 (加上 hasattr 防呆檢查，避免初始化時崩潰)
+        if hasattr(self, 'history_list'):
+            self.history_list.hide()
+            
+        if hasattr(self, 'preview_overlay') and self.preview_overlay.isVisible():
             self.preview_overlay.resize(self.size())
             
         # [關鍵] 視窗大小改變時，Viewport 寬度也會變，必須重算
-        # 使用 QTimer.singleShot 0 毫秒，確保在 resize 事件完成後才計算，避免卡頓與計算錯誤
         QTimer.singleShot(0, self.adjust_layout)
 
     def showEvent(self, event):
