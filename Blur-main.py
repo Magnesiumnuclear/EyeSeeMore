@@ -5126,7 +5126,45 @@ class SettingsDialog(QDialog):
 
     def init_page_about(self):
         page, layout = self._create_page_container("ℹ️ 關於與說明 (Help & About)")
-        layout.addWidget(QLabel("V0.5.0-alpha")); layout.addStretch(1); self.stack.addWidget(page)
+
+        # 1. 軟體標題
+        title_label = QLabel("<h2>EyeSeeMore</h2>")
+        layout.addWidget(title_label)
+
+        # 2. 版本資訊與日期
+        # 建議：你可以將版本號與日期抽成變數，方便以後維護
+        version_info = QLabel("<b>Version:</b> V0.5.0-alpha<br><b>Build Date:</b> 2026-03-18")
+        layout.addWidget(version_info)
+
+        # 3. 核心技術聲明 (整合了你提供的所有關鍵庫)
+        # 我們將技術分類，讓使用者（和開發者）一眼看出這軟體的強大之處
+        tech_text = (
+            "<h3>技術致敬 (Core Technologies)</h3>"
+            "<p>本軟體由以下優秀的開源生態系驅動：</p>"
+            "<ul>"
+            "<li><b>介面開發：</b> Python & PyQt6</li>"
+            "<li><b>AI 推理引擎：</b> ONNX Runtime</li>"
+            "<li><b>文字辨識 (OCR)：</b> ONNX-OCR</li>"
+            "<li><b>影像與資料處理：</b> OpenCV, Pillow (PIL), NumPy</li>"
+            "<li><b>資料存儲：</b> SQLite3</li>"
+            "<li><b>系統監控：</b> psutil (效能優化)</li>"
+            "</ul>"
+        )
+        tech_label = QLabel(tech_text)
+        layout.addWidget(tech_label)
+
+        # 4. 官方連結
+        # 記得把 "你的帳號" 換成你真正的 GitHub 帳號名喔！
+        link_label = QLabel('<a href="https://github.com/你的帳號/EyeSeeMore" style="color: #00aaff; text-decoration: none;">🌐 專案 GitHub 主頁 (回報問題與建議)</a>')
+        link_label.setOpenExternalLinks(True) 
+        layout.addWidget(link_label)
+
+        # 5. 版權聲明
+        copyright_label = QLabel("<br><small>© 2026 H0. Licensed under GPL v3.</small>")
+        layout.addWidget(copyright_label)
+
+        layout.addStretch(1) # 確保所有元件都緊湊地靠上
+        self.stack.addWidget(page)
 
 if __name__ == "__main__":
     app_config = ConfigManager()
