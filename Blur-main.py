@@ -1020,7 +1020,6 @@ class IndexerWorker(QThread):
         # ==========================================
         # [新增] ETA 預估時間專用變數 (滑動視窗測速)
         # ==========================================
-        import time
         last_update_time = [time.time()]
         last_current = [0]
         speed_history = []  # 儲存最近 5 次的「每張圖耗時(秒)」
@@ -2756,7 +2755,7 @@ class InspectorPanel(QFrame):
         self.sec_advanced.addWidget(btn_reset)
         
         self.search_main_layout.addWidget(self.sec_advanced)
-        self.sec_advanced.set_expanded(False)
+        self.sec_advanced.set_expanded(True) # 預設展開
 
         QTimer.singleShot(0, self.load_weight_settings)
 
@@ -3077,11 +3076,11 @@ class InspectorPanel(QFrame):
     def on_calc_mode_changed(self, index, save=True):
         is_add = (index == 1)
         if is_add:
-            self.lbl_formula.setText("公式：CLIP分數 + (OCR命中? 加分) + (檔名命中? 加分)")
             self.slider_clip.setEnabled(False)
         else:
-            self.lbl_formula.setText("公式：(CLIP×權重) + (OCR命中? 0.5×權重) + (檔名命中? 0.5×權重)")
             self.slider_clip.setEnabled(True)
+            
+        # 🌟 把公式文字的更新移交給 update_weight_labels 統一處理
         self.update_weight_labels()
         if save: self.on_weight_slider_released()
 
@@ -3093,14 +3092,30 @@ class InspectorPanel(QFrame):
 
     def update_weight_labels(self):
         is_add = (self.combo_calc_mode.currentIndex() == 1)
+        
+        # 取得實際滑桿的浮點數值
+        clip_v = self.slider_clip.value() / 100.0
+        ocr_v = self.slider_ocr.value() / 100.0
+        name_v = self.slider_name.value() / 100.0
+        
+        # 加法模式的實際加分 (0.0 ~ 0.5)
+        ocr_add = self.slider_ocr.value() / 200.0
+        name_add = self.slider_name.value() / 200.0
+
         if is_add:
             self.lbl_clip_weight.setText("視覺權重 (CLIP 固定為原始分數)")
-            self.lbl_ocr_weight.setText(f"文字加分 (OCR Bonus): +{self.slider_ocr.value() / 200:.2f}")
-            self.lbl_name_weight.setText(f"名稱加分 (Filename Bonus): +{self.slider_name.value() / 200:.2f}")
+            self.lbl_ocr_weight.setText(f"文字加分 (OCR Bonus): +{ocr_add:.2f}")
+            self.lbl_name_weight.setText(f"名稱加分 (Filename Bonus): +{name_add:.2f}")
+            # 移除「公式:」並顯示動態數字
+            self.lbl_formula.setText(f"CLIP分數 + (OCR命中? +{ocr_add:.2f}) + (檔名命中? +{name_add:.2f})")
         else:
-            self.lbl_clip_weight.setText(f"視覺權重 (CLIP Weight): x{self.slider_clip.value() / 100:.2f}")
-            self.lbl_ocr_weight.setText(f"文字權重 (OCR Bonus): x{self.slider_ocr.value() / 100:.2f}")
-            self.lbl_name_weight.setText(f"名稱權重 (Filename Bonus): x{self.slider_name.value() / 100:.2f}")
+            self.lbl_clip_weight.setText(f"視覺權重 (CLIP Weight): x{clip_v:.2f}")
+            self.lbl_ocr_weight.setText(f"文字權重 (OCR Bonus): x{ocr_v:.2f}")
+            self.lbl_name_weight.setText(f"名稱權重 (Filename Bonus): x{name_v:.2f}")
+            # 計算基準乘法分數並顯示
+            ocr_calc = 0.5 * ocr_v
+            name_calc = 0.5 * name_v
+            self.lbl_formula.setText(f"(CLIP × {clip_v:.2f}) + (OCR命中? {ocr_calc:.2f}) + (檔名命中? {name_calc:.2f})")
             
         self.lbl_threshold_val.setText(f"手動門檻值: {self.slider_threshold.value() / 100:.2f}")
 
@@ -3495,38 +3510,7 @@ class MainWindow(QMainWindow):
         if q and not q.startswith("[Image]"):
             self.start_search(triggered_by_slider=True)
 
-    def start_search(self, *args, triggered_by_slider=False):
-        q = self.input.text().strip()
-        if not q or not self.engine: return
-        
-        has_chinese = bool(re.search(r'[\u4e00-\u9fff]', q))
-        if has_chinese and not getattr(self.engine, 'is_hf_tokenizer', True):
-            if not triggered_by_slider:
-                QMessageBox.warning(self, "不支援的語言", "您目前使用的 AI 模型僅支援「英文」搜尋...")
-            return
-        
-        if not triggered_by_slider:
-            self.add_to_history(q)
-            self.history_list.hide()
-            self.progress.show()
-            self.progress.setRange(0, 0)
-            self.status.setText("Searching...")
-            self.breadcrumb_lbl.setText("Search Results")
-            
-            self.inspector_panel.combo_sort.blockSignals(True)
-            self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
-            self.inspector_panel.btn_sort_order.setText("↓")
-            self.inspector_panel.combo_sort.blockSignals(False)
-
-        limit = self.inspector_panel.combo_limit_panel.currentText()
-        k = 100000 if limit == "All" else int(limit)
-        
-        weight_config = self.inspector_panel.get_weight_config()
-        self.worker = SearchWorker(self.engine, q, k, search_mode="text", use_ocr=self.btn_ocr_toggle.isChecked(), weight_config=weight_config)
-        self.worker.batch_ready.connect(self.set_base_results)
-        self.worker.finished_search.connect(self.on_finished)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.worker.start()  # <--- [修復] 補回上次被覆蓋掉的啟動指令
+    
 
     def refresh_sidebar(self):
         """通知側邊欄更新資料夾狀態與排序"""
@@ -4276,6 +4260,24 @@ class MainWindow(QMainWindow):
         limit = self.inspector_panel.combo_limit_panel.currentText()
         k = 100000 if limit == "All" else int(limit)
         
+        # ==========================================
+        # 🌟 [完美修復] 執行緒收容與 C++ 幽靈物件防護
+        # ==========================================
+        try:
+            if getattr(self, 'worker', None):
+                # 1. 切斷舊的訊號：避免你拉滑桿太快，舊的結果算完跑出來蓋掉新的畫面
+                self.worker.batch_ready.disconnect()
+                self.worker.finished_search.disconnect()
+                
+                # 2. 如果舊的還在跑，把它丟進收容所讓它跑完自然消滅
+                if self.worker.isRunning():
+                    if not hasattr(self, '_retained_workers'): self._retained_workers = []
+                    self._retained_workers.append(self.worker)
+                    self.worker.finished.connect(lambda w=self.worker: self._retained_workers.remove(w) if w in self._retained_workers else None)
+        except (RuntimeError, TypeError):
+            # 捕捉到幽靈物件！C++ 底層已被 deleteLater 刪除，安全忽略
+            pass
+        
         weight_config = self.inspector_panel.get_weight_config()
         self.worker = SearchWorker(self.engine, q, k, search_mode="text", use_ocr=self.btn_ocr_toggle.isChecked(), weight_config=weight_config)
         self.worker.batch_ready.connect(self.set_base_results)
@@ -4289,14 +4291,8 @@ class MainWindow(QMainWindow):
         self.status.setText("Searching by Image...")
         self.input.setText(f"[Image] {os.path.basename(image_path)}")
         
-        # ==========================================
-        # [關鍵修改] 1. 更新麵包屑標題
-        # ==========================================
         self.breadcrumb_lbl.setText("Similar Images")
         
-        # ==========================================
-        # [關鍵修改] 2. 強制將排序設定改回「搜尋相關度」與「倒序 (↓)」
-        # ==========================================
         self.inspector_panel.combo_sort.blockSignals(True)
         self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
         self.inspector_panel.btn_sort_order.setText("↓")
@@ -4304,6 +4300,20 @@ class MainWindow(QMainWindow):
         
         limit = self.inspector_panel.combo_limit_panel.currentText()
         k = 100000 if limit == "All" else int(limit)
+        
+        # ==========================================
+        # 🌟 [完美修復] 執行緒收容與 C++ 幽靈物件防護
+        # ==========================================
+        try:
+            if getattr(self, 'worker', None):
+                self.worker.batch_ready.disconnect()
+                self.worker.finished_search.disconnect()
+                if self.worker.isRunning():
+                    if not hasattr(self, '_retained_workers'): self._retained_workers = []
+                    self._retained_workers.append(self.worker)
+                    self.worker.finished.connect(lambda w=self.worker: self._retained_workers.remove(w) if w in self._retained_workers else None)
+        except (RuntimeError, TypeError):
+            pass
         
         self.worker = SearchWorker(self.engine, image_path, k, search_mode="image")
         self.worker.batch_ready.connect(self.set_base_results)
