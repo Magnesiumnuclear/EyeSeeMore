@@ -71,7 +71,6 @@ EyeSeeMore
 # TODO: 想要加上Satisfactory主題的UI樣式
 # TODO: 想要加上BlueArchive主題的UI樣式
 # TODO: 刪除 Unicode 符號 減少AI味
-# TODO: BUG 用 Search Similar 要把Gallery 排序方式改成OCR優先，這樣才不會有搜尋相似圖片時OCR分數高的圖片被排在後面了
 # TODO: BUG 由手機相機拍的圖片視覺規格都是width > height 的導致橫圖直圖 塞選沒用
 # TODO: 分隔正向量與負向量的拖拽功能
 
@@ -3336,14 +3335,22 @@ class MainWindow(QMainWindow):
         self.inspector_panel.btn_sort_order.setText("↓")
         self.inspector_panel.combo_sort.blockSignals(False)
         
+        # ==========================================
+        # [修改] 還原麵包屑標題，並清空搜尋框的殘留文字
+        # ==========================================
+        self.input.setText("") 
+        
         # 1. 如果是 "ALL"，顯示全部 (依時間排序)
         if path == "ALL":
+            self.breadcrumb_lbl.setText("Gallery")
             all_imgs = self.engine.get_all_images_sorted()
             self.set_base_results(all_imgs)
             self.status.setText(f"Showing all {len(all_imgs)} images")
             return
 
         # 2. 篩選特定資料夾
+        self.breadcrumb_lbl.setText(f"Folder: {os.path.basename(path)}")
+        
         # 這邊簡單用 Python list comprehension 過濾 (高效能做法建議在 Engine 寫 SQL)
         if self.engine.data_store:
             filtered = [
@@ -4012,7 +4019,10 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 0)
         self.status.setText("Searching...")
         
-        # ... 下方的程式碼保持不變 ...
+        # ==========================================
+        # [修改] 更新麵包屑標題
+        # ==========================================
+        self.breadcrumb_lbl.setText("Search Results")
         
         limit = self.inspector_panel.combo_limit_panel.currentText()
         k = 100000 if limit == "All" else int(limit)
@@ -4034,6 +4044,19 @@ class MainWindow(QMainWindow):
         self.history_list.hide(); self.progress.show(); self.progress.setRange(0, 0)
         self.status.setText("Searching by Image...")
         self.input.setText(f"[Image] {os.path.basename(image_path)}")
+        
+        # ==========================================
+        # [關鍵修改] 1. 更新麵包屑標題
+        # ==========================================
+        self.breadcrumb_lbl.setText("Similar Images")
+        
+        # ==========================================
+        # [關鍵修改] 2. 強制將排序設定改回「搜尋相關度」與「倒序 (↓)」
+        # ==========================================
+        self.inspector_panel.combo_sort.blockSignals(True)
+        self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
+        self.inspector_panel.btn_sort_order.setText("↓")
+        self.inspector_panel.combo_sort.blockSignals(False)
         
         limit = self.inspector_panel.combo_limit_panel.currentText()
         k = 100000 if limit == "All" else int(limit)
