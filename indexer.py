@@ -254,12 +254,13 @@ class IndexerService:
             done_langs = ocr_history.get(file_id, set())
             
             # [Debug 日誌 3] 抽出前 5 張圖片來看看系統到底是怎麼判斷的
+            '''
             if debug_print_limit < 5:
                 print(f"[Debug] 圖片: {os.path.basename(p)}")
                 print(f"         - 此資料夾需要的語系 (Required): {required_langs}")
                 print(f"         - 此圖片已完成的語系 (Done): {done_langs}")
                 debug_print_limit += 1
-            
+            '''
             # 只要有任何一個需要的語系沒跑過，就排入補算名單！
             if any(lang not in done_langs for lang in required_langs):
                 files_ocr_only.append(p)

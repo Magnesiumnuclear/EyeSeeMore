@@ -982,8 +982,54 @@ class IndexerWorker(QThread):
 
         total_tasks = len(files_full) + len(files_emb_only) + len(files_ocr_only)
         self.status_update.emit(f"Indexing {total_tasks} images...")
+        
+        # ==========================================
+        # [新增] ETA 預估時間專用變數 (滑動視窗測速)
+        # ==========================================
+        import time
+        last_update_time = [time.time()]
+        last_current = [0]
+        speed_history = []  # 儲存最近 5 次的「每張圖耗時(秒)」
+
         def callback(current, total, msg):
-            self.progress_update.emit(current, total); self.status_update.emit(msg)
+            now = time.time()
+            elapsed = now - last_update_time[0]
+            processed = current - last_current[0]
+            
+            # 1. 紀錄動態速度 (只保留最近 5 次，反映電腦當下真實效能)
+            if processed > 0:
+                sec_per_item = elapsed / processed
+                speed_history.append(sec_per_item)
+                if len(speed_history) > 5:
+                    speed_history.pop(0) 
+                    
+            last_update_time[0] = now
+            last_current[0] = current
+            
+            # 去除底層傳來字串結尾的 "..."
+            clean_msg = msg.replace("...", "")
+            
+            # 2. 計算與格式化倒數時間
+            if current < total:
+                # 收集到至少 2 筆批次資料才開始算，避開模型剛啟動的極端延遲
+                if len(speed_history) >= 2: 
+                    avg_sec_per_item = sum(speed_history) / len(speed_history)
+                    remaining_items = total - current
+                    eta_seconds = int(remaining_items * avg_sec_per_item)
+                    
+                    if eta_seconds > 3600:
+                        final_msg = f"{clean_msg} (剩餘時間: > 1 小時)"
+                    else:
+                        m, s = divmod(eta_seconds, 60)
+                        final_msg = f"{clean_msg} (剩餘時間: {m:02d}:{s:02d})"
+                else:
+                    final_msg = f"{clean_msg} (計算估時中...)"
+            else:
+                # 3. 完美歸零視覺魔法：100% 瞬間切換文字，安撫寫入硬碟那 1 秒的等待感
+                final_msg = f"{clean_msg} (儲存資料庫中...)"
+
+            self.progress_update.emit(current, total)
+            self.status_update.emit(final_msg)
 
         try:
             # 🌟 [關鍵修復] 以前這裡是 .engine.model (因為改版變成 None 了)
@@ -2673,7 +2719,7 @@ class InspectorPanel(QFrame):
         layout.setSpacing(15); layout.setContentsMargins(20, 25, 20, 20)
 
         # 建立一個測試按鈕
-        self.btn_test_clip = QPushButton("這是一個 CLIP 測試按鈕")
+        self.btn_test_clip = QPushButton("這是一個 CLIP 測試按鈕沒有功能")
         self.btn_test_clip.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_test_clip.setStyleSheet("""
             QPushButton { 
