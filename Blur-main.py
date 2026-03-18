@@ -846,8 +846,7 @@ class ImageSearchEngine:
             return True, new_path
         except Exception as e: return False, str(e)
 
-    def search_hybrid(self, query, top_k=50, use_ocr=True):
-        # 🌟 [終極防呆：取得當下指標快照。這樣就算背景切換了資料庫，這次搜尋依然能安全跑完]
+    def search_hybrid(self, query, top_k=50, use_ocr=True, weight_config=None):
         current_embeddings = self.stored_embeddings
         current_data = self.data_store
 
@@ -857,45 +856,80 @@ class ImageSearchEngine:
         results = []; query_lower = query.lower()
         try:
             # ==========================================
-            # [關鍵修復] 統一使用 transformers 格式，移除舊版 open_clip 的 PyTorch 語法
+            # 🌟 [快取機制] 如果搜尋字詞沒變，直接重用特徵矩陣
             # ==========================================
-            # 💡 加入 padding="max_length" 與 max_length=77，滿足 CLIP 的嚴格長度限制
-            inputs = self.tokenizer(
-                [query], 
-                padding="max_length", 
-                max_length=77, 
-                truncation=True, 
-                return_tensors="np"
-            )
-            text_tokens = inputs.input_ids.astype(np.int64)
+            if hasattr(self, 'last_text_query') and self.last_text_query == query and hasattr(self, 'last_text_features'):
+                text_features = self.last_text_features
+            else:
+                inputs = self.tokenizer([query], padding="max_length", max_length=77, truncation=True, return_tensors="np")
+                text_tokens = inputs.input_ids.astype(np.int64)
+                input_name = self.clip_text_session.get_inputs()[0].name
+                text_features = self.clip_text_session.run(None, {input_name: text_tokens})[0]
+                text_features = text_features / np.linalg.norm(text_features, axis=-1, keepdims=True)
+                
+                self.last_text_query = query
+                self.last_text_features = text_features
             
-            # 2. ONNX 提取文字特徵
-            input_name = self.clip_text_session.get_inputs()[0].name
-            text_features = self.clip_text_session.run(None, {input_name: text_tokens})[0]
-            
-            # 3. L2 正規化
-            text_features = text_features / np.linalg.norm(text_features, axis=-1, keepdims=True)
-            
-            # 4. 極速 Numpy 矩陣相乘計算相似度
+            # 極速 Numpy 矩陣相乘計算相似度
             scores = np.dot(text_features, current_embeddings.T).squeeze(0)
             
         except Exception as e:
             print(f"CLIP Search Error: {e}")
             scores = np.zeros(len(current_data))
 
+        if weight_config is None:
+            weight_config = {"mode": "multiply", "clip_w": 1.0, "ocr_w": 1.0, "name_w": 0.4, "thresh_mode": "auto", "thresh_val": 0.15}
+            
+        mode = weight_config.get("mode", "multiply")
+        clip_w = weight_config.get("clip_w", 1.0)
+        ocr_w = weight_config.get("ocr_w", 1.0)
+        name_w = weight_config.get("name_w", 0.4)
+        thresh_mode = weight_config.get("thresh_mode", "auto")
+        thresh_val = weight_config.get("thresh_val", 0.15)
+
+        raw_results = []
+        max_score = 0.0
+
         for idx, item in enumerate(current_data):
-            clip_score = float(scores[idx]); ocr_bonus = 0.0; name_bonus = 0.0
-            if use_ocr and query_lower in item["ocr_text"]: ocr_bonus = 0.5
-            if query_lower in item["filename"].lower(): name_bonus = 0.2
-            final_score = clip_score + ocr_bonus + name_bonus
-            if final_score > 0.15: 
-                results.append({
-                    "score": final_score, "clip_score": clip_score, "ocr_bonus": ocr_bonus, "name_bonus": name_bonus,
-                    "is_ocr_match": (ocr_bonus > 0), "path": item["path"], "filename": item["filename"],
-                    "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0),
-                    "width": item.get("width", 0),  
-                    "height": item.get("height", 0) 
-                })
+            clip_score = float(scores[idx])
+            has_ocr = use_ocr and (query_lower in item["ocr_text"])
+            has_name = query_lower in item["filename"].lower()
+            
+            ocr_bonus = 0.0
+            name_bonus = 0.0
+            
+            # 視覺底標防護
+            if clip_score >= 0.08:
+                if mode == "add":
+                    ocr_bonus = (ocr_w / 2.0) if has_ocr else 0.0 
+                    name_bonus = (name_w / 2.0) if has_name else 0.0
+                else:
+                    ocr_bonus = (0.5 * ocr_w) if has_ocr else 0.0
+                    name_bonus = (0.5 * name_w) if has_name else 0.0
+            
+            if mode == "add":
+                final_score = clip_score + ocr_bonus + name_bonus
+            else:
+                final_score = (clip_score * clip_w) + ocr_bonus + name_bonus
+                
+            if final_score > max_score:
+                max_score = final_score
+                
+            raw_results.append({
+                "score": final_score, "clip_score": clip_score, "ocr_bonus": ocr_bonus, "name_bonus": name_bonus,
+                "is_ocr_match": has_ocr, "path": item["path"], "filename": item["filename"],
+                "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0),
+                "width": item.get("width", 0),  
+                "height": item.get("height", 0) 
+            })
+
+        # 動態門檻過濾
+        if thresh_mode == "auto":
+            actual_thresh = max_score * 0.5
+        else:
+            actual_thresh = thresh_val
+
+        results = [r for r in raw_results if r["score"] >= actual_thresh]
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
@@ -1053,21 +1087,21 @@ class SearchWorker(QThread):
     batch_ready = pyqtSignal(list) 
     finished_search = pyqtSignal(float, int)
     
-    def __init__(self, engine, query, top_k, search_mode="text", use_ocr=True): 
+    def __init__(self, engine, query, top_k, search_mode="text", use_ocr=True, weight_config=None): 
         super().__init__()
         self.engine = engine
         self.query = query
         self.top_k = top_k
         self.search_mode = search_mode
         self.use_ocr = use_ocr
+        self.weight_config = weight_config
 
     def run(self):
         start_time = time.time()
-        
         if self.search_mode == "image":
             raw_results = self.engine.search_image(self.query, self.top_k)
         else:
-            raw_results = self.engine.search_hybrid(self.query, self.top_k, self.use_ocr)
+            raw_results = self.engine.search_hybrid(self.query, self.top_k, self.use_ocr, self.weight_config)
             
         self.batch_ready.emit(raw_results)
         self.finished_search.emit(time.time() - start_time, len(raw_results))
@@ -2515,15 +2549,17 @@ class InspectorPanel(QFrame):
     """右側屬性與檢索控制台 (三層分頁架構)"""
 
     aspect_changed = pyqtSignal()
-
     sort_changed = pyqtSignal()
-
     time_filter_applied = pyqtSignal(float, float) 
     time_search_requested = pyqtSignal(float, float)
     time_filter_cleared = pyqtSignal()
+    
+    # [新增] 權重改變的訊號
+    weights_changed = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.main_window = parent# [新增] 儲存父視窗以便讀寫設定
         self.setFixedWidth(320)
         
         # 專屬的現代化暗色系樣式
@@ -2572,17 +2608,14 @@ class InspectorPanel(QFrame):
         self.hide() # 預設隱藏，等待按鈕觸發
 
     def _setup_search_tab(self):
-        # 1. Tab 的主佈局 (包含 滾動區 + 置底按鈕)
         tab_layout = QVBoxLayout(self.tab_search)
         tab_layout.setContentsMargins(0, 0, 0, 0)
         tab_layout.setSpacing(0)
 
-        # 2. 建立滾動區
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
         
-        # 3. 建立滾動區內部的容器
         container = QWidget()
         container.setStyleSheet("background: transparent;")
         self.search_main_layout = QVBoxLayout(container)
@@ -2592,15 +2625,12 @@ class InspectorPanel(QFrame):
 
         # --- 區塊 1: 🔍 檢索過濾 (FILTER) ---
         self.sec_filter = CollapsibleSection("檢索過濾")
-        
-        # 🌟 將標題存為變數，以利後續操作底線
         self.lbl_time_title = QLabel("時間維度 (Time Range):")
         self.sec_filter.addWidget(self.lbl_time_title)
         
         self.btn_time_range = QPushButton("📅 全部時間 (All Time)")
         self.btn_time_range.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_time_range.setCheckable(True)
-        # 🌟 移除按鈕上的 filter_active 樣式
         self.btn_time_range.setStyleSheet("""
             QPushButton {
                 background-color: #2b2b2b; color: #eeeeee; border: 1px solid #444; border-radius: 4px; padding: 8px 12px; text-align: left; font-size: 13px;
@@ -2619,7 +2649,6 @@ class InspectorPanel(QFrame):
         self.calendar_widget.selection_started.connect(self.on_calendar_picking)
         self.sec_filter.addWidget(self.calendar_widget)
 
-        # 🌟 將視覺規格的標題也存為變數
         self.lbl_aspect_title = QLabel("視覺規格 (Visual Specs):")
         self.sec_filter.addWidget(self.lbl_aspect_title)
         
@@ -2665,30 +2694,76 @@ class InspectorPanel(QFrame):
 
         # --- 區塊 3: 🧪 進階功能 (ADVANCED) ---
         self.sec_advanced = CollapsibleSection("相關度權重控制")
-        self.sec_advanced.addWidget(QLabel("視覺權重 (CLIP Weight):"))
-        self.slider_clip_weight = QSlider(Qt.Orientation.Horizontal)
-        self.slider_clip_weight.setRange(0, 100); self.slider_clip_weight.setValue(100)
-        self.sec_advanced.addWidget(self.slider_clip_weight)
         
-        self.sec_advanced.addWidget(QLabel("文字權重 (OCR Bonus):"))
-        self.slider_ocr_weight = QSlider(Qt.Orientation.Horizontal)
-        self.slider_ocr_weight.setRange(0, 100); self.slider_ocr_weight.setValue(50)
-        self.sec_advanced.addWidget(self.slider_ocr_weight)
+        mode_layout = QHBoxLayout()
+        self.combo_calc_mode = QComboBox()
+        self.combo_calc_mode.addItems(["乘法模式 (Multiplication)", "加法模式 (Addition)"])
+        self.combo_calc_mode.currentIndexChanged.connect(self.on_calc_mode_changed)
+        mode_layout.addWidget(self.combo_calc_mode)
+        self.sec_advanced.addLayout(mode_layout)
 
-        self.sec_advanced.addWidget(QLabel("名稱權重 (Filename Bonus):"))
-        self.slider_name_weight = QSlider(Qt.Orientation.Horizontal)
-        self.slider_name_weight.setRange(0, 100); self.slider_name_weight.setValue(20)
-        self.sec_advanced.addWidget(self.slider_name_weight)
+        self.lbl_formula = QLabel()
+        self.lbl_formula.setStyleSheet("color: #888888; font-size: 11px; margin-bottom: 5px;")
+        self.sec_advanced.addWidget(self.lbl_formula)
+
+        self.lbl_clip_weight = QLabel()
+        self.sec_advanced.addWidget(self.lbl_clip_weight)
+        self.slider_clip = QSlider(Qt.Orientation.Horizontal)
+        self.slider_clip.setRange(0, 100)
+        self.slider_clip.valueChanged.connect(self.update_weight_labels)
+        self.slider_clip.sliderReleased.connect(self.on_weight_slider_released)
+        self.sec_advanced.addWidget(self.slider_clip)
+
+        self.lbl_ocr_weight = QLabel()
+        self.sec_advanced.addWidget(self.lbl_ocr_weight)
+        self.slider_ocr = QSlider(Qt.Orientation.Horizontal)
+        self.slider_ocr.setRange(0, 100)
+        self.slider_ocr.valueChanged.connect(self.update_weight_labels)
+        self.slider_ocr.sliderReleased.connect(self.on_weight_slider_released)
+        self.sec_advanced.addWidget(self.slider_ocr)
+
+        self.lbl_name_weight = QLabel()
+        self.sec_advanced.addWidget(self.lbl_name_weight)
+        self.slider_name = QSlider(Qt.Orientation.Horizontal)
+        self.slider_name.setRange(0, 100)
+        self.slider_name.valueChanged.connect(self.update_weight_labels)
+        self.slider_name.sliderReleased.connect(self.on_weight_slider_released)
+        self.sec_advanced.addWidget(self.slider_name)
+
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet("border-top: 1px solid #3c3c3c; margin: 10px 0;")
+        self.sec_advanced.addWidget(line)
+
+        self.sec_advanced.addWidget(QLabel("結果過濾門檻 (Threshold):"))
+        self.combo_threshold_mode = QComboBox()
+        self.combo_threshold_mode.addItems(["自動 (最高分的一半)", "手動 (自訂最低分)"])
+        self.combo_threshold_mode.currentIndexChanged.connect(self.on_threshold_mode_changed)
+        self.sec_advanced.addWidget(self.combo_threshold_mode)
+
+        self.lbl_threshold_val = QLabel()
+        self.sec_advanced.addWidget(self.lbl_threshold_val)
+        self.slider_threshold = QSlider(Qt.Orientation.Horizontal)
+        self.slider_threshold.setRange(1, 50) 
+        self.slider_threshold.valueChanged.connect(self.update_weight_labels)
+        self.slider_threshold.sliderReleased.connect(self.on_weight_slider_released)
+        self.sec_advanced.addWidget(self.slider_threshold)
+        
+        btn_reset = QPushButton("🔄 重置為預設權重")
+        btn_reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_reset.setStyleSheet("QPushButton { background-color: transparent; color: #aaa; border: 1px solid #555; padding: 6px; border-radius: 4px; margin-top: 10px;} QPushButton:hover { background-color: #333; color: white; }")
+        btn_reset.clicked.connect(self.reset_weights_to_default)
+        self.sec_advanced.addWidget(btn_reset)
         
         self.search_main_layout.addWidget(self.sec_advanced)
-        self.sec_advanced.set_expanded(True)
+        self.sec_advanced.set_expanded(False)
 
-        # 4. 將滾動容器組合
+        QTimer.singleShot(0, self.load_weight_settings)
+
         self.search_main_layout.addStretch(1)
         scroll_area.setWidget(container)
         tab_layout.addWidget(scroll_area)
 
-        # 🌟 5. 置底清除按鈕：放在 tab_layout 的最下方 (永遠懸浮貼底)
         self.btn_clear_all = QPushButton("🗑️ 清除所有過濾條件")
         self.btn_clear_all.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear_all.setStyleSheet("""
@@ -2969,6 +3044,88 @@ class InspectorPanel(QFrame):
         
         # 4. 自我更新 UI 底線狀態
         self.check_filters_active()
+
+# ==========================================
+    # 🌟 相關度權重控制邏輯 (放在 InspectorPanel 底部)
+    # ==========================================
+    def load_weight_settings(self):
+        ui_state = self.main_window.config.get("ui_state", {})
+        mode = ui_state.get("search_calc_mode", "multiply")
+        self.combo_calc_mode.setCurrentIndex(0 if mode == "multiply" else 1)
+        
+        self.slider_clip.setValue(ui_state.get("search_weight_clip", 100))
+        self.slider_ocr.setValue(ui_state.get("search_weight_ocr", 100))
+        self.slider_name.setValue(ui_state.get("search_weight_name", 40))
+        
+        thresh_mode = ui_state.get("search_thresh_mode", "auto")
+        self.combo_threshold_mode.setCurrentIndex(0 if thresh_mode == "auto" else 1)
+        self.slider_threshold.setValue(int(ui_state.get("search_thresh_val", 15)))
+        
+        self.update_weight_labels()
+        self.on_calc_mode_changed(self.combo_calc_mode.currentIndex(), save=False)
+        self.on_threshold_mode_changed(self.combo_threshold_mode.currentIndex(), save=False)
+
+    def reset_weights_to_default(self):
+        self.combo_calc_mode.setCurrentIndex(0)
+        self.slider_clip.setValue(100)
+        self.slider_ocr.setValue(100)
+        self.slider_name.setValue(40)
+        self.combo_threshold_mode.setCurrentIndex(0)
+        self.slider_threshold.setValue(15)
+        self.on_weight_slider_released()
+
+    def on_calc_mode_changed(self, index, save=True):
+        is_add = (index == 1)
+        if is_add:
+            self.lbl_formula.setText("公式：CLIP分數 + (OCR命中? 加分) + (檔名命中? 加分)")
+            self.slider_clip.setEnabled(False)
+        else:
+            self.lbl_formula.setText("公式：(CLIP×權重) + (OCR命中? 0.5×權重) + (檔名命中? 0.5×權重)")
+            self.slider_clip.setEnabled(True)
+        self.update_weight_labels()
+        if save: self.on_weight_slider_released()
+
+    def on_threshold_mode_changed(self, index, save=True):
+        is_manual = (index == 1)
+        self.lbl_threshold_val.setVisible(is_manual)
+        self.slider_threshold.setVisible(is_manual)
+        if save: self.on_weight_slider_released()
+
+    def update_weight_labels(self):
+        is_add = (self.combo_calc_mode.currentIndex() == 1)
+        if is_add:
+            self.lbl_clip_weight.setText("視覺權重 (CLIP 固定為原始分數)")
+            self.lbl_ocr_weight.setText(f"文字加分 (OCR Bonus): +{self.slider_ocr.value() / 200:.2f}")
+            self.lbl_name_weight.setText(f"名稱加分 (Filename Bonus): +{self.slider_name.value() / 200:.2f}")
+        else:
+            self.lbl_clip_weight.setText(f"視覺權重 (CLIP Weight): x{self.slider_clip.value() / 100:.2f}")
+            self.lbl_ocr_weight.setText(f"文字權重 (OCR Bonus): x{self.slider_ocr.value() / 100:.2f}")
+            self.lbl_name_weight.setText(f"名稱權重 (Filename Bonus): x{self.slider_name.value() / 100:.2f}")
+            
+        self.lbl_threshold_val.setText(f"手動門檻值: {self.slider_threshold.value() / 100:.2f}")
+
+    def on_weight_slider_released(self):
+        """放開滑桿時，儲存設定並觸發 MainWindow 重新搜尋"""
+        ui_state = self.main_window.config.get("ui_state", {})
+        ui_state["search_calc_mode"] = "add" if self.combo_calc_mode.currentIndex() == 1 else "multiply"
+        ui_state["search_weight_clip"] = self.slider_clip.value()
+        ui_state["search_weight_ocr"] = self.slider_ocr.value()
+        ui_state["search_weight_name"] = self.slider_name.value()
+        ui_state["search_thresh_mode"] = "manual" if self.combo_threshold_mode.currentIndex() == 1 else "auto"
+        ui_state["search_thresh_val"] = self.slider_threshold.value()
+        self.main_window.config.set("ui_state", ui_state)
+        self.weights_changed.emit(self.get_weight_config())
+
+    def get_weight_config(self):
+        """產生提供給 AI 引擎的參數包"""
+        return {
+            "mode": "add" if self.combo_calc_mode.currentIndex() == 1 else "multiply",
+            "clip_w": self.slider_clip.value() / 100.0,
+            "ocr_w": self.slider_ocr.value() / 100.0,
+            "name_w": self.slider_name.value() / 100.0,
+            "thresh_mode": "manual" if self.combo_threshold_mode.currentIndex() == 1 else "auto",
+            "thresh_val": self.slider_threshold.value() / 100.0
+        }
 
 class MainWindow(QMainWindow):
     # 定義訊號
@@ -3288,6 +3445,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel.time_search_requested.connect(self.search_by_time_range)
         self.inspector_panel.time_filter_cleared.connect(self.clear_time_filter)
         self.inspector_panel.aspect_changed.connect(self.apply_current_filters_and_show)
+        self.inspector_panel.weights_changed.connect(self.on_weights_changed)
 
         # 將畫廊與右側面板加入 Splitter
         self.main_splitter.addWidget(self.list_view)
@@ -3322,12 +3480,53 @@ class MainWindow(QMainWindow):
         self.list_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
         main_layout.addWidget(right_container)
-        # ---------- 到這裡結束覆蓋 ----------
         
         # 其他浮動元件
         self.history_list = QListWidget(self); self.history_list.hide(); self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         shadow = QGraphicsDropShadowEffect(); shadow.setBlurRadius(20); shadow.setColor(QColor(0, 0, 0, 100)); shadow.setOffset(0, 4); self.history_list.setGraphicsEffect(shadow)
         self.preview_overlay = PreviewOverlay(self)
+
+    # ==========================================
+    # init_ui() 結束，接下來是 MainWindow 的其他獨立函式
+    # ==========================================
+
+    def on_weights_changed(self, weight_config):
+        q = self.input.text().strip()
+        if q and not q.startswith("[Image]"):
+            self.start_search(triggered_by_slider=True)
+
+    def start_search(self, *args, triggered_by_slider=False):
+        q = self.input.text().strip()
+        if not q or not self.engine: return
+        
+        has_chinese = bool(re.search(r'[\u4e00-\u9fff]', q))
+        if has_chinese and not getattr(self.engine, 'is_hf_tokenizer', True):
+            if not triggered_by_slider:
+                QMessageBox.warning(self, "不支援的語言", "您目前使用的 AI 模型僅支援「英文」搜尋...")
+            return
+        
+        if not triggered_by_slider:
+            self.add_to_history(q)
+            self.history_list.hide()
+            self.progress.show()
+            self.progress.setRange(0, 0)
+            self.status.setText("Searching...")
+            self.breadcrumb_lbl.setText("Search Results")
+            
+            self.inspector_panel.combo_sort.blockSignals(True)
+            self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
+            self.inspector_panel.btn_sort_order.setText("↓")
+            self.inspector_panel.combo_sort.blockSignals(False)
+
+        limit = self.inspector_panel.combo_limit_panel.currentText()
+        k = 100000 if limit == "All" else int(limit)
+        
+        weight_config = self.inspector_panel.get_weight_config()
+        self.worker = SearchWorker(self.engine, q, k, search_mode="text", use_ocr=self.btn_ocr_toggle.isChecked(), weight_config=weight_config)
+        self.worker.batch_ready.connect(self.set_base_results)
+        self.worker.finished_search.connect(self.on_finished)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.worker.start()  # <--- [修復] 補回上次被覆蓋掉的啟動指令
 
     def refresh_sidebar(self):
         """通知側邊欄更新資料夾狀態與排序"""
@@ -4046,47 +4245,39 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
         
-    def start_search(self):
+    def on_weights_changed(self, weight_config):
+        q = self.input.text().strip()
+        if q and not q.startswith("[Image]"):
+            self.start_search(triggered_by_slider=True)
+
+    def start_search(self, *args, triggered_by_slider=False):
         q = self.input.text().strip()
         if not q or not self.engine: return
         
-        # ==========================================
-        # [新增] 語言防呆機制：檢查中文與模型的相容性
-        # ==========================================
         has_chinese = bool(re.search(r'[\u4e00-\u9fff]', q))
-        
-        # 如果包含中文，且當前不是使用多語系模型 (is_hf_tokenizer 為 False)
         if has_chinese and not getattr(self.engine, 'is_hf_tokenizer', True):
-            QMessageBox.warning(
-                self, 
-                "不支援的語言", 
-                "您目前使用的 AI 模型僅支援「英文」搜尋。\n\n"
-                "💡 若要使用中文搜尋，請至左下角「⚙️ 設定」中，將 AI 引擎切換為「🟣 多語系模式 (xlm-roberta)」。"
-            )
-            return  # 強制擋下這次搜尋，保護引擎不崩潰
-        # ==========================================
+            if not triggered_by_slider:
+                QMessageBox.warning(self, "不支援的語言", "您目前使用的 AI 模型僅支援「英文」搜尋...")
+            return
         
-        self.add_to_history(q)
-        self.history_list.hide()
-        self.progress.show()
-        self.progress.setRange(0, 0)
-        self.status.setText("Searching...")
-        
-        # ==========================================
-        # [修改] 更新麵包屑標題
-        # ==========================================
-        self.breadcrumb_lbl.setText("Search Results")
-        
+        if not triggered_by_slider:
+            self.add_to_history(q)
+            self.history_list.hide()
+            self.progress.show()
+            self.progress.setRange(0, 0)
+            self.status.setText("Searching...")
+            self.breadcrumb_lbl.setText("Search Results")
+            
+            self.inspector_panel.combo_sort.blockSignals(True)
+            self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
+            self.inspector_panel.btn_sort_order.setText("↓")
+            self.inspector_panel.combo_sort.blockSignals(False)
+
         limit = self.inspector_panel.combo_limit_panel.currentText()
         k = 100000 if limit == "All" else int(limit)
-
-        self.inspector_panel.combo_sort.blockSignals(True)
-        self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
-        self.inspector_panel.btn_sort_order.setText("↓")
-        self.inspector_panel.combo_sort.blockSignals(False)
         
-        # [修改] 從新版膠囊按鈕讀取 OCR 狀態 (self.btn_ocr_toggle)
-        self.worker = SearchWorker(self.engine, q, k, search_mode="text", use_ocr=self.btn_ocr_toggle.isChecked())
+        weight_config = self.inspector_panel.get_weight_config()
+        self.worker = SearchWorker(self.engine, q, k, search_mode="text", use_ocr=self.btn_ocr_toggle.isChecked(), weight_config=weight_config)
         self.worker.batch_ready.connect(self.set_base_results)
         self.worker.finished_search.connect(self.on_finished)
         self.worker.finished.connect(self.worker.deleteLater)
