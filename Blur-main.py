@@ -675,20 +675,37 @@ class ImageSearchEngine:
             pretrained = self.config.get("pretrained")
 
             print(f"[Engine] Loading ONNX CLIP models...")
-            # [關鍵修改] 捨棄 open_clip，載入純 Numpy 預處理
             self.preprocess = NumpyPreprocess(size=224)
 
             self.is_hf_tokenizer = ("roberta" in model_name.lower() or "xlm" in model_name.lower())
-
+            
+            # ==========================================
+            # [離線化修改] 強制讀取本地目錄，完全阻斷 Hugging Face 連線
+            # ==========================================
             # [關鍵修改] Tokenizer 改用 huggingface 輕量版
             from transformers import AutoTokenizer, CLIPTokenizer
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            
             if self.is_hf_tokenizer:
-                self.tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-large')
+                tok_path = os.path.join(base_dir, "models", "tokenizers", "xlm-roberta")
+                self.tokenizer = AutoTokenizer.from_pretrained(tok_path, local_files_only=True)
+                
+                # ==========================================
+                # 🌟 [關鍵修復] 手動補上 pad_token，解決離線載入報錯
+                # ==========================================
+                if self.tokenizer.pad_token is None:
+                    # 如果沒有 pad_token，就借用 eos_token 來當作填充符號
+                    self.tokenizer.pad_token = self.tokenizer.eos_token or "<pad>"
+                    
             else:
-                self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+                tok_path = os.path.join(base_dir, "models", "tokenizers", "openai-clip")
+                self.tokenizer = CLIPTokenizer.from_pretrained(tok_path, local_files_only=True)
+                
+                # OpenAI CLIP 通常也會需要確認 pad_token
+                if self.tokenizer.pad_token is None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token or "<|endoftext|>"
 
             # 載入 ONNX Sessions
-            base_dir = os.path.dirname(os.path.abspath(__file__))
             img_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_name}_image.onnx")
             txt_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_name}_text.onnx")
             
@@ -1030,103 +1047,42 @@ class ONNXExportWorker(QThread):
             self.progress_update.emit(0, f"Error: {str(e)}")
             self.finished_signal.emit(False)
 
-class OCRDownloadWorker(QThread):
+class OCRImportWorker(QThread):
+    """[離線版] 從本地的 ZIP 擴充包解壓縮，取代原本的網路下載"""
     progress_update = pyqtSignal(int, str)
     finished_signal = pyqtSignal(bool, str, str) # success, lang_code, message
     
-    def __init__(self, lang_code):
+    def __init__(self, lang_code, zip_path):
         super().__init__()
         self.lang_code = lang_code
+        self.zip_path = zip_path
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.models_dir = os.path.join(self.base_dir, "models", "ocr")
-        self.temp_dir = os.path.join(self.base_dir, "temp_paddle_models")
         
     def run(self):
         try:
-            # 確保目錄存在
-            os.makedirs(self.temp_dir, exist_ok=True)
+            import zipfile
             lang_dir = os.path.join(self.models_dir, self.lang_code)
             common_dir = os.path.join(self.models_dir, "common")
             os.makedirs(lang_dir, exist_ok=True)
             os.makedirs(common_dir, exist_ok=True)
             
-            # 1. 定義 PaddleOCR 資源表
-            urls = {
-                "det": "https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_det_infer.tar",
-                "ch": "https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_infer.tar",
-                "jp": "https://paddleocr.bj.bcebos.com/PP-OCRv4/multilingual/japan_PP-OCRv4_rec_infer.tar",
-                "kr": "https://paddleocr.bj.bcebos.com/PP-OCRv4/multilingual/korean_PP-OCRv4_rec_infer.tar",
-                "en": "https://paddleocr.bj.bcebos.com/PP-OCRv4/english/en_PP-OCRv4_rec_infer.tar"
-            }
-            dicts = {
-                "ch": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt",
-                "jp": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/dict/japan_dict.txt",
-                "kr": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/dict/korean_dict.txt",
-                "en": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/en_dict.txt"
-            }
+            self.progress_update.emit(10, "正在解壓縮本地模型包...")
             
-            # 進度回報回呼函式
-            def dl_hook(count, block_size, total_size, prefix):
-                if total_size > 0:
-                    percent = int(count * block_size * 100 / total_size)
-                    percent = min(percent, 100)
-                    self.progress_update.emit(percent, f"{prefix} ({percent}%)")
+            with zipfile.ZipFile(self.zip_path, 'r') as zip_ref:
+                # 簡單的進度模擬
+                file_list = zip_ref.namelist()
+                total_files = len(file_list)
+                for i, file in enumerate(file_list):
+                    zip_ref.extract(file, self.models_dir)
+                    percent = int(10 + (i / total_files) * 80)
+                    self.progress_update.emit(percent, f"解壓縮中... ({percent}%)")
                     
-            # 2. 檢查並下載通用偵測模型 (Det)
-            det_onnx = os.path.join(common_dir, "det.onnx")
-            if not os.path.exists(det_onnx):
-                det_tar = os.path.join(self.temp_dir, "det.tar")
-                self.progress_update.emit(0, "下載通用偵測模型...")
-                urllib.request.urlretrieve(urls["det"], det_tar, reporthook=lambda c, b, t: dl_hook(c, b, t, "下載通用偵測模型"))
-                
-                self.progress_update.emit(100, "解壓縮偵測模型...")
-                with tarfile.open(det_tar, "r") as tar: tar.extractall(path=self.temp_dir)
-                
-                self.progress_update.emit(100, "轉換偵測模型為 ONNX...")
-                self.convert_to_onnx(os.path.join(self.temp_dir, "ch_PP-OCRv4_det_infer"), det_onnx)
-                
-            # 3. 下載並轉換目標語言的辨識模型 (Rec)
-            rec_tar = os.path.join(self.temp_dir, f"{self.lang_code}_rec.tar")
-            self.progress_update.emit(0, f"下載 {self.lang_code.upper()} 辨識模型...")
-            urllib.request.urlretrieve(urls[self.lang_code], rec_tar, reporthook=lambda c, b, t: dl_hook(c, b, t, f"下載 {self.lang_code.upper()} 辨識模型"))
-            
-            self.progress_update.emit(100, "解壓縮辨識模型...")
-            with tarfile.open(rec_tar, "r") as tar: tar.extractall(path=self.temp_dir)
-            
-            self.progress_update.emit(100, "轉換辨識模型為 ONNX...")
-            extracted_folder = urls[self.lang_code].split("/")[-1].replace(".tar", "")
-            rec_onnx = os.path.join(lang_dir, "rec.onnx")
-            self.convert_to_onnx(os.path.join(self.temp_dir, extracted_folder), rec_onnx)
-            
-            # 4. 下載字典檔
-            self.progress_update.emit(100, "下載字典檔...")
-            urllib.request.urlretrieve(dicts[self.lang_code], os.path.join(lang_dir, "dict.txt"))
-            
-            # 5. 清理與完成
-            self.progress_update.emit(100, "清理暫存檔案...")
-            shutil.rmtree(self.temp_dir, ignore_errors=True)
-            
-            self.finished_signal.emit(True, self.lang_code, "下載與轉換成功！可以開始使用了。")
+            self.progress_update.emit(100, "模型包匯入完成！")
+            self.finished_signal.emit(True, self.lang_code, "本地模型匯入成功！可以開始使用了。")
             
         except Exception as e:
-            self.finished_signal.emit(False, self.lang_code, f"發生錯誤:\n{str(e)}")
-
-    def convert_to_onnx(self, model_dir, save_path):
-        import shutil
-        # 防呆機制：如果使用者沒安裝 paddle2onnx，自動幫他裝
-        if shutil.which("paddle2onnx") is None:
-            self.progress_update.emit(100, "正在安裝轉換依賴庫 (paddle2onnx)...")
-            import sys
-            subprocess.run([sys.executable, "-m", "pip", "install", "paddle2onnx", "paddlepaddle"], check=True)
-            
-        cmd = [
-            "paddle2onnx", "--model_dir", model_dir,
-            "--model_filename", "inference.pdmodel",
-            "--params_filename", "inference.pdiparams",
-            "--save_file", save_path,
-            "--opset_version", "11", "--enable_onnx_checker", "True"
-        ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.finished_signal.emit(False, self.lang_code, f"匯入發生錯誤:\n{str(e)}")
 
 # ==========================================
 #  [NEW] 獨立 UI 圖層：懸浮多語系標籤
@@ -4698,7 +4654,7 @@ class SettingsDialog(QDialog):
             elif is_installed:
                 status, color, btn_text, btn_enabled = "💾 已安裝", "#aaaaaa", "套用", True
             else:
-                status, color, btn_text, btn_enabled = "📥 未安裝", "#ff9800", "下載", True
+                status, color, btn_text, btn_enabled = "📥 未安裝", "#ff9800", "匯入", True
                 
             # [關鍵修復] 使用 QWidget 包裝每一行，確保排版與清除時絕對乾淨
             row_widget = QWidget()
@@ -4741,21 +4697,52 @@ class SettingsDialog(QDialog):
             self.lang_layout.addWidget(line)
 
     def start_download_ocr(self, lang_code):
-        # 1. 變形：將 2px 的線展開為 12px 的進度條
+        from PyQt6.QtWidgets import QFileDialog
+        # [離線版] 不再連網，改為讓使用者選擇已下載的 ZIP 模型包
+        zip_path, _ = QFileDialog.getOpenFileName(self, f"選擇 {lang_code.upper()} 語言模型包 (ZIP)", "", "ZIP Files (*.zip)")
+        
+        if not zip_path:
+            return # 使用者取消選擇
+
         self.dl_progress.setFixedHeight(12) 
         self.dl_progress.setValue(0)
-        self.dl_status_label.setText(f"準備下載 {lang_code.upper()} 語言包...")
+        self.dl_status_label.setText(f"準備匯入 {lang_code.upper()} 語言包...")
         self.dl_status_label.show()
         
-        # 2. 鎖定所有下載按鈕，防止重複點擊
+        # 鎖定所有下載按鈕，防止重複點擊
         for elems in self.lang_ui_elements.values():
             elems["btn"].setEnabled(False)
             
-        # 3. 啟動背景工作
-        self.dl_worker = OCRDownloadWorker(lang_code)
+        # 啟動本地解壓縮 Worker
+        self.dl_worker = OCRImportWorker(lang_code, zip_path)
         self.dl_worker.progress_update.connect(self.update_download_progress)
         self.dl_worker.finished_signal.connect(self.on_download_finished)
         self.dl_worker.start()
+
+    def on_switch_clip_model(self, model_id, pretrained):
+        # [離線版] 不再使用 ONNXExportWorker 轉換，改為直接檢查本地檔案
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        img_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_id}_image.onnx")
+        txt_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_id}_text.onnx")
+        
+        if os.path.exists(img_onnx_path) and os.path.exists(txt_onnx_path):
+            # 檔案存在，直接更新設定檔並提示重啟
+            self.main_window.config.set("model_name", model_id)
+            self.main_window.config.set("pretrained", pretrained)
+            
+            QMessageBox.information(
+                self, 
+                "切換成功", 
+                "AI 模型已在本地找到並切換成功！\n\n為了確保記憶體安全釋放，程式將會關閉，請您手動重新啟動。"
+            )
+            QApplication.quit()
+        else:
+            # 檔案不存在，請使用者手動放入
+            QMessageBox.warning(
+                self, 
+                "模型缺失", 
+                f"在本地找不到 {model_id} 的 ONNX 檔案。\n\n請先將對應的模型檔案放入 `models/onnx_clip/` 資料夾中，或透過安裝包匯入。"
+            )
 
     def update_download_progress(self, percent, msg):
         self.dl_progress.setValue(percent)
@@ -4775,37 +4762,6 @@ class SettingsDialog(QDialog):
         # 重新掃描狀態並解鎖按鈕
         self.refresh_ocr_status()
 
-    def on_switch_clip_model(self, model_id, pretrained):
-        # 1. 喚醒上方的下載進度條 UI
-        self.dl_progress.setFixedHeight(12) 
-        self.dl_progress.setValue(0)
-        self.dl_status_label.setText(f"檢查並準備 {model_id} 模型...")
-        self.dl_status_label.show()
-        
-        # 2. 啟動背景轉換 Worker
-        self.export_worker = ONNXExportWorker(model_id, pretrained)
-        self.export_worker.progress_update.connect(self.update_download_progress)
-        
-        # 3. 轉換完成後的回呼函式
-        def on_export_finished(success):
-            if success:
-                # 寫入設定檔
-                self.main_window.config.set("model_name", model_id)
-                self.main_window.config.set("pretrained", pretrained)
-                
-                QMessageBox.information(
-                    self, 
-                    "設定已儲存", 
-                    "AI 模型已準備就緒並切換成功！\n\n為了確保記憶體安全釋放，程式將會關閉，請您手動重新啟動。"
-                )
-                QApplication.quit()
-            else:
-                self.dl_progress.setFixedHeight(2)
-                self.dl_status_label.hide()
-                QMessageBox.critical(self, "轉換失敗", "無法轉換模型為 ONNX 格式，請查看終端機錯誤訊息。")
-                
-        self.export_worker.finished_signal.connect(on_export_finished)
-        self.export_worker.start()
 
     def eventFilter(self, obj, event):
         # 取得設定模式 (預設向後相容：長按顯示、方向鍵只跑底層)
