@@ -5432,12 +5432,12 @@ class SettingsDialog(QDialog):
 
         # 4. 官方連結
         # 記得把 "你的帳號" 換成你真正的 GitHub 帳號名喔！
-        link_label = QLabel('<a href="https://github.com/你的帳號/EyeSeeMore" style="color: #00aaff; text-decoration: none;">🌐 專案 GitHub 主頁 (回報問題與建議)</a>')
+        link_label = QLabel('<a href="https://github.com/Magnesiumnuclear/EyeSeeMore" style="color: #00aaff; text-decoration: none;">🌐 專案 GitHub 主頁 (回報問題與建議)</a>')
         link_label.setOpenExternalLinks(True) 
         layout.addWidget(link_label)
 
         # 5. 版權聲明
-        copyright_label = QLabel("<br><small>© 2026 H0. Licensed under GPL v3.</small>")
+        copyright_label = QLabel("<br><small>© 2026 HO99 Licensed under GPL v3.</small>")
         layout.addWidget(copyright_label)
 
         layout.addStretch(1) # 確保所有元件都緊湊地靠上
