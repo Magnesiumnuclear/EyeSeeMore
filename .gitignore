@@ -1,0 +1,61 @@
+# ==========================================
+# EyeSeeMore 專案專屬排除規則 (2026-03-19 更新)
+# ==========================================
+
+# --- [1] 個人設定、隱私與紀錄 ---
+# 排除個人設定檔
+config.json
+# 排除個人搜尋紀錄
+search_history.json
+# 排除存放個人測試圖片的資料夾
+data/
+
+# --- [2] 程式執行產生的資料與快取 ---
+# 排除本地 SQLite 特徵資料庫
+*.db
+images.db
+# 排除 Python 編譯快取與虛擬環境
+__pycache__/
+*.py[cod]
+.venv/
+.venv-onnx/
+
+# --- [3] AI 模型權重與分詞資源管理 ---
+# 預設排除整個 models 資料夾以擋掉大型權重 (ocr, onnx_clip)
+models/*
+
+# 【例外】必須追蹤 tokenizers，否則程式無法離線啟動
+!models/tokenizers/
+!models/tokenizers/**
+
+# --- [4] C++ 資源與編譯產出 ---
+# 排除編譯產生的二進位檔與執行檔
+build/
+dist/
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.exp
+# 排除啟動器打包環境
+EyeSeeMore_Runtime/
+
+# 【例外】追蹤 C++ 原始碼與資源物件 (不排除)
+# 確保包含：.cpp, .h, .rc, .ico, CMakeLists.txt
+!src_cpp/**
+!*.rc
+!*.ico
+!resource.h
+
+# --- [5] 其他 JSON 與文件 ---
+# 目前會追蹤其餘 JSON (如 models_config.json, result.json 等)
+# 排除 Python 打包規格與 HTML 暫存
+*.spec
+latent_space.html
+
+# --- [6] 系統與 IDE 雜項 ---
+.vscode/
+.DS_Store
+Thumbs.db
+*.zip
+*.7z

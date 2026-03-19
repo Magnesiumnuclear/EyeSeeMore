@@ -1,0 +1,3 @@
+#include "resource.h"
+// 定義一個名為 ZIP 的自訂資源，並指定檔案路徑
+IDR_PAYLOAD_ZIP ZIP "Payload.zip"
