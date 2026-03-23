@@ -4817,14 +4817,13 @@ class SettingsDialog(QDialog):
             self.main_window.refresh_sidebar()
 
     def init_page_ai(self):
-        page, layout = self._create_page_container("🧠 AI 引擎設定 (AI Engine)")
+        # 🌟 套用翻譯：主標題
+        page, layout = self._create_page_container(self.trans.t("ai_engine", "page_title", "🧠 AI 引擎設定 (AI Engine)"))
         
-        # [精髓] 將 _create_page_container 原本畫的靜態分隔線隱藏
         line = layout.itemAt(1).widget()
         if isinstance(line, QFrame):
             line.hide()
             
-        # [精髓] 建立我們的「變形進度條」與狀態文字
         self.dl_status_container = QWidget()
         dl_layout = QVBoxLayout(self.dl_status_container)
         dl_layout.setContentsMargins(0, 0, 0, 0)
@@ -4838,7 +4837,6 @@ class SettingsDialog(QDialog):
         self.dl_progress.setRange(0, 100)
         self.dl_progress.setValue(0)
         self.dl_progress.setTextVisible(False)
-        # 預設狀態：高度 2px，完美偽裝成一般的分隔線
         self.dl_progress.setFixedHeight(2)
         self.dl_progress.setStyleSheet("""
             QProgressBar { border: none; background-color: #444; border-radius: 1px; }
@@ -4847,13 +4845,8 @@ class SettingsDialog(QDialog):
         
         dl_layout.addWidget(self.dl_status_label)
         dl_layout.addWidget(self.dl_progress)
-        
-        # 插入到標題的正下方 (取代剛剛隱藏的線)
         layout.insertWidget(1, self.dl_status_container)
         
-        # ==========================================
-        #  分頁設定與 TabWidget 建立
-        # ==========================================
         self.ai_tabs = QTabWidget()
         self.ai_tabs.setStyleSheet("""
             QTabWidget::pane { border: 1px solid #454545; border-radius: 4px; top: -1px; background-color: #2b2b2b; }
@@ -4862,21 +4855,22 @@ class SettingsDialog(QDialog):
             QTabBar::tab:hover:!selected { background: #333333; color: #fff; }
         """)
         
-        # --- 分頁 1：CLIP 語意搜尋 ---
         tab_clip = QWidget()
         clip_layout = QVBoxLayout(tab_clip)
         clip_layout.setContentsMargins(20, 20, 20, 20)
         clip_layout.setSpacing(15)
         
-        group_clip = QGroupBox("語意搜尋模型 (Semantic Models)")
+        # 🌟 套用翻譯：CLIP 群組標題
+        group_clip = QGroupBox(self.trans.t("ai_engine", "grp_clip_title", "語意搜尋模型 (Semantic Models)"))
         clip_list_layout = QVBoxLayout(group_clip)
         clip_list_layout.setSpacing(10)
         
         current_model = self.main_window.config.get("model_name")
+        # 🌟 套用翻譯：CLIP 模型清單與描述
         mock_clips = [
-            {"name": "🟢 標準模式 (ViT-B-32)", "id": "ViT-B-32", "pre": "laion2b_s34b_b79k", "desc": "速度極快，佔用極低"},
-            {"name": "🔵 精準模式 (ViT-H-14)", "id": "ViT-H-14", "pre": "laion2b_s32b_b79k", "desc": "準確度高，細節辨識佳"},
-            {"name": "🟣 多語系模式 (xlm-roberta)", "id": "xlm-roberta-large-ViT-H-14", "pre": "frozen_laion5b_s13b_b90k", "desc": "支援中文等多國語言搜尋"}
+            {"name": self.trans.t("ai_engine", "model_std_name", "🟢 標準模式 (ViT-B-32)"), "id": "ViT-B-32", "pre": "laion2b_s34b_b79k", "desc": self.trans.t("ai_engine", "model_std_desc", "速度極快，佔用極低")},
+            {"name": self.trans.t("ai_engine", "model_acc_name", "🔵 精準模式 (ViT-H-14)"), "id": "ViT-H-14", "pre": "laion2b_s32b_b79k", "desc": self.trans.t("ai_engine", "model_acc_desc", "準確度高，細節辨識佳")},
+            {"name": self.trans.t("ai_engine", "model_multi_name", "🟣 多語系模式 (xlm-roberta)"), "id": "xlm-roberta-large-ViT-H-14", "pre": "frozen_laion5b_s13b_b90k", "desc": self.trans.t("ai_engine", "model_multi_desc", "支援中文等多國語言搜尋")}
         ]
         
         for item in mock_clips:
@@ -4887,9 +4881,17 @@ class SettingsDialog(QDialog):
             
             is_active = (item['id'] == current_model)
             if is_active:
-                status_text, status_color, btn_text, btn_enabled = "✅ 運行中", "#4caf50", "目前使用中", False
+                # 🌟 套用翻譯：CLIP 狀態 (運行中)
+                status_text = self.trans.t("ai_engine", "status_running", "✅ 運行中")
+                status_color = "#4caf50"
+                btn_text = self.trans.t("ai_engine", "btn_in_use", "目前使用中")
+                btn_enabled = False
             else:
-                status_text, status_color, btn_text, btn_enabled = "💾 已安裝", "#aaaaaa", "切換並重啟", True
+                # 🌟 套用翻譯：CLIP 狀態 (已安裝)
+                status_text = self.trans.t("ai_engine", "status_installed", "💾 已安裝")
+                status_color = "#aaaaaa"
+                btn_text = self.trans.t("ai_engine", "btn_switch", "切換並重啟")
+                btn_enabled = True
                 
             lbl_status = QLabel(status_text)
             lbl_status.setStyleSheet(f"color: {status_color}; font-size: 13px; font-weight: bold;")
@@ -4915,26 +4917,27 @@ class SettingsDialog(QDialog):
             
         clip_layout.addWidget(group_clip)
         clip_layout.addStretch(1)
-        self.ai_tabs.addTab(tab_clip, "👁️ CLIP 語意模型")
+        # 🌟 套用翻譯：CLIP 分頁標籤
+        self.ai_tabs.addTab(tab_clip, self.trans.t("ai_engine", "tab_clip", "👁️ CLIP 語意模型"))
         
-        # --- 分頁 2：OCR 文字辨識 ---
         tab_ocr = QWidget()
         ocr_layout = QVBoxLayout(tab_ocr)
         ocr_layout.setContentsMargins(20, 20, 20, 20)
         ocr_layout.setSpacing(15)
         
-        group_lang = QGroupBox("語系擴充包 (Language Packs)")
+        # 🌟 套用翻譯：OCR 群組標題
+        group_lang = QGroupBox(self.trans.t("ai_engine", "grp_ocr_title", "語系擴充包 (Language Packs)"))
         self.lang_layout = QVBoxLayout(group_lang)
         self.lang_layout.setSpacing(10)
         
         ocr_layout.addWidget(group_lang)
         ocr_layout.addStretch(1)
-        self.ai_tabs.addTab(tab_ocr, "📝 OCR 文字辨識")
+        # 🌟 套用翻譯：OCR 分頁標籤
+        self.ai_tabs.addTab(tab_ocr, self.trans.t("ai_engine", "tab_ocr", "📝 OCR 文字辨識"))
         
         layout.addWidget(self.ai_tabs, stretch=1)
         self.stack.addWidget(page)
         
-        # 呼叫動態生成 OCR 清單
         self.lang_ui_elements = {}
         self.refresh_ocr_status()
 
@@ -4942,14 +4945,12 @@ class SettingsDialog(QDialog):
     #  OCR 動態狀態判斷與下載邏輯
     # ==========================================
     def refresh_ocr_status(self):
-        # 1. 徹底安全清空舊的 UI (解決殘影與版面重疊的元凶)
         while self.lang_layout.count():
             item = self.lang_layout.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
             elif item.layout():
-                # 如果是 Layout，把裡面的元件也清乾淨
                 while item.layout().count():
                     sub_item = item.layout().takeAt(0)
                     if sub_item.widget(): sub_item.widget().deleteLater()
@@ -4962,11 +4963,12 @@ class SettingsDialog(QDialog):
         for f in self.main_window.config.get("source_folders", []):
             active_langs.update(f.get("enabled_langs", []))
             
+        # 🌟 套用翻譯
         langs = [
-            ("ch", "🇨🇳 中文 (通用)"),
-            ("jp", "🇯🇵 日文 (日本語)"),
-            ("kr", "🇰🇷 韓文 (한국어)"),
-            ("en", "🇬🇧 英文 (English)")
+            ("ch", self.trans.t("ai_engine", "lang_ch", "🇨🇳 中文 (通用)")),
+            ("jp", self.trans.t("ai_engine", "lang_jp", "🇯🇵 日文 (日本語)")),
+            ("kr", self.trans.t("ai_engine", "lang_kr", "🇰🇷 韓文 (한국어)")),
+            ("en", self.trans.t("ai_engine", "lang_en", "🇬🇧 英文 (English)"))
         ]
         
         self.lang_ui_elements.clear()
@@ -4977,17 +4979,26 @@ class SettingsDialog(QDialog):
             is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
             is_running = lang_code in active_langs
             
+            # 🌟 動態按鈕翻譯判斷
             if is_running and is_installed:
-                status, color, btn_text, btn_enabled = "✅ 運行中", "#4caf50", "已啟用", False
+                status = self.trans.t("ai_engine", "status_running", "✅ 運行中")
+                color = "#4caf50"
+                btn_text = self.trans.t("ai_engine", "btn_enabled", "已啟用")
+                btn_enabled = False
             elif is_installed:
-                status, color, btn_text, btn_enabled = "💾 已安裝", "#aaaaaa", "套用", True
+                status = self.trans.t("ai_engine", "status_installed", "💾 已安裝")
+                color = "#aaaaaa"
+                btn_text = self.trans.t("ai_engine", "btn_apply", "套用")
+                btn_enabled = True
             else:
-                status, color, btn_text, btn_enabled = "📥 未安裝", "#ff9800", "匯入", True
+                status = self.trans.t("ai_engine", "status_not_installed", "📥 未安裝")
+                color = "#ff9800"
+                btn_text = self.trans.t("ai_engine", "btn_import", "匯入")
+                btn_enabled = True
                 
-            # [關鍵修復] 使用 QWidget 包裝每一行，確保排版與清除時絕對乾淨
             row_widget = QWidget()
             row = QHBoxLayout(row_widget)
-            row.setContentsMargins(0, 5, 0, 5) # 加上微小的上下間距，避免擠在一起
+            row.setContentsMargins(0, 5, 0, 5)
             
             lbl_name = QLabel(name)
             lbl_name.setFixedWidth(160)
@@ -5014,9 +5025,7 @@ class SettingsDialog(QDialog):
             row.addStretch(1)
             row.addWidget(btn_action)
             
-            # 將包裝好的 Widget 加入主版面
             self.lang_layout.addWidget(row_widget)
-            
             self.lang_ui_elements[lang_code] = {"status": lbl_status, "btn": btn_action}
             
             line = QFrame()
@@ -5166,43 +5175,29 @@ class SettingsDialog(QDialog):
 
 
     def init_page_hotkeys(self):
-        page, layout = self._create_page_container("⌨️ 操作與快捷鍵 (Hotkeys)")
+        # 🌟 套用翻譯
+        page, layout = self._create_page_container(self.trans.t("hotkeys", "page_title", "⌨️ 操作與快捷鍵 (Hotkeys)"))
         ui_state = self.main_window.config.get("ui_state", {})
 
-        # ==========================================
-        # 專屬 QSS：讓下拉選單與背景 #2b2b2b 產生強烈區別
-        # ==========================================
         combo_style = """
             QComboBox {
-                background-color: #383838;  /* 比背景更亮的凸起感 */
+                background-color: #383838;
                 border: 1px solid #555555;
                 border-radius: 4px;
                 padding: 8px 12px;
                 color: #ffffff;
                 font-size: 11pt;
             }
-            QComboBox:hover {
-                background-color: #454545;  /* 懸停時再亮一階 */
-                border: 1px solid #60cdff;  /* 懸停邊框變藍 */
-            }
-            QComboBox::drop-down {
-                border: none;
-                width: 24px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #2b2b2b;
-                border: 1px solid #555555;
-                selection-background-color: #383838;
-                selection-color: #60cdff;
-                outline: none;
-            }
+            QComboBox:hover { background-color: #454545; border: 1px solid #60cdff; }
+            QComboBox::drop-down { border: none; width: 24px; }
+            QComboBox QAbstractItemView { background-color: #2b2b2b; border: 1px solid #555555; selection-background-color: #383838; selection-color: #60cdff; outline: none; }
         """
 
-        # --- 區塊一：預覽導覽行為 (下拉選單) ---
-        group_nav = QGroupBox("預覽導覽行為")
+        # 🌟 套用翻譯
+        group_nav = QGroupBox(self.trans.t("hotkeys", "grp_nav_title", "預覽導覽行為"))
         layout_nav = QVBoxLayout(group_nav)
         layout_nav.setSpacing(10)
-        lbl_nav = QLabel("空白鍵預覽時，按下 W/A/S/D 的反應：")
+        lbl_nav = QLabel(self.trans.t("hotkeys", "lbl_nav", "空白鍵預覽時，按下 W/A/S/D 的反應："))
         lbl_nav.setStyleSheet("color: #ccc;")
         layout_nav.addWidget(lbl_nav)
     
@@ -5210,9 +5205,9 @@ class SettingsDialog(QDialog):
         self.combo_wasd.setStyleSheet(combo_style)
         self.combo_wasd.setFixedHeight(38)
         self.combo_wasd.addItems([
-            "選項 A：移動背景游標並保持預覽 (預設)",
-            "選項 B：關閉預覽圖 (快速偷瞄模式)",
-            "選項 C：切換預覽圖 (沉浸看圖模式)"
+            self.trans.t("hotkeys", "nav_opt_a", "選項 A：移動背景游標並保持預覽 (預設)"),
+            self.trans.t("hotkeys", "nav_opt_b", "選項 B：關閉預覽圖 (快速偷瞄模式)"),
+            self.trans.t("hotkeys", "nav_opt_c", "選項 C：切換預覽圖 (沉浸看圖模式)")
         ])
         nav_map = {"nav": 0, "close": 1, "sync": 2}
         self.combo_wasd.setCurrentIndex(nav_map.get(ui_state.get("preview_wasd_mode", "nav"), 0))
@@ -5220,11 +5215,11 @@ class SettingsDialog(QDialog):
         layout_nav.addWidget(self.combo_wasd)
         layout.addWidget(group_nav)
 
-        # --- 區塊二：OCR 檢視方式 (下拉選單取代原本的 RadioButton) ---
-        group_ocr = QGroupBox("OCR 檢視方式")
+        # 🌟 套用翻譯
+        group_ocr = QGroupBox(self.trans.t("hotkeys", "grp_ocr_title", "OCR 檢視方式"))
         layout_ocr = QVBoxLayout(group_ocr)
         layout_ocr.setSpacing(10)
-        lbl_ocr = QLabel("預覽圖片時，Shift 鍵的觸發邏輯：")
+        lbl_ocr = QLabel(self.trans.t("hotkeys", "lbl_ocr", "預覽圖片時，Shift 鍵的觸發邏輯："))
         lbl_ocr.setStyleSheet("color: #ccc;")
         layout_ocr.addWidget(lbl_ocr)
     
@@ -5232,8 +5227,8 @@ class SettingsDialog(QDialog):
         self.combo_ocr.setStyleSheet(combo_style)
         self.combo_ocr.setFixedHeight(38)
         self.combo_ocr.addItems([
-            "模式 A：長按 Shift 顯示紅框，放開隱藏 (Hold)",
-            "模式 B：按一下 Shift 切換顯示 / 隱藏 (Toggle)"
+            self.trans.t("hotkeys", "ocr_opt_hold", "模式 A：長按 Shift 顯示紅框，放開隱藏 (Hold)"),
+            self.trans.t("hotkeys", "ocr_opt_toggle", "模式 B：按一下 Shift 切換顯示 / 隱藏 (Toggle)")
         ])
         ocr_mode = ui_state.get("ocr_shift_mode", "hold")
         self.combo_ocr.setCurrentIndex(1 if ocr_mode == "toggle" else 0)
@@ -5241,38 +5236,32 @@ class SettingsDialog(QDialog):
         layout_ocr.addWidget(self.combo_ocr)
         layout.addWidget(group_ocr)
 
-        # --- 區塊三：進階視覺效果 (階層式核取方塊) ---
-        group_visual = QGroupBox("進階視覺效果 (Advanced Visuals)")
+        # 🌟 套用翻譯
+        group_visual = QGroupBox(self.trans.t("hotkeys", "grp_visual_title", "進階視覺效果 (Advanced Visuals)"))
         layout_visual = QVBoxLayout(group_visual)
         layout_visual.setSpacing(12)
 
-        # 3-1: 主開關 (精確高亮)
-        self.chk_precise_ocr = QCheckBox("啟用精確文字高亮 (僅著色關鍵字部分)")
+        self.chk_precise_ocr = QCheckBox(self.trans.t("hotkeys", "chk_precise", "啟用精確文字高亮 (僅著色關鍵字部分)"))
         is_precise = ui_state.get("precise_ocr_highlight", False)
         self.chk_precise_ocr.setChecked(is_precise)
         
-        # 3-2: 子開關 (縮排 25px)
-        self.chk_margin_comp = QCheckBox("↳ 啟用邊緣縮減補償 (Margin Compensation)")
+        self.chk_margin_comp = QCheckBox(self.trans.t("hotkeys", "chk_margin", "↳ 啟用邊緣縮減補償 (Margin Compensation)"))
         self.chk_margin_comp.setStyleSheet("QCheckBox { margin-left: 25px; color: #aaa; } QCheckBox::indicator { margin-left: 0px; }")
         is_margin = ui_state.get("margin_compensation", True) 
         self.chk_margin_comp.setChecked(is_margin)
-        self.chk_margin_comp.setEnabled(is_precise) # 初始化時判斷是否可用
+        self.chk_margin_comp.setEnabled(is_precise)
 
-        # [修改] 將事件統一綁定給各自的方法處理，移除 lambda
         self.chk_precise_ocr.stateChanged.connect(self.on_precise_highlight_changed)
         self.chk_margin_comp.stateChanged.connect(self.on_margin_comp_changed)
 
-        # 3-3: 獨立開關 (重疊防護)
-        self.chk_dedup = QCheckBox("啟用多語系重疊防護 (Deduplication)")
+        self.chk_dedup = QCheckBox(self.trans.t("hotkeys", "chk_dedup", "啟用多語系重疊防護 (Deduplication)"))
         is_dedup = ui_state.get("ocr_deduplication", True)
         self.chk_dedup.setChecked(is_dedup)
         self.chk_dedup.stateChanged.connect(self.on_dedup_changed)
 
-        # 加入 Layout
         layout_visual.addWidget(self.chk_precise_ocr)
         layout_visual.addWidget(self.chk_margin_comp)
         
-        # 畫一條虛線分隔不同類型的功能
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setStyleSheet("border-top: 1px dashed #444; margin-top: 5px; margin-bottom: 5px;")
