@@ -5233,9 +5233,24 @@ class SettingsDialog(QDialog):
         page, layout = self._create_page_container("🖥️ 介面與顯示 (Appearance)")
         ui_state = self.main_window.config.get("ui_state", {}) 
 
+        combo_style = """
+            QComboBox {
+                background-color: #383838;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 8px 12px;
+                color: #ffffff;
+                font-size: 14px;
+            }
+            QComboBox:hover { background-color: #454545; border: 1px solid #60cdff; }
+            QComboBox::drop-down { border: none; width: 24px; }
+            QComboBox QAbstractItemView { background-color: #2b2b2b; border: 1px solid #555555; selection-background-color: #383838; selection-color: #60cdff; outline: none; }
+        """
+
         layout.addWidget(QLabel("預設圖片顯示大小："))
         self.combo_size = QComboBox()
-        self.combo_size.setFixedHeight(35)
+        self.combo_size.setFixedHeight(38)
+        self.combo_size.setStyleSheet(combo_style)
         self.combo_size.addItems(["超大圖示 (Extra Large)", "大圖示 (Large)", "中圖示 (Medium)"])
     
         mode_map = {"xl": 0, "large": 1, "medium": 2}
@@ -5250,7 +5265,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel("OCR 懸浮標籤顯示方式："))
         
         self.combo_tag_mode = QComboBox()
-        self.combo_tag_mode.setFixedHeight(35)
+        self.combo_tag_mode.setFixedHeight(38)
+        self.combo_tag_mode.setStyleSheet(combo_style)
         # 套用相同的 QSS 樣式
         self.combo_tag_mode.setStyleSheet(self.combo_size.styleSheet()) 
         self.combo_tag_mode.addItems(["選項 A：固定在 OCR 框邊緣 (Anchored) - 推薦", "選項 B：跟隨滑鼠游標 (Follow Mouse)"])
