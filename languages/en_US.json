@@ -1,0 +1,11 @@
+{
+    "settings": {
+        "window_title": "Settings",
+        "nav_folders": "📁 Folders",
+        "nav_ai": "🧠 AI Engine",
+        "nav_appearance": "🖥️ Appearance",
+        "nav_hotkeys": "⌨️ Hotkeys",
+        "nav_language": "🌍 Language",
+        "nav_about": "ℹ️ About"
+    }
+}

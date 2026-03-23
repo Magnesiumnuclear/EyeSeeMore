@@ -27,7 +27,7 @@ import shutil
 import cv2
 
 # [New] 引入設定管理器
-from config_manager import ConfigManager 
+from config_manager import ConfigManager
 
 # [修正] 確保所有 PyQt6 模組都已引入
 from PyQt6.QtGui import QActionGroup
@@ -131,6 +131,37 @@ if sys.platform == 'win32':
     # CLSID 與 IID 定義
     CLSID_TaskbarList = GUID(0x56FDF344, 0xFD6D, 0x11d0, (0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90))
     IID_ITaskbarList3 = GUID(0xEA1AFB91, 0x9E28, 0x4B86, (0x90, 0xE9, 0x9E, 0x9F, 0x8A, 0x5E, 0xEF, 0xAF))
+
+# [New] 引入設定管理器
+from config_manager import ConfigManager 
+
+# ==========================================
+#  [NEW] 全域多國語言翻譯器
+# ==========================================
+class Translator:
+    def __init__(self, lang_code):
+        self.lang_code = lang_code
+        self.translations = {}
+        self.load()
+
+    def load(self):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(base_dir, "languages", f"{self.lang_code}.json")
+        
+        # 若找不到指定的語言檔，預設退回繁體中文 (防呆機制)
+        if not os.path.exists(file_path):
+            file_path = os.path.join(base_dir, "languages", "zh_TW.json")
+            
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    self.translations = json.load(f)
+            except Exception as e:
+                print(f"[Translator] 讀取語言檔失敗: {e}")
+
+    def t(self, section, key, default=""):
+        """取得翻譯字串的主力函式，使用方式：trans.t('settings', 'window_title', '預設值')"""
+        return self.translations.get(section, {}).get(key, default)
 
 class TaskbarController:
     """用來控制 Windows 工作列圖示的萬能控制器"""
@@ -4474,7 +4505,10 @@ class SettingsDialog(QDialog):
     def __init__(self, main_window):
         super().__init__(main_window)
         self.main_window = main_window 
-        self.setWindowTitle("設定 (Settings)")
+
+        self.trans = self.main_window.config.translator
+        self.setWindowTitle(self.trans.t("settings", "window_title", "設定 (Settings)"))
+
         self.resize(800, 600)
         self.setStyleSheet("background-color: #1e1e1e;")
 
@@ -4491,7 +4525,16 @@ class SettingsDialog(QDialog):
             QListWidget::item:selected { background-color: #383838; color: white; font-weight: bold; border-left: 4px solid #60cdff; border-radius: 6px; }
         """)
         
-        for tab in ["📁 資料夾管理", "🧠 AI 引擎設定", "🖥️ 介面與顯示", "⌨️ 操作與快捷鍵", "ℹ️ 關於與說明"]:
+        tabs = [
+            self.trans.t("settings", "nav_folders", "📁 資料夾管理"),
+            self.trans.t("settings", "nav_ai", "🧠 AI 引擎設定"),
+            self.trans.t("settings", "nav_appearance", "🖥️ 介面與顯示"),
+            self.trans.t("settings", "nav_hotkeys", "⌨️ 操作與快捷鍵"),
+            self.trans.t("settings", "nav_language", "🌍 語言與翻譯"),
+            self.trans.t("settings", "nav_about", "ℹ️ 關於與說明")
+        ]
+
+        for tab in tabs:
             self.nav_list.addItem(tab)
             
         main_layout.addWidget(self.nav_list)
@@ -4504,6 +4547,7 @@ class SettingsDialog(QDialog):
         self.init_page_ai()
         self.init_page_appearance()
         self.init_page_hotkeys()
+        self.init_page_language() # 語言設定頁面
         self.init_page_about()
         self.nav_list.setCurrentRow(0)
 
@@ -5401,6 +5445,78 @@ class SettingsDialog(QDialog):
         selected_mode = mode_map.get(index, "large")
         self.main_window.change_view_mode(selected_mode)
 
+    def init_page_language(self):
+        page, layout = self._create_page_container("🌍 語言與翻譯 (Language)")
+        ui_state = self.main_window.config.get("ui_state", {})
+        current_lang = ui_state.get("language", "zh_TW") # 預設繁體中文
+
+        group_lang = QGroupBox("顯示語言 (Display Language)")
+        layout_lang = QVBoxLayout(group_lang)
+        layout_lang.setSpacing(10)
+
+        lbl_desc = QLabel("請選擇軟體的顯示語言。系統將會從 languages/ 資料夾讀取對應的翻譯檔。\n(變更語言後，將於下次啟動程式時生效)")
+        lbl_desc.setStyleSheet("color: #ccc;")
+        layout_lang.addWidget(lbl_desc)
+
+        self.combo_lang = QComboBox()
+        self.combo_lang.setFixedHeight(38)
+        # 沿用與快捷鍵頁面相同的高質感 QSS
+        self.combo_lang.setStyleSheet("""
+            QComboBox {
+                background-color: #383838;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 8px 12px;
+                color: #ffffff;
+                font-size: 14px;
+            }
+            QComboBox:hover { background-color: #454545; border: 1px solid #60cdff; }
+            QComboBox::drop-down { border: none; width: 24px; }
+            QComboBox QAbstractItemView { background-color: #2b2b2b; border: 1px solid #555555; selection-background-color: #383838; selection-color: #60cdff; outline: none; }
+        """)
+        
+        # 預先定義支援的語系 (對應之後的 JSON 檔名)
+        self.lang_options = [
+            {"name": "繁體中文 (Traditional Chinese)", "code": "zh_TW"},
+            {"name": "English (English)", "code": "en_US"},
+            {"name": "日本語 (Japanese)", "code": "ja_JP"}
+        ]
+        
+        for item in self.lang_options:
+            # addItem 可以同時存顯示文字與隱藏資料(code)
+            self.combo_lang.addItem(item["name"], item["code"])
+
+        # 找到目前的設定值並選取
+        for i, item in enumerate(self.lang_options):
+            if item["code"] == current_lang:
+                self.combo_lang.setCurrentIndex(i)
+                break
+
+        self.combo_lang.currentIndexChanged.connect(self.on_language_changed)
+        layout_lang.addWidget(self.combo_lang)
+
+        # 重啟提示標籤 (預設隱藏，切換後才顯示)
+        self.lbl_lang_restart_hint = QLabel("⚠️ 語言已變更！請手動重新啟動程式以套用新語言。")
+        self.lbl_lang_restart_hint.setStyleSheet("color: #ff9800; font-weight: bold; margin-top: 10px;")
+        self.lbl_lang_restart_hint.hide() 
+        layout_lang.addWidget(self.lbl_lang_restart_hint)
+
+        layout.addWidget(group_lang)
+        layout.addStretch(1)
+        self.stack.addWidget(page)
+
+    def on_language_changed(self, index):
+        # 取得隱藏的語言代碼 (例如 "zh_TW")
+        selected_code = self.combo_lang.itemData(index)
+        
+        # 存入 config.json
+        ui_state = self.main_window.config.get("ui_state", {})
+        ui_state["language"] = selected_code
+        self.main_window.config.set("ui_state", ui_state)
+        
+        # 顯示重啟提示
+        self.lbl_lang_restart_hint.show()
+
     def init_page_about(self):
         page, layout = self._create_page_container("ℹ️ 關於與說明 (Help & About)")
 
@@ -5445,6 +5561,9 @@ class SettingsDialog(QDialog):
 
 if __name__ == "__main__":
     app_config = ConfigManager()
+
+    current_lang = app_config.get("ui_state", {}).get("language", "zh_TW")
+    app_config.translator = Translator(current_lang)
 
     if hasattr(Qt.ApplicationAttribute, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)

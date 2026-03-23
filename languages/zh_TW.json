@@ -1,0 +1,11 @@
+{
+    "settings": {
+        "window_title": "設定 (Settings)",
+        "nav_folders": "📁 資料夾管理",
+        "nav_ai": "🧠 AI 引擎設定",
+        "nav_appearance": "🖥️ 介面與顯示",
+        "nav_hotkeys": "⌨️ 操作與快捷鍵",
+        "nav_language": "🌍 語言與翻譯",
+        "nav_about": "ℹ️ 關於與說明"
+    }
+}
