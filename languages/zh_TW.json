@@ -18,14 +18,14 @@
         "btn_remove": "- Remove Selected"
     },
     "appearance": {
-        "page_title": "🖥️ Appearance",
-        "lbl_size": "Default Image Size:",
-        "size_xl": "Extra Large",
-        "size_l": "Large",
-        "size_m": "Medium",
-        "lbl_tag_mode": "OCR Hover Tag Display Mode:",
-        "tag_anchored": "Option A: Anchored to OCR Box - Recommended",
-        "tag_follow": "Option B: Follow Mouse Cursor"
+        "page_title": "🖥️ 介面與顯示 (Appearance)",
+        "lbl_size": "預設圖片顯示大小：",
+        "size_xl": "超大圖示 (Extra Large)",
+        "size_l": "大圖示 (Large)",
+        "size_m": "中圖示 (Medium)",
+        "lbl_tag_mode": "OCR 懸浮標籤顯示方式：",
+        "tag_anchored": "選項 A：固定在 OCR 框邊緣 (Anchored) - 推薦",
+        "tag_follow": "選項 B：跟隨滑鼠游標 (Follow Mouse)"
     },
     "hotkeys": {
         "page_title": "⌨️ 操作與快捷鍵 (Hotkeys)",
@@ -67,5 +67,24 @@
         "lang_jp": "🇯🇵 日文 (日本語)",
         "lang_kr": "🇰🇷 韓文 (한국어)",
         "lang_en": "🇬🇧 英文 (English)"
+    },
+    "language_page": {
+        "page_title": "🌍 語言與翻譯 (Language)",
+        "grp_lang_title": "顯示語言 (Display Language)",
+        "lbl_desc": "請選擇軟體的顯示語言。系統將會從 languages/ 資料夾讀取對應的翻譯檔。\n(變更語言後，將於下次啟動程式時生效)",
+        "restart_hint": "⚠️ 語言已變更！請手動重新啟動程式以套用新語言。"
+    },
+    "about_page": {
+        "page_title": "ℹ️ 關於與說明 (Help & About)",
+        "version_lbl": "<b>版本號：</b> V0.5.0-alpha<br><b>建置日期：</b> 2026-03-18",
+        "tech_title": "<h3>技術致敬 (Core Technologies)</h3><p>本軟體由以下優秀的開源生態系驅動：</p>",
+        "tech_ui": "<li><b>介面開發：</b> Python & PyQt6</li>",
+        "tech_ai": "<li><b>AI 推理引擎：</b> ONNX Runtime</li>",
+        "tech_ocr": "<li><b>文字辨識 (OCR)：</b> ONNX-OCR</li>",
+        "tech_img": "<li><b>影像與資料處理：</b> OpenCV, Pillow (PIL), NumPy</li>",
+        "tech_db": "<li><b>資料存儲：</b> SQLite3</li>",
+        "tech_perf": "<li><b>系統監控：</b> psutil (效能優化)</li>",
+        "github_link": "<a href=\"https://github.com/Magnesiumnuclear/EyeSeeMore\" style=\"color: #00aaff; text-decoration: none;\">🌐 專案 GitHub 主頁 (回報問題與建議)</a>",
+        "copyright": "<br><small>© 2026 HO99 Licensed under GPL v3.</small>"
     }
 }

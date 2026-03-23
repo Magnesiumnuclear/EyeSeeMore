@@ -5328,38 +5328,32 @@ class SettingsDialog(QDialog):
         self.main_window.change_view_mode(selected_mode)
 
     def init_page_language(self):
-        page, layout = self._create_page_container("🌍 語言與翻譯 (Language)")
+        # 🌟 套用翻譯：主標題
+        page, layout = self._create_page_container(self.trans.t("language_page", "page_title", "🌍 語言與翻譯 (Language)"))
         ui_state = self.main_window.config.get("ui_state", {})
-        current_lang = ui_state.get("language", "zh_TW") # 預設繁體中文
+        current_lang = ui_state.get("language", "zh_TW") 
 
-        group_lang = QGroupBox("顯示語言 (Display Language)")
+        # 🌟 套用翻譯：群組標題
+        group_lang = QGroupBox(self.trans.t("language_page", "grp_lang_title", "顯示語言 (Display Language)"))
         layout_lang = QVBoxLayout(group_lang)
         layout_lang.setSpacing(10)
 
-        lbl_desc = QLabel("請選擇軟體的顯示語言。系統將會從 languages/ 資料夾讀取對應的翻譯檔。\n(變更語言後，將於下次啟動程式時生效)")
+        # 🌟 套用翻譯：說明文字
+        lbl_desc = QLabel(self.trans.t("language_page", "lbl_desc", "請選擇軟體的顯示語言。系統將會從 languages/ 資料夾讀取對應的翻譯檔。\n(變更語言後，將於下次啟動程式時生效)"))
         lbl_desc.setStyleSheet("color: #ccc;")
         layout_lang.addWidget(lbl_desc)
 
         self.combo_lang = QComboBox()
         self.combo_lang.setFixedHeight(38)
-        # 沿用與快捷鍵頁面相同的高質感 QSS
         self.combo_lang.setStyleSheet("""
             QComboBox {
-                background-color: #383838;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 8px 12px;
-                color: #ffffff;
-                font-size: 11pt;
+                background-color: #383838; border: 1px solid #555555; border-radius: 4px; padding: 8px 12px; color: #ffffff; font-size: 14px;
             }
             QComboBox:hover { background-color: #454545; border: 1px solid #60cdff; }
             QComboBox::drop-down { border: none; width: 24px; }
             QComboBox QAbstractItemView { background-color: #2b2b2b; border: 1px solid #555555; selection-background-color: #383838; selection-color: #60cdff; outline: none; }
         """)
         
-        # ==========================================
-        # 🌟 動態掃描 languages 資料夾，自動生成語系選單
-        # ==========================================
         self.lang_options = []
         base_dir = os.path.dirname(os.path.abspath(__file__))
         lang_dir = os.path.join(base_dir, "languages")
@@ -5367,29 +5361,23 @@ class SettingsDialog(QDialog):
         if os.path.exists(lang_dir):
             for filename in os.listdir(lang_dir):
                 if filename.endswith(".json"):
-                    code = filename[:-5]  # 去掉 .json 取得代碼 (例如 zh_TW)
+                    code = filename[:-5]
                     file_path = os.path.join(lang_dir, filename)
-                    display_name = code   # 預設名稱先用代碼頂替
-                    
+                    display_name = code
                     try:
                         with open(file_path, 'r', encoding='utf-8') as f:
                             data = json.load(f)
-                            # 優先抓取 JSON 裡 metadata 定義的漂亮名稱
                             display_name = data.get("metadata", {}).get("display_name", code)
                     except Exception as e:
                         print(f"解析 {filename} 失敗: {e}")
-                        
                     self.lang_options.append({"name": display_name, "code": code})
         
-        # 防呆：如果資料夾是空的或不小心被刪除，給一個保底選項
         if not self.lang_options:
             self.lang_options = [{"name": "系統預設 (zh_TW)", "code": "zh_TW"}]
         
         for item in self.lang_options:
-            # addItem 可以同時存顯示文字與隱藏資料(code)
             self.combo_lang.addItem(item["name"], item["code"])
 
-        # 找到目前的設定值並選取
         for i, item in enumerate(self.lang_options):
             if item["code"] == current_lang:
                 self.combo_lang.setCurrentIndex(i)
@@ -5398,8 +5386,8 @@ class SettingsDialog(QDialog):
         self.combo_lang.currentIndexChanged.connect(self.on_language_changed)
         layout_lang.addWidget(self.combo_lang)
 
-        # 重啟提示標籤 (預設隱藏，切換後才顯示)
-        self.lbl_lang_restart_hint = QLabel("⚠️ 語言已變更！請手動重新啟動程式以套用新語言。")
+        # 🌟 套用翻譯：重啟提示
+        self.lbl_lang_restart_hint = QLabel(self.trans.t("language_page", "restart_hint", "⚠️ 語言已變更！請手動重新啟動程式以套用新語言。"))
         self.lbl_lang_restart_hint.setStyleSheet("color: #ff9800; font-weight: bold; margin-top: 10px;")
         self.lbl_lang_restart_hint.hide() 
         layout_lang.addWidget(self.lbl_lang_restart_hint)
@@ -5421,45 +5409,40 @@ class SettingsDialog(QDialog):
         self.lbl_lang_restart_hint.show()
 
     def init_page_about(self):
-        page, layout = self._create_page_container("ℹ️ 關於與說明 (Help & About)")
+        # 🌟 套用翻譯：主標題
+        page, layout = self._create_page_container(self.trans.t("about_page", "page_title", "ℹ️ 關於與說明 (Help & About)"))
 
-        # 1. 軟體標題
         title_label = QLabel("<h2>EyeSeeMore</h2>")
         layout.addWidget(title_label)
 
-        # 2. 版本資訊與日期
-        # 建議：你可以將版本號與日期抽成變數，方便以後維護
-        version_info = QLabel("<b>Version:</b> V0.5.0-alpha<br><b>Build Date:</b> 2026-03-18")
+        # 🌟 套用翻譯：版本號
+        version_info = QLabel(self.trans.t("about_page", "version_lbl", "<b>版本號：</b> V0.5.0-alpha<br><b>建置日期：</b> 2026-03-18"))
         layout.addWidget(version_info)
 
-        # 3. 核心技術聲明 (整合了你提供的所有關鍵庫)
-        # 我們將技術分類，讓使用者（和開發者）一眼看出這軟體的強大之處
+        # 🌟 套用翻譯：HTML 核心技術區塊 (透過字串拼接)
         tech_text = (
-            "<h3>技術致敬 (Core Technologies)</h3>"
-            "<p>本軟體由以下優秀的開源生態系驅動：</p>"
-            "<ul>"
-            "<li><b>介面開發：</b> Python & PyQt6</li>"
-            "<li><b>AI 推理引擎：</b> ONNX Runtime</li>"
-            "<li><b>文字辨識 (OCR)：</b> ONNX-OCR</li>"
-            "<li><b>影像與資料處理：</b> OpenCV, Pillow (PIL), NumPy</li>"
-            "<li><b>資料存儲：</b> SQLite3</li>"
-            "<li><b>系統監控：</b> psutil (效能優化)</li>"
+            self.trans.t("about_page", "tech_title", "<h3>技術致敬 (Core Technologies)</h3><p>本軟體由以下優秀的開源生態系驅動：</p>") +
+            "<ul>" +
+            self.trans.t("about_page", "tech_ui", "<li><b>介面開發：</b> Python & PyQt6</li>") +
+            self.trans.t("about_page", "tech_ai", "<li><b>AI 推理引擎：</b> ONNX Runtime</li>") +
+            self.trans.t("about_page", "tech_ocr", "<li><b>文字辨識 (OCR)：</b> ONNX-OCR</li>") +
+            self.trans.t("about_page", "tech_img", "<li><b>影像與資料處理：</b> OpenCV, Pillow (PIL), NumPy</li>") +
+            self.trans.t("about_page", "tech_db", "<li><b>資料存儲：</b> SQLite3</li>") +
+            self.trans.t("about_page", "tech_perf", "<li><b>系統監控：</b> psutil (效能優化)</li>") +
             "</ul>"
         )
         tech_label = QLabel(tech_text)
         layout.addWidget(tech_label)
 
-        # 4. 官方連結
-        # 記得把 "你的帳號" 換成你真正的 GitHub 帳號名喔！
-        link_label = QLabel('<a href="https://github.com/Magnesiumnuclear/EyeSeeMore" style="color: #00aaff; text-decoration: none;">🌐 專案 GitHub 主頁 (回報問題與建議)</a>')
+        # 🌟 套用翻譯：連結與版權
+        link_label = QLabel(self.trans.t("about_page", "github_link", '<a href="https://github.com/Magnesiumnuclear/EyeSeeMore" style="color: #00aaff; text-decoration: none;">🌐 專案 GitHub 主頁 (回報問題與建議)</a>'))
         link_label.setOpenExternalLinks(True) 
         layout.addWidget(link_label)
 
-        # 5. 版權聲明
-        copyright_label = QLabel("<br><small>© 2026 HO99 Licensed under GPL v3.</small>")
+        copyright_label = QLabel(self.trans.t("about_page", "copyright", "<br><small>© 2026 HO99 Licensed under GPL v3.</small>"))
         layout.addWidget(copyright_label)
 
-        layout.addStretch(1) # 確保所有元件都緊湊地靠上
+        layout.addStretch(1) 
         self.stack.addWidget(page)
 
 if __name__ == "__main__":

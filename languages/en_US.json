@@ -67,5 +67,24 @@
         "lang_jp": "🇯🇵 Japanese",
         "lang_kr": "🇰🇷 Korean",
         "lang_en": "🇬🇧 English"
+    },
+    "language_page": {
+        "page_title": "🌍 Language",
+        "grp_lang_title": "Display Language",
+        "lbl_desc": "Select the display language. The system will load translation files from the 'languages/' folder.\n(Changes will take effect after restarting the application)",
+        "restart_hint": "⚠️ Language changed! Please manually restart the application to apply the new language."
+    },
+    "about_page": {
+        "page_title": "ℹ️ Help & About",
+        "version_lbl": "<b>Version:</b> V0.5.0-alpha<br><b>Build Date:</b> 2026-03-18",
+        "tech_title": "<h3>Core Technologies</h3><p>This software is powered by the following excellent open-source ecosystems:</p>",
+        "tech_ui": "<li><b>UI Development:</b> Python & PyQt6</li>",
+        "tech_ai": "<li><b>AI Inference:</b> ONNX Runtime</li>",
+        "tech_ocr": "<li><b>OCR:</b> ONNX-OCR</li>",
+        "tech_img": "<li><b>Image & Data Processing:</b> OpenCV, Pillow (PIL), NumPy</li>",
+        "tech_db": "<li><b>Database:</b> SQLite3</li>",
+        "tech_perf": "<li><b>System Monitor:</b> psutil (Performance Optimization)</li>",
+        "github_link": "<a href=\"https://github.com/Magnesiumnuclear/EyeSeeMore\" style=\"color: #00aaff; text-decoration: none;\">🌐 Project GitHub (Report issues & suggestions)</a>",
+        "copyright": "<br><small>© 2026 HO99 Licensed under GPL v3.</small>"
     }
 }
