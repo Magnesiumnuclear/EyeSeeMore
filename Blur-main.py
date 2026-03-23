@@ -5089,140 +5089,6 @@ class SettingsDialog(QDialog):
         self.refresh_ocr_status()
 
 
-    def eventFilter(self, obj, event):
-        # 取得設定模式 (預設向後相容：長按顯示、方向鍵只跑底層)
-        ocr_mode = self.config.get("ui_state", {}).get("ocr_shift_mode", "hold")
-        nav_mode = self.config.get("ui_state", {}).get("preview_wasd_mode", "nav")
-
-        # 處理鍵盤按下 (KeyPress)
-        if event.type() == QEvent.Type.KeyPress:
-            key = event.key()
-            
-            # --- Shift 邏輯 (單按 Toggle vs 長按 Hold) ---
-            if key == Qt.Key.Key_Shift:
-                if self.preview_overlay.isVisible():
-                    if ocr_mode == "toggle":
-                        # 切換模式：反轉狀態並維持
-                        self.is_ocr_locked = not self.is_ocr_locked
-                        self.preview_overlay.set_ocr_visible(self.is_ocr_locked)
-                    else:
-                        # 傳統長按模式：按下顯示
-                        self.preview_overlay.set_ocr_visible(True)
-                return True 
-
-            if not self.input.hasFocus() and QApplication.activeWindow() == self:
-                # --- W/A/S/D 預覽圖連動邏輯 ---
-                if key in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D):
-                    # 1. 如果預覽畫面「沒開」，純粹移動背景游標
-                    if not self.preview_overlay.isVisible():
-                        self.list_view.setFocus()
-                        if key == Qt.Key.Key_W: self.send_nav_key(Qt.Key.Key_Up)
-                        elif key == Qt.Key.Key_S: self.send_nav_key(Qt.Key.Key_Down)
-                        elif key == Qt.Key.Key_A: self.send_nav_key(Qt.Key.Key_Left)
-                        elif key == Qt.Key.Key_D: self.send_nav_key(Qt.Key.Key_Right)
-                        return True
-
-                    # 2. 如果預覽畫面「已開」，根據選項決定行為
-                    if nav_mode == "close":
-                        # 選項 B: 關閉預覽並回到底層控制
-                        self.preview_overlay.hide()
-                        self.list_view.setFocus()
-                        if key == Qt.Key.Key_W: self.send_nav_key(Qt.Key.Key_Up)
-                        elif key == Qt.Key.Key_S: self.send_nav_key(Qt.Key.Key_Down)
-                        elif key == Qt.Key.Key_A: self.send_nav_key(Qt.Key.Key_Left)
-                        elif key == Qt.Key.Key_D: self.send_nav_key(Qt.Key.Key_Right)
-                        return True
-
-                    elif nav_mode == "sync":
-                        # 選項 C: 沉浸式切換。先讓底層游標移動，等待底層回報 currentChanged 後自然更新
-                        self.list_view.setFocus()
-                        if key == Qt.Key.Key_W: self.send_nav_key(Qt.Key.Key_Up)
-                        elif key == Qt.Key.Key_S: self.send_nav_key(Qt.Key.Key_Down)
-                        elif key == Qt.Key.Key_A: self.send_nav_key(Qt.Key.Key_Left)
-                        elif key == Qt.Key.Key_D: self.send_nav_key(Qt.Key.Key_Right)
-                        return True
-
-                    else:
-                        # 選項 A: (預設 nav) 保持預覽圖不動，但背景游標繼續跑
-                        self.list_view.setFocus()
-                        if key == Qt.Key.Key_W: self.send_nav_key(Qt.Key.Key_Up)
-                        elif key == Qt.Key.Key_S: self.send_nav_key(Qt.Key.Key_Down)
-                        elif key == Qt.Key.Key_A: self.send_nav_key(Qt.Key.Key_Left)
-                        elif key == Qt.Key.Key_D: self.send_nav_key(Qt.Key.Key_Right)
-                        return True
-
-                elif key == Qt.Key.Key_Space:
-                    self.toggle_preview()
-                    return True
-        
-        # 處理鍵盤放開 (KeyRelease) -> 關閉紅框 (僅限 Hold 模式)
-        if event.type() == QEvent.Type.KeyRelease:
-            if event.key() == Qt.Key.Key_Shift:
-                if self.preview_overlay.isVisible():
-                    # 如果是切換模式，放開按鍵時不要把紅框關掉
-                    if ocr_mode != "toggle":
-                        self.preview_overlay.set_ocr_visible(False)
-                return True
-
-        # 處理滑鼠點擊 (MouseButtonPress)
-        if event.type() == QEvent.Type.MouseButtonPress:
-            click_pos = event.globalPosition().toPoint()
-            
-            # 點擊外部關閉歷史紀錄
-            if self.history_list.isVisible():
-                input_rect = QRect(self.input.mapToGlobal(QPoint(0, 0)), self.input.size())
-                list_rect = QRect(self.history_list.mapToGlobal(QPoint(0, 0)), self.history_list.size())
-                if not input_rect.contains(click_pos) and not list_rect.contains(click_pos): 
-                    self.history_list.hide()
-
-            if obj == self.input: 
-                self.show_history_popup()
-
-        return super().eventFilter(obj, event)
-
-# ==========================================
-#  [NEW] 處理 PreviewOverlay 的開關邏輯 (重設鎖定狀態)
-# ==========================================
-# 請將這段程式碼覆蓋回 MainWindow 的 toggle_preview 方法
-
-    def toggle_preview(self):
-        if self.preview_overlay.isVisible():
-            self.preview_overlay.hide()
-            # 關閉預覽時，重設 OCR 鎖定狀態
-            self.is_ocr_locked = False
-            self.preview_overlay.set_ocr_visible(False)
-        else:
-            # 獲取選取項目
-            index = self.list_view.currentIndex()
-            if index.isValid():
-                item = index.data(Qt.ItemDataRole.UserRole)
-                if item:
-                    self.preview_overlay.show_image(item)
-                    # 每次新開啟預覽時，重設狀態
-                    self.is_ocr_locked = False
-                    self.preview_overlay.set_ocr_visible(False)
-
-
-# ==========================================
-#  [NEW] MainWindow 監聽 ListView 選取變化 (用於沉浸模式)
-# ==========================================
-# 這段請加在 MainWindow.init_ui() 中，在 setup list_view 的區塊 (例如 doubleClicked 之後)
-
-        # 監聽選取變化，用於沉浸式預覽同步
-        self.list_view.selectionModel().currentChanged.connect(self.on_selection_changed)
-
-    # 然後將這個新方法加入 MainWindow 類別中：
-    def on_selection_changed(self, current, previous):
-        # 只有在預覽畫面開啟，且設定為同步切換時，才自動更新圖片
-        nav_mode = self.config.get("ui_state", {}).get("preview_wasd_mode", "nav")
-        if self.preview_overlay.isVisible() and nav_mode == "sync":
-            if current.isValid():
-                item = current.data(Qt.ItemDataRole.UserRole)
-                if item:
-                    self.preview_overlay.show_image(item)
-                    # 如果希望切換圖片時維持 OCR 紅框顯示狀態，就把下面兩行註解掉
-                    self.is_ocr_locked = False
-                    self.preview_overlay.set_ocr_visible(False)
 
 # ==========================================
 #  [NEW] 在設定介面加入快捷鍵設定區塊
@@ -5491,12 +5357,33 @@ class SettingsDialog(QDialog):
             QComboBox QAbstractItemView { background-color: #2b2b2b; border: 1px solid #555555; selection-background-color: #383838; selection-color: #60cdff; outline: none; }
         """)
         
-        # 預先定義支援的語系 (對應之後的 JSON 檔名)
-        self.lang_options = [
-            {"name": "繁體中文 (Traditional Chinese)", "code": "zh_TW"},
-            {"name": "English (English)", "code": "en_US"},
-            {"name": "日本語 (Japanese)", "code": "ja_JP"}
-        ]
+        # ==========================================
+        # 🌟 動態掃描 languages 資料夾，自動生成語系選單
+        # ==========================================
+        self.lang_options = []
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        lang_dir = os.path.join(base_dir, "languages")
+
+        if os.path.exists(lang_dir):
+            for filename in os.listdir(lang_dir):
+                if filename.endswith(".json"):
+                    code = filename[:-5]  # 去掉 .json 取得代碼 (例如 zh_TW)
+                    file_path = os.path.join(lang_dir, filename)
+                    display_name = code   # 預設名稱先用代碼頂替
+                    
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            # 優先抓取 JSON 裡 metadata 定義的漂亮名稱
+                            display_name = data.get("metadata", {}).get("display_name", code)
+                    except Exception as e:
+                        print(f"解析 {filename} 失敗: {e}")
+                        
+                    self.lang_options.append({"name": display_name, "code": code})
+        
+        # 防呆：如果資料夾是空的或不小心被刪除，給一個保底選項
+        if not self.lang_options:
+            self.lang_options = [{"name": "系統預設 (zh_TW)", "code": "zh_TW"}]
         
         for item in self.lang_options:
             # addItem 可以同時存顯示文字與隱藏資料(code)
