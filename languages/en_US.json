@@ -10,5 +10,21 @@
         "nav_hotkeys": "⌨️ Hotkeys",
         "nav_language": "🌍 Language",
         "nav_about": "ℹ️ About"
+    },
+    "folders": {
+        "page_title": "📁 Folders",
+        "hint": "Tip: Drag items to reorder. Right-click an item to set language tags and icons.",
+        "btn_add": "+ Add Folder",
+        "btn_remove": "- Remove Selected"
+    },
+    "appearance": {
+        "page_title": "🖥️ Appearance",
+        "lbl_size": "Default Image Size:",
+        "size_xl": "Extra Large",
+        "size_l": "Large",
+        "size_m": "Medium",
+        "lbl_tag_mode": "OCR Hover Tag Display Mode:",
+        "tag_anchored": "Option A: Anchored to OCR Box - Recommended",
+        "tag_follow": "Option B: Follow Mouse Cursor"
     }
 }

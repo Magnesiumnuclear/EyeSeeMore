@@ -4566,14 +4566,15 @@ class SettingsDialog(QDialog):
         return page, layout
 
     def init_page_folders(self):
-        page, layout = self._create_page_container("📁 資料夾管理 (Folders)")
+        # 🌟 套用翻譯
+        page, layout = self._create_page_container(self.trans.t("folders", "page_title", "📁 資料夾管理 (Folders)"))
         
-        lbl_hint = QLabel("提示：拖曳列表項目可改變排序。在項目上「點擊右鍵」可設定語系標記與圖示。")
+        # 🌟 套用翻譯
+        lbl_hint = QLabel(self.trans.t("folders", "hint", "提示：拖曳列表項目可改變排序。在項目上「點擊右鍵」可設定語系標記與圖示。"))
         lbl_hint.setStyleSheet("color: #aaa; font-size: 13px;")
         layout.addWidget(lbl_hint)
         
         self.folder_list = TransparentDragListWidget()
-        # [修改] 恢復為漂亮的原生字型，由底層 Layout 負責對齊
         self.folder_list.setStyleSheet("""
             QListWidget { outline: none; } 
             QListWidget::item { border-bottom: 1px solid #333; }
@@ -4589,8 +4590,9 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.folder_list)
         
         btn_layout = QHBoxLayout()
-        self.btn_add = QPushButton("+ 新增資料夾")
-        self.btn_del = QPushButton("- 移除選取")
+        # 🌟 套用翻譯
+        self.btn_add = QPushButton(self.trans.t("folders", "btn_add", "+ 新增資料夾"))
+        self.btn_del = QPushButton(self.trans.t("folders", "btn_remove", "- 移除選取"))
         
         base_btn_style = "QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; padding: 6px 15px; font-size: 14px;} QPushButton:hover { background-color: #60cdff; color: #111; }"
         self.btn_add.setStyleSheet(base_btn_style)
@@ -5096,10 +5098,10 @@ class SettingsDialog(QDialog):
 # 請將這段程式碼覆蓋回 SettingsDialog 的 init_page_appearance 方法
 
     def init_page_appearance(self):
-        page, layout = self._create_page_container("🖥️ 介面與顯示 (Appearance)")
+        # 🌟 套用翻譯
+        page, layout = self._create_page_container(self.trans.t("appearance", "page_title", "🖥️ 介面與顯示 (Appearance)"))
         ui_state = self.main_window.config.get("ui_state", {}) 
 
-        # 🌟 定義共用下拉選單樣式
         combo_style = """
             QComboBox {
                 background-color: #383838;
@@ -5114,27 +5116,37 @@ class SettingsDialog(QDialog):
             QComboBox QAbstractItemView { background-color: #2b2b2b; border: 1px solid #555555; selection-background-color: #383838; selection-color: #60cdff; outline: none; }
         """
 
-        layout.addWidget(QLabel("預設圖片顯示大小："))
+        # 🌟 套用翻譯
+        layout.addWidget(QLabel(self.trans.t("appearance", "lbl_size", "預設圖片顯示大小：")))
         self.combo_size = QComboBox()
-        self.combo_size.setFixedHeight(38) # 高度統一改為 38
-        self.combo_size.setStyleSheet(combo_style) # 🌟 套用正確樣式
-        self.combo_size.addItems(["超大圖示 (Extra Large)", "大圖示 (Large)", "中圖示 (Medium)"])
+        self.combo_size.setFixedHeight(38)
+        self.combo_size.setStyleSheet(combo_style)
+        
+        # 🌟 套用翻譯到下拉選項
+        self.combo_size.addItems([
+            self.trans.t("appearance", "size_xl", "超大圖示 (Extra Large)"), 
+            self.trans.t("appearance", "size_l", "大圖示 (Large)"), 
+            self.trans.t("appearance", "size_m", "中圖示 (Medium)")
+        ])
     
         mode_map = {"xl": 0, "large": 1, "medium": 2}
         self.combo_size.setCurrentIndex(mode_map.get(self.main_window.current_view_mode, 1))
         self.combo_size.currentIndexChanged.connect(self.on_view_mode_changed)
         layout.addWidget(self.combo_size)
         
-        # ==========================================
-        # [新增] OCR 懸浮標籤顯示方式
-        # ==========================================
         layout.addSpacing(10)
-        layout.addWidget(QLabel("OCR 懸浮標籤顯示方式："))
+        # 🌟 套用翻譯
+        layout.addWidget(QLabel(self.trans.t("appearance", "lbl_tag_mode", "OCR 懸浮標籤顯示方式：")))
         
         self.combo_tag_mode = QComboBox()
-        self.combo_tag_mode.setFixedHeight(38) # 高度統一改為 38
-        self.combo_tag_mode.setStyleSheet(combo_style) # 🌟 套用正確樣式 (取代原本會報錯的寫法)
-        self.combo_tag_mode.addItems(["選項 A：固定在 OCR 框邊緣 (Anchored) - 推薦", "選項 B：跟隨滑鼠游標 (Follow Mouse)"])
+        self.combo_tag_mode.setFixedHeight(38) 
+        self.combo_tag_mode.setStyleSheet(combo_style)
+        
+        # 🌟 套用翻譯到下拉選項
+        self.combo_tag_mode.addItems([
+            self.trans.t("appearance", "tag_anchored", "選項 A：固定在 OCR 框邊緣 (Anchored) - 推薦"), 
+            self.trans.t("appearance", "tag_follow", "選項 B：跟隨滑鼠游標 (Follow Mouse)")
+        ])
         
         tag_mode = ui_state.get("ocr_tag_mode", "anchored")
         self.combo_tag_mode.setCurrentIndex(0 if tag_mode == "anchored" else 1)
