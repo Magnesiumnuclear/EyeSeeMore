@@ -1,0 +1,23 @@
+{
+    "metadata": {
+        "id": "dark",
+        "name": "深色模式 (Dark)",
+        "style_logic": "flat" 
+    },
+    "colors": {
+        "bg_app": "#1e1e1e",
+        "bg_panel": "#252525",
+        "bg_card": "#2b2b2b",
+        "bg_input": "#2d2d2d",
+        "bg_hover": "#383838",
+        "border_main": "#3e3e3e",
+        "border_light": "#555555",
+        "text_main": "#ffffff",
+        "text_sec": "#cccccc",
+        "text_muted": "#888888",
+        "primary": "#60cdff",
+        "primary_hover": "#7ce0ff",
+        "primary_active": "#005fb8",
+        "danger": "#ff6b6b"
+    }
+}

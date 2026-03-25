@@ -1,0 +1,23 @@
+{
+    "metadata": {
+        "id": "light",
+        "name": "淺色模式 (Light)",
+        "style_logic": "flat"
+    },
+    "colors": {
+        "bg_app": "#f3f3f3",
+        "bg_panel": "#e6e6e6",
+        "bg_card": "#ffffff",
+        "bg_input": "#ffffff",
+        "bg_hover": "#dcdcdc",
+        "border_main": "#cccccc",
+        "border_light": "#aaaaaa",
+        "text_main": "#111111",
+        "text_sec": "#333333",
+        "text_muted": "#666666",
+        "primary": "#005fb8",
+        "primary_hover": "#0078d4",
+        "primary_active": "#004a99",
+        "danger": "#d32f2f"
+    }
+}

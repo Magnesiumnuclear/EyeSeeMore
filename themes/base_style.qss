@@ -1,0 +1,45 @@
+QMainWindow { background-color: @bg_app; }
+QWidget { color: @text_main; font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; font-size: 10pt; }
+
+QLineEdit { background-color: @bg_input; border: 1px solid @border_main; border-bottom: 1px solid @border_light; border-radius: 4px; padding: 10px 12px; color: @text_main; font-size: 15px; selection-background-color: @primary_active; }
+QLineEdit:focus { border-bottom: 2px solid @primary; background-color: @bg_card; }
+
+QComboBox { background-color: @bg_input; border: 1px solid @border_main; border-radius: 4px; padding: 6px 10px; color: @text_main; }
+QComboBox:hover { background-color: @bg_hover; }
+QComboBox::drop-down { border: none; width: 20px; }
+
+QPushButton#MenuButton { background-color: transparent; border: 1px solid @border_main; border-radius: 4px; padding: 6px 12px; font-weight: bold; color: @text_main; }
+QPushButton#MenuButton:hover { background-color: @bg_hover; border-color: @border_light; }
+
+QPushButton#GhostButton { background-color: transparent; color: @text_sec; border-radius: 4px; padding: 4px; }
+QPushButton#GhostButton:hover { background-color: @bg_hover; color: @text_main; }
+
+QScrollArea { border: none; background-color: transparent; }
+QProgressBar { border: none; background-color: @bg_app; height: 3px; }
+QProgressBar::chunk { background-color: @primary; }
+
+QListWidget { background-color: @bg_card; border: 1px solid @border_main; border-radius: 8px; outline: 0; padding: 4px; }
+QListWidget::item { background-color: transparent; border-radius: 4px; padding: 8px; margin-bottom: 2px; }
+QListWidget::item:hover { background-color: @bg_hover; }
+QListWidget::item:selected { background-color: @bg_hover; border-left: 3px solid @primary; }
+
+QMenu { background-color: @bg_app; border: 1px solid @border_light; padding: 5px; border-radius: 8px; }
+QMenu::item { background-color: transparent; color: @text_sec; padding: 8px 20px; margin: 2px 4px; border-radius: 4px; border: none; }
+QMenu::item:selected { background-color: @bg_hover; color: @text_main; }
+
+QMessageBox { background-color: @bg_card; border: 1px solid @border_main; }
+QMessageBox QLabel { color: @text_main; }
+QMessageBox QPushButton { background-color: @bg_hover; color: @text_main; border: 1px solid @border_main; border-radius: 4px; padding: 6px 24px; }
+QMessageBox QPushButton:hover { background-color: @border_light; }
+
+QCheckBox { color: @text_sec; spacing: 5px; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid @border_light; border-radius: 3px; background: @bg_input; }
+QCheckBox::indicator:checked { background-color: @primary; border: 1px solid @primary; }
+
+QGroupBox { border: 1px solid @border_main; border-radius: 6px; margin-top: 12px; padding-top: 20px; font-weight: bold; color: @text_main; font-size: 10pt; }
+QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 5px; left: 10px; }
+
+QRadioButton { color: @text_sec; spacing: 8px; }
+QRadioButton::indicator { width: 18px; height: 18px; border-radius: 9px; border: 2px solid @border_light; background-color: @bg_input; }
+QRadioButton::indicator:checked { border: 5px solid @primary; background-color: @bg_app; }
+QRadioButton:hover { color: @text_main; }

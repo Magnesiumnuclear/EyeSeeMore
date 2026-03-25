@@ -28,6 +28,7 @@ import cv2
 
 # [New] 引入設定管理器
 from config_manager import ConfigManager
+from theme_manager import ThemeManager # 🌟 [新增] 引入主題引擎
 
 # [修正] 確保所有 PyQt6 模組都已引入
 from PyQt6.QtGui import QActionGroup
@@ -132,8 +133,6 @@ if sys.platform == 'win32':
     CLSID_TaskbarList = GUID(0x56FDF344, 0xFD6D, 0x11d0, (0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90))
     IID_ITaskbarList3 = GUID(0xEA1AFB91, 0x9E28, 0x4B86, (0x90, 0xE9, 0x9E, 0x9F, 0x8A, 0x5E, 0xEF, 0xAF))
 
-# [New] 引入設定管理器
-from config_manager import ConfigManager 
 
 # ==========================================
 #  [NEW] 全域多國語言翻譯器
@@ -207,77 +206,7 @@ class TaskbarController:
 # ==========================================
 #  樣式表
 # ==========================================
-WIN11_STYLESHEET = """
-QMainWindow { background-color: #1e1e1e; }
-QWidget { color: #ffffff; font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; font-size: 10pt; }
-QLineEdit { background-color: #2d2d2d; border: 1px solid #3e3e3e; border-bottom: 1px solid #505050; border-radius: 4px; padding: 10px 12px; color: #ffffff; font-size: 15px; selection-background-color: #005fb8; }
-QLineEdit:focus { border-bottom: 2px solid #60cdff; background-color: #323232; }
-QComboBox { background-color: #2d2d2d; border: 1px solid #3e3e3e; border-radius: 4px; padding: 6px 10px; min-width: 80px; }
-QComboBox:hover { background-color: #383838; }
-QComboBox::drop-down { border: none; width: 20px; }
-QPushButton#MenuButton { background-color: transparent; border: 1px solid #3e3e3e; border-radius: 4px; padding: 6px 12px; font-weight: bold; }
-QPushButton#MenuButton:hover { background-color: #333333; border-color: #666; }
-QPushButton#GhostButton { background-color: transparent; color: #cccccc; border-radius: 4px; padding: 4px; }
-QPushButton#GhostButton:hover { background-color: #383838; color: #ffffff; }
-QScrollArea { border: none; background-color: transparent; }
-QProgressBar { border: none; background-color: #1e1e1e; height: 3px; }
-QProgressBar::chunk { background-color: #60cdff; }
-QListWidget { background-color: #2b2b2b; border: 1px solid #3b3b3b; border-radius: 8px; outline: 0; padding: 4px; }
-QListWidget::item { background-color: transparent; border-radius: 4px; padding: 8px; margin-bottom: 2px; }
-QListWidget::item:hover { background-color: #383838; }
-QListWidget::item:selected { background-color: #383838; border-left: 3px solid #60cdff; }
-QMenu { background-color: rgba(30, 30, 30, 250); border: 1px solid #555555; padding: 5px; border-radius: 8px; }
-QMenu::item { background-color: transparent; color: #eeeeee; padding: 8px 20px; margin: 2px 4px; border-radius: 4px; border: none; }
-QMenu::item:selected { background-color: rgba(255, 255, 255, 30); color: #ffffff; }
-QMenu::item:pressed { background-color: rgba(255, 255, 255, 50); }
-QMenu::separator { height: 1px; background-color: #555555; margin: 4px 10px; }
-QMessageBox { background-color: #2b2b2b; border: 1px solid #454545; }
-QMessageBox QLabel { color: #e0e0e0; }
-QMessageBox QPushButton { background-color: #383838; color: white; border: 1px solid #454545; border-radius: 4px; padding: 6px 24px; }
-QMessageBox QPushButton:hover { background-color: #454545; border-color: #555; }
-QCheckBox { color: #ccc; spacing: 5px; }
-QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #555; border-radius: 3px; background: #2d2d2d; }
-QCheckBox::indicator:checked { background-color: #60cdff; border: 1px solid #60cdff; }
-/* Scrollbar Styling */
-QScrollBar:vertical { border: none; background: #2b2b2b; width: 8px; margin: 0px 0px 0px 0px; border-radius: 4px; }
-QScrollBar::handle:vertical { background: #555; min-height: 20px; border-radius: 4px; }
-QScrollBar::add-line:vertical { height: 0px; subcontrol-position: bottom; subcontrol-origin: margin; }
-QScrollBar::sub-line:vertical { height: 0px; subcontrol-position: top; subcontrol-origin: margin; }
-/* --- 新增設定面板樣式 --- */
-QGroupBox {
-    border: 1px solid #454545;
-    border-radius: 6px;
-    margin-top: 12px;
-    padding-top: 20px;
-    font-weight: bold;
-    color: #e0e0e0;
-    font-size: 10pt;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    padding: 0 5px;
-    left: 10px;
-}
-QRadioButton {
-    color: #cccccc;
-    spacing: 8px;
-}
-QRadioButton::indicator {
-    width: 18px;
-    height: 18px;
-    border-radius: 9px;
-    border: 2px solid #555;
-    background-color: #2d2d2d;
-}
-QRadioButton::indicator:checked {
-    border: 5px solid #60cdff;
-    background-color: #1e1e1e;
-}
-QRadioButton:hover {
-    color: #ffffff;
-}
-"""
+
 
 # ==========================================
 #  [NEW] 高效能資料模型與載入器
@@ -5129,6 +5058,25 @@ class SettingsDialog(QDialog):
             QComboBox QAbstractItemView { background-color: #2b2b2b; border: 1px solid #555555; selection-background-color: #383838; selection-color: #60cdff; outline: none; }
         """
 
+        # ==========================================
+        # 🌟 [新增] 軟體主題切換
+        # ==========================================
+        layout.addWidget(QLabel("軟體主題配色 (Theme):"))
+        self.combo_theme = QComboBox()
+        self.combo_theme.setFixedHeight(38)
+        self.combo_theme.setStyleSheet(combo_style)
+
+        # 從 ThemeManager 動態抓取可用的主題
+        themes = self.main_window.theme_manager.get_available_themes()
+        for i, theme in enumerate(themes):
+            self.combo_theme.addItem(theme["name"], theme["id"])
+            if theme["id"] == self.main_window.theme_manager.current_theme_id:
+                self.combo_theme.setCurrentIndex(i)
+                
+        self.combo_theme.currentIndexChanged.connect(self.on_theme_changed)
+        layout.addWidget(self.combo_theme)
+        layout.addSpacing(10)
+
         # 🌟 套用翻譯
         layout.addWidget(QLabel(self.trans.t("appearance", "lbl_size", "預設圖片顯示大小：")))
         self.combo_size = QComboBox()
@@ -5168,6 +5116,11 @@ class SettingsDialog(QDialog):
 
         layout.addStretch(1)
         self.stack.addWidget(page)
+
+    def on_theme_changed(self, index):
+        theme_id = self.combo_theme.itemData(index)
+        app = QApplication.instance()
+        self.main_window.theme_manager.apply_theme(app, theme_id)
 
     # [新增] 儲存設定事件
     def on_tag_mode_changed(self, index):
@@ -5490,14 +5443,18 @@ if __name__ == "__main__":
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
         
     app = QApplication(sys.argv)
-    app.setStyleSheet(WIN11_STYLESHEET)
+    
+    # 🌟 [修改] 棄用寫死的 WIN11_STYLESHEET，改用 ThemeManager
+    theme_manager = ThemeManager(app_config)
+    theme_manager.apply_theme(app, theme_manager.current_theme_id)
 
     is_first_run = not app_config.get("source_folders")
-    
     if is_first_run:
         onboarding = OnboardingDialog(app_config)
         onboarding.exec() 
 
     w = MainWindow(app_config) 
+    # 把 theme_manager 存進 main window，方便設定頁面呼叫
+    w.theme_manager = theme_manager 
     w.show()
     sys.exit(app.exec())
