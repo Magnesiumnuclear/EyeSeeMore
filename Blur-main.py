@@ -1835,71 +1835,7 @@ class FolderHoverMenu(QWidget):
         
         self.main_layout.addWidget(self.container_frame)
 
-        # 樣式表
-        self.setStyleSheet("""
-            QFrame#MenuContainer {
-                background-color: rgba(45, 45, 45, 255);
-                border: 1px solid #666;
-                border-radius: 0px;
-            }
-            QPushButton {
-                background-color: #333;
-                border: 1px solid #555;
-                color: #eee;
-                border-radius: 4px;
-                font-size: 16px;
-                font-weight: bold;
-                font-family: "Segoe UI", sans-serif;
-                text-align: center; 
-            }
-            QPushButton:hover {
-                background-color: #60cdff;
-                color: #111;
-                border: 1px solid #60cdff;
-            }
-            
-            /* 新增按鈕 (+) 樣式 */
-            QPushButton#AddBtn {
-                background-color: #2a2a2a;
-                border: 1px solid #555;
-                font-size: 32px;
-                color: #aaa;
-                font-weight: 300;
-                text-align: center;
-                padding: 0px;
-                margin: 0px;
-                padding-bottom: 6px;
-            }
-            QPushButton#AddBtn:hover {
-                background-color: #4caf50;
-                border: 1px solid #4caf50;
-                color: white;
-            }
-            
-            /* [新增] 重新整理按鈕 (環形箭頭) 樣式 */
-            QPushButton#RefreshBtn {
-                background-color: #2a2a2a;
-                border: 1px solid #555;
-                font-size: 24px;   /* 符號大小 */
-                color: #aaa;
-                text-align: center;
-                padding: 0px;
-                padding-bottom: 2px; /* 微調垂直位置 */
-            }
-            QPushButton#RefreshBtn:hover {
-                background-color: #2196f3; /* 藍色 */
-                border: 1px solid #2196f3;
-                color: white;
-            }
-
-            QToolTip {
-                background-color: #222;
-                color: #fff;
-                border: 1px solid #555;
-                font-size: 14px; /* 強制鎖定字體大小 */
-                font-family: "Segoe UI", sans-serif; /* 強制鎖定字型 */
-            }
-        """)
+        
 
     # 🌟 [新增] 覆寫滑鼠進出事件，通知上層 Sidebar
     def enterEvent(self, event):
@@ -3238,7 +3174,7 @@ class MainWindow(QMainWindow):
         self.list_view.setSpacing(MIN_SPACING)
         self.list_view.setMouseTracking(True)
         self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.list_view.setStyleSheet("QListView { border: none; background-color: #1e1e1e; }")
+        self.list_view.setObjectName("GalleryList")
 
         self.list_view.verticalScrollBar().valueChanged.connect(self.on_gallery_scroll)
 
@@ -4344,12 +4280,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(lbl_hint)
         
         self.folder_list = TransparentDragListWidget()
-        self.folder_list.setStyleSheet("""
-            QListWidget { outline: none; } 
-            QListWidget::item { border-bottom: 1px solid #333; }
-            QListWidget::item:hover { background-color: #333333; }
-            QListWidget::item:selected { background-color: #383838; border-left: 4px solid #60cdff; }
-        """)
+        self.folder_list.setObjectName("FolderSettingsList")
         self.folder_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.folder_list.model().rowsMoved.connect(self.on_folder_order_changed)
         
@@ -4363,9 +4294,8 @@ class SettingsDialog(QDialog):
         self.btn_add = QPushButton(self.trans.t("folders", "btn_add", "+ 新增資料夾"))
         self.btn_del = QPushButton(self.trans.t("folders", "btn_remove", "- 移除選取"))
         
-        base_btn_style = "QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; padding: 6px 15px; font-size: 14px;} QPushButton:hover { background-color: #60cdff; color: #111; }"
-        self.btn_add.setStyleSheet(base_btn_style)
-        self.btn_del.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; color: #eee; padding: 6px 15px; font-size: 14px;} QPushButton:hover { background-color: #ff4747; color: white; border-color: #ff4747; }")
+        self.btn_add.setProperty("cssClass", "ActionBtn")
+        self.btn_del.setProperty("cssClass", "DangerBtn")
         
         self.btn_add.clicked.connect(self.on_add_folder)
         self.btn_del.clicked.connect(self.on_remove_folder)
