@@ -424,8 +424,9 @@ class SearchResultsModel(QAbstractListModel):
 
 class ImageDelegate(QStyledItemDelegate):
     """負責繪製列表中的每一個項目 (支援動態調整大小)"""
-    def __init__(self, card_size, thumb_height, parent=None):
-        super().__init__(parent)
+    def __init__(self, card_size, thumb_height, main_window):
+        super().__init__(main_window)
+        self.main_window = main_window
         self.padding = 10
         self.radius = 8
         self.font_name = QFont("Segoe UI", 10, QFont.Weight.Medium)
@@ -474,15 +475,34 @@ class ImageDelegate(QStyledItemDelegate):
         border_color = QColor("#3b3b3b")
         border_width = 1
 
+        # --- 🌟 動態取得主題顏色 ---
+        if hasattr(self.main_window, 'theme_manager'):
+            colors = self.main_window.theme_manager.current_colors
+        else:
+            colors = {} # 防呆
+
+        bg_color = QColor(colors.get("bg_card", "#2b2b2b"))
+        border_color = QColor(colors.get("border_main", "#3e3e3e"))
+        text_color = QColor(colors.get("text_main", "#ffffff"))
+        
+        # 🌟 核心視覺優化：避免在畫廊大面積使用純白 (255, 255, 255)
+        # 如果主題文字是純白，我們將它柔化為 #e0e0e0 (淡淡的灰白)，減輕刺眼感
+        if text_color.name().lower() == "#ffffff":
+            text_color = QColor("#e0e0e0")
+
+        # 狀態判斷
+        is_selected = option.state & QStyle.StateFlag.State_Selected
+        is_hover = option.state & QStyle.StateFlag.State_MouseOver
+
         if is_selected:
-            border_color = QColor("#60cdff")
+            border_color = QColor(colors.get("primary", "#60cdff"))
             border_width = 2
         elif item.is_ocr_match:
-            border_color = QColor("#4caf50")
+            border_color = QColor(colors.get("danger", "#4caf50")) # 這裡借用綠色
             border_width = 1
         elif is_hover:
-            bg_color = QColor("#323232")
-            border_color = QColor("#7ce0ff")
+            bg_color = QColor(colors.get("bg_hover", "#383838"))
+            border_color = QColor(colors.get("primary_hover", "#7ce0ff"))
 
         # 1. 繪製背景
         path = QPainterPath()
@@ -563,7 +583,7 @@ class ImageDelegate(QStyledItemDelegate):
 
         # 3. 繪製文字
         painter.setFont(self.font_name)
-        painter.setPen(QColor("#ffffff"))
+        painter.setPen(text_color)
         elided_name = item.get_elided_name(self.fm_name, text_rect.width())
         fm = QFontMetrics(self.font_name)
         elided_name = fm.elidedText(item.filename, Qt.TextElideMode.ElideRight, text_rect.width())
@@ -1135,24 +1155,16 @@ class FloatingWidget(QWidget):
 
         self.setFixedWidth(320)
         
-        # 🌟 加入層級一 (分頁) 的動態底線樣式
-        self.setStyleSheet("""
-            QFrame { background-color: #1e1e1e; border-left: 1px solid #333333; }
-            QLabel { color: #cccccc; font-size: 13px; border: none; background: transparent; }
-            QTabWidget::pane { border: none; border-top: 1px solid #333333; background: #1e1e1e; }
-            QTabBar::tab { background: #252525; color: #888888; padding: 10px 15px; border: none; font-weight: bold; font-size: 13px; }
-            QTabBar::tab:selected { color: #60cdff; border-bottom: 2px solid #60cdff; background: #1e1e1e; }
-            QTabBar::tab:hover:!selected { color: #eeeeee; background: #2d2d2d; }
-            QSlider::groove:horizontal { border: 1px solid #444; height: 4px; background: #2b2b2b; border-radius: 2px; }
-            QSlider::handle:horizontal { background: #60cdff; width: 14px; margin: -5px 0; border-radius: 7px; }
-            QComboBox { background-color: #2b2b2b; border: 1px solid #444; color: white; padding: 6px; border-radius: 4px; }
-            
-            
-            /* 🌟 層級三：標題文字的動態底線 */
-            QLabel[filter_active="true"] {
-                color: #60cdff; border-bottom: 2px solid #60cdff; padding-bottom: 4px;
-            }
-        """)
+        # 🌟 只要這一行！樣式全部交給外部 QSS 接管
+        self.setObjectName("InspectorPanel")
+
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("InspectorTabs") # 🌟 綁定分頁樣式
+        self.layout.addWidget(self.tabs)
 
         # 讓滑鼠點擊可以直接穿透這個標籤，避免擋住底下的紅框
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -1690,10 +1702,10 @@ class HistoryItemWidget(QWidget):
     def __init__(self, text, search_callback, delete_callback):
         super().__init__(); self.text = text; self.search_callback = search_callback; self.delete_callback = delete_callback
         layout = QHBoxLayout(self); layout.setContentsMargins(10, 0, 5, 0)
-        self.label = QLabel(text); self.label.setStyleSheet("color: #eeeeee; background: transparent;"); self.label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor)); self.label.mousePressEvent = self.on_label_clicked
+        self.label = QLabel(text); self.label.setStyleSheet("background: transparent;"); self.label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor)); self.label.mousePressEvent = self.on_label_clicked
         layout.addWidget(self.label, stretch=1)
         self.del_btn = QPushButton("x"); self.del_btn.setObjectName("GhostButton"); self.del_btn.setFixedSize(28, 28); self.del_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.del_btn.setStyleSheet("QPushButton { font-size: 18px; padding-bottom: 4px; } QPushButton:hover { color: #ff6b6b; background-color: #3e3e3e; }")
+        self.del_btn.setStyleSheet("QPushButton { font-size: 18px; padding-bottom: 4px; background: transparent; border: none; } QPushButton:hover { color: #ff6b6b; }")
         self.del_btn.clicked.connect(self.on_delete_clicked); layout.addWidget(self.del_btn)
     def on_label_clicked(self, event):
         if event.button() == Qt.MouseButton.LeftButton: self.search_callback(self.text)
@@ -1993,27 +2005,7 @@ class SidebarWidget(QFrame):
         self.is_expanded = True
         self.stats_cache = []
         
-        self.setStyleSheet("""
-            QFrame { background-color: #252525; border-right: 1px solid #333; }
-            QPushButton {
-                background: transparent;
-                border: none;
-                color: #ccc;
-                text-align: left;
-                padding-left: 0px; 
-            }
-            QPushButton:hover {
-                background-color: #333;
-                color: white;
-            }
-            QPushButton#Row1 {
-                border-left: 3px solid transparent; 
-            }
-            QPushButton#Row1:hover {
-                background-color: #383838;
-                border-left: 3px solid #60cdff; 
-            }
-        """)
+        self.setObjectName("Sidebar")
         
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
@@ -2022,6 +2014,7 @@ class SidebarWidget(QFrame):
         
         # 1. 漢堡選單
         self.btn_toggle = QPushButton("≡")
+        self.btn_toggle.setObjectName("SidebarToggle")
         self.btn_toggle.setFixedSize(60, 60)
         self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_toggle.setStyleSheet("font-size: 26px; text-align: center;")
@@ -2037,6 +2030,7 @@ class SidebarWidget(QFrame):
         self.row1_layout.setSpacing(0)
         
         self.btn_all_images = QPushButton()
+        self.btn_all_images.setObjectName("SidebarRow1")
         self.btn_all_images.setObjectName("Row1")
         self.btn_all_images.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_all_images.setFixedHeight(60)
@@ -2071,6 +2065,7 @@ class SidebarWidget(QFrame):
         self.layout.addStretch(1) # 這個伸縮空間會把下面的設定按鈕「推」到最底端
         
         self.btn_settings = QPushButton()
+        self.btn_settings.setObjectName("SidebarRow1")
         self.btn_settings.setObjectName("Row1") # 共用 Hover 亮條樣式
         self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_settings.setFixedHeight(60)
@@ -2112,32 +2107,20 @@ class SidebarWidget(QFrame):
         self.toggled.emit(self.is_expanded)
 
     def update_ui_text(self):
-        base_style = """
-            QPushButton#Row1:hover {
-                background-color: #383838;
-                border-left: 3px solid #60cdff;
-            }
-        """
         if self.is_expanded:
             self.btn_all_images.setText(getattr(self, 'all_images_text', "  All Images"))
-            self.btn_all_images.setStyleSheet(base_style + """
-                QPushButton#Row1 { text-align: left; padding-left: 18px; border-left: 3px solid transparent; }
-            """)
-            # [新增] 展開時顯示文字
             self.btn_settings.setText("  設定 (Settings)")
-            self.btn_settings.setStyleSheet(base_style + """
-                QPushButton#Row1 { text-align: left; padding-left: 18px; border-left: 3px solid transparent; font-size: 15px;}
-            """)
         else:
             self.btn_all_images.setText("")
-            self.btn_all_images.setStyleSheet(base_style + """
-                QPushButton#Row1 { text-align: center; padding-left: 0px; border-left: 3px solid transparent; }
-            """)
-            # [新增] 收合時只顯示齒輪置中
             self.btn_settings.setText("")
-            self.btn_settings.setStyleSheet(base_style + """
-                QPushButton#Row1 { text-align: center; padding-left: 0px; border-left: 3px solid transparent; font-size: 22px;}
-            """)
+        
+        # 🌟 終極重構：用屬性 (Property) 驅動 QSS，消滅硬寫的 StyleSheet
+        # 通知這兩顆按鈕目前的狀態，QSS 檔裡的 [expanded="true"] 就會自動生效！
+        for btn in [self.btn_all_images, self.btn_settings]:
+            btn.setProperty("expanded", self.is_expanded)
+            # 強制 Qt 重新讀取該元件的樣式
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
     def on_row1_clicked(self):
         self.folder_selected.emit("ALL")
@@ -2522,17 +2505,6 @@ class InspectorPanel(QFrame):
         self.setFixedWidth(320)
         
         # 專屬的現代化暗色系樣式
-        self.setStyleSheet("""
-            QFrame { background-color: #1e1e1e; border-left: 1px solid #333333; }
-            QLabel { color: #cccccc; font-size: 13px; border: none; background: transparent; }
-            QTabWidget::pane { border: none; border-top: 1px solid #333333; background: #1e1e1e; }
-            QTabBar::tab { background: #252525; color: #888888; padding: 10px 15px; border: none; font-weight: bold; font-size: 13px; }
-            QTabBar::tab:selected { color: #60cdff; border-bottom: 2px solid #60cdff; background: #1e1e1e; }
-            QTabBar::tab:hover:!selected { color: #eeeeee; background: #2d2d2d; }
-            QSlider::groove:horizontal { border: 1px solid #444; height: 4px; background: #2b2b2b; border-radius: 2px; }
-            QSlider::handle:horizontal { background: #60cdff; width: 14px; margin: -5px 0; border-radius: 7px; }
-            QComboBox { background-color: #2b2b2b; border: 1px solid #444; color: white; padding: 6px; border-radius: 4px; }
-        """)
         
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
@@ -2613,10 +2585,7 @@ class InspectorPanel(QFrame):
         
         self.combo_aspect = QComboBox()
         self.combo_aspect.addItems(["不限比例", "橫圖 (Landscape)", "直圖 (Portrait)", "正方形 (Square)"])
-        self.combo_aspect.setStyleSheet("""
-            QComboBox { background-color: #2b2b2b; border: 1px solid #444; color: white; padding: 6px; border-radius: 4px; }
-            QComboBox:hover { background-color: #383838; border-color: #60cdff; }
-        """)
+        
         if not hasattr(self, 'aspect_changed'): self.aspect_changed = pyqtSignal()
         self.combo_aspect.currentIndexChanged.connect(self.on_aspect_changed)
         self.sec_filter.addWidget(self.combo_aspect)
@@ -2754,21 +2723,8 @@ class InspectorPanel(QFrame):
     def _create_construction_button(self, text):
         btn = QPushButton(text)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet("""
-            QPushButton { 
-                background-color: #2b2b2b; 
-                color: #888888; 
-                border: 1px dashed #444; 
-                border-radius: 4px; 
-                padding: 15px;
-                font-weight: bold;
-            } 
-            QPushButton:hover { 
-                background-color: #333333; 
-                border-color: #60cdff; 
-                color: #60cdff; 
-            }
-        """)
+        btn.setObjectName("WipButton") # 🌟 套用修復的 QSS
+        # 🗑️ [刪除] 下面這整段 btn.setStyleSheet("""...""") 全部刪除！
         return btn
 
     def _setup_clip_tab(self):
@@ -3152,81 +3108,8 @@ class MainWindow(QMainWindow):
 
         self.indexer_worker.start()
 
-        # =============================================
-        # 設定滾動條樣式 (QSS)
-        # =============================================
-        # 這裡定義了垂直和水平滾動條的外觀
-        scrollbar_stylesheet = """
-            /* --- 垂直滾動條整體區域 --- */
-            QScrollBar:vertical {
-                border: none;
-                background: #2b2b2b;    /* 軌道背景色，設為與視窗背景相同使其「隱形」 */
-                width: 14px;            /* 滾動條總寬度 */
-                margin: 0px 0 0px 0;
-            }
-
-            /* --- 垂直滾動條的滑塊 (Handle) --- */
-            QScrollBar::handle:vertical {
-                background: #555555;    /* 滑塊顏色 (深灰色) */
-                min-height: 30px;       /* 滑塊最小高度 */
-                border-radius: 7px;     /* 圓角效果 (寬度的一半) */
-                margin: 2px;            /* 與軌道的間距，讓滑塊看起來懸浮 */
-            }
-
-            /* 滑鼠懸停在滑塊上時的變色效果 */
-            QScrollBar::handle:vertical:hover {
-                background: #777777;    /* 變亮一點 */
-            }
-
-            /* 滑鼠按下卡住滑塊時的變色效果 */
-            QScrollBar::handle:vertical:pressed {
-                 background: #999999;   /* 再變亮一點 */
-            }
-
-            /* --- 隱藏上下箭頭按鈕 (現代化設計通常不顯示) --- */
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                border: none;
-                background: none;
-                height: 0px;
-            }
-            /* 隱藏滑塊前後的軌道點擊區域背景 */
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: none;
-            }
-
-            /* =============================================
-               --- 水平滾動條 (邏輯同上，只是 width 變 height) --- 
-               ============================================= */
-            QScrollBar:horizontal {
-                border: none;
-                background: #2b2b2b;
-                height: 14px;
-                margin: 0px 0 0px 0;
-            }
-            QScrollBar::handle:horizontal {
-                background: #555555;
-                min-width: 30px;
-                border-radius: 7px;
-                margin: 2px;
-            }
-            QScrollBar::handle:horizontal:hover {
-                background: #777777;
-            }
-            QScrollBar::handle:horizontal:pressed {
-                 background: #999999;
-            }
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-                border: none;
-                background: none;
-                width: 0px;
-            }
-            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
-                background: none;
-            }
-        """
         # 將新的樣式表附加到現有的樣式表後
         current_stylesheet = self.styleSheet()
-        self.setStyleSheet(current_stylesheet + scrollbar_stylesheet)
 
     def show_settings_dialog(self):
         dialog = SettingsDialog(self)
@@ -3266,21 +3149,14 @@ class MainWindow(QMainWindow):
         # ==========================================
         top_bar = QFrame()
         top_bar.setFixedHeight(60) 
-        top_bar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #333;")
+        top_bar.setObjectName("TopBar")
         header_layout = QHBoxLayout(top_bar)
         header_layout.setContentsMargins(20, 0, 20, 0)
         header_layout.setSpacing(15)
         
         # 1. 左側：標題與模式導覽 (Identity & Breadcrumbs)
         self.breadcrumb_lbl = QLabel("Gallery") 
-        self.breadcrumb_lbl.setStyleSheet("""
-            color: #e0e0e0; 
-            font-family: 'Segoe UI', sans-serif; 
-            font-size: 18px; 
-            font-weight: bold; 
-            border: none;
-            background: transparent;
-        """)
+        self.breadcrumb_lbl.setObjectName("Breadcrumb")
         header_layout.addWidget(self.breadcrumb_lbl)
         header_layout.addStretch(1) 
         
@@ -3292,16 +3168,7 @@ class MainWindow(QMainWindow):
         search_capsule.setMaximumWidth(550) # 限制最寬不超過 550px
         search_capsule.setMinimumWidth(300) # 視窗縮小時最窄保持 300px
         search_capsule.setFixedHeight(38)
-        search_capsule.setStyleSheet("""
-            QFrame {
-                background-color: #2d2d2d;
-                border: 1px solid #3e3e3e;
-                border-radius: 19px; 
-            }
-            QFrame:focus-within {
-                border: 1px solid #60cdff; 
-            }
-        """)
+        search_capsule.setObjectName("SearchCapsule")
         capsule_layout = QHBoxLayout(search_capsule)
         capsule_layout.setContentsMargins(15, 0, 5, 0)
         capsule_layout.setSpacing(5)
@@ -3319,17 +3186,7 @@ class MainWindow(QMainWindow):
         self.btn_ocr_toggle.setFixedSize(30, 30)
         self.btn_ocr_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_ocr_toggle.setToolTip("啟用/停用 OCR 文字檢索")
-        self.btn_ocr_toggle.setStyleSheet("""
-            QPushButton {
-                background: transparent; border: none; color: #666666; font-weight: bold; font-size: 13px; border-radius: 15px;
-            }
-            QPushButton:checked {
-                color: #60cdff; background-color: rgba(96, 205, 255, 0.1);
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.05);
-            }
-        """)
+        self.btn_ocr_toggle.setObjectName("OcrToggle")
         capsule_layout.addWidget(self.btn_ocr_toggle)
         
         # ==========================================
@@ -3356,23 +3213,7 @@ class MainWindow(QMainWindow):
         self.btn_toggle_inspector.setCheckable(True) # 允許有 checked 狀態
         self.btn_toggle_inspector.setFixedSize(36, 36)
         self.btn_toggle_inspector.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_toggle_inspector.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                border: 1px solid #444;
-                border-radius: 8px;
-                color: #ccc;
-                font-size: 16px;
-            }
-            QPushButton:hover {
-                background-color: #333;
-                border-color: #666;
-            }
-            QPushButton:checked {
-                background-color: #383838;
-                border: 1px solid #60cdff; /* 展開時外框變藍高亮 */
-            }
-        """)
+        self.btn_toggle_inspector.setObjectName("InspectorToggle")
         self.btn_toggle_inspector.clicked.connect(self.toggle_inspector)
         right_actions_layout.addWidget(self.btn_toggle_inspector)
 
@@ -3406,7 +3247,7 @@ class MainWindow(QMainWindow):
         self.current_view_mode = "large"
 
         self.model = SearchResultsModel(self.current_thumb_size)
-        self.delegate = ImageDelegate(self.current_card_size, THUMBNAIL_SIZE[1])
+        self.delegate = ImageDelegate(self.current_card_size, THUMBNAIL_SIZE[1], self)
         
         self.list_view.setModel(self.model)
         self.list_view.setItemDelegate(self.delegate)
@@ -3457,7 +3298,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(right_container)
         
         # 其他浮動元件
-        self.history_list = QListWidget(self); self.history_list.hide(); self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.history_list = QListWidget(self);self.history_list.setObjectName("HistoryList"); self.history_list.hide(); self.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         shadow = QGraphicsDropShadowEffect(); shadow.setBlurRadius(20); shadow.setColor(QColor(0, 0, 0, 100)); shadow.setOffset(0, 4); self.history_list.setGraphicsEffect(shadow)
         self.preview_overlay = PreviewOverlay(self)
 
@@ -4439,7 +4280,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle(self.trans.t("settings", "window_title", "設定 (Settings)"))
 
         self.resize(800, 600)
-        self.setStyleSheet("background-color: #1e1e1e;")
+        self.setObjectName("SettingsDialog")
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
@@ -4447,12 +4288,7 @@ class SettingsDialog(QDialog):
 
         self.nav_list = QListWidget()
         self.nav_list.setFixedWidth(200)
-        self.nav_list.setStyleSheet("""
-            QListWidget { border: none; background-color: #252525; border-radius: 8px; padding: 10px 0px; }
-            QListWidget::item { color: #ccc; padding: 12px 15px; font-size: 15px; border-radius: 0px; margin: 2px 10px; }
-            QListWidget::item:hover { background-color: #333; border-radius: 6px; }
-            QListWidget::item:selected { background-color: #383838; color: white; font-weight: bold; border-left: 4px solid #60cdff; border-radius: 6px; }
-        """)
+        self.nav_list.setObjectName("SettingsNavList")
         
         tabs = [
             self.trans.t("settings", "nav_folders", "📁 資料夾管理"),
@@ -4470,7 +4306,7 @@ class SettingsDialog(QDialog):
             
         main_layout.addWidget(self.nav_list)
         self.stack = QStackedWidget()
-        self.stack.setStyleSheet("background-color: #2b2b2b; border-radius: 8px;")
+        self.stack.setObjectName("SettingsStack")
         main_layout.addWidget(self.stack, stretch=1)
         self.nav_list.currentRowChanged.connect(self.stack.setCurrentIndex)
 
@@ -4490,11 +4326,11 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(30, 30, 30, 30)
         layout.setSpacing(15)
         title = QLabel(title_text)
-        title.setStyleSheet("color: white; font-size: 22px; font-weight: bold;")
+        title.setObjectName("PageTitle")
         layout.addWidget(title)
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("border: 1px solid #444;")
+        line.setObjectName("PageHLine")
         layout.addWidget(line)
         return page, layout
 
@@ -4781,12 +4617,7 @@ class SettingsDialog(QDialog):
         layout.insertWidget(1, self.dl_status_container)
         
         self.ai_tabs = QTabWidget()
-        self.ai_tabs.setStyleSheet("""
-            QTabWidget::pane { border: 1px solid #454545; border-radius: 4px; top: -1px; background-color: #2b2b2b; }
-            QTabBar::tab { background: #252525; color: #aaa; border: 1px solid #454545; padding: 10px 20px; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; font-size: 14px; font-weight: bold; }
-            QTabBar::tab:selected { background: #2b2b2b; color: #60cdff; border-bottom-color: #2b2b2b; }
-            QTabBar::tab:hover:!selected { background: #333333; color: #fff; }
-        """)
+        self.ai_tabs.setObjectName("AITabs")
         
         tab_clip = QWidget()
         clip_layout = QVBoxLayout(tab_clip)
@@ -4833,11 +4664,10 @@ class SettingsDialog(QDialog):
             btn_action.setFixedWidth(100)
             btn_action.setEnabled(btn_enabled)
             
+            btn_action.setProperty("cssClass", "ActionBtn")
             if btn_enabled:
-                btn_action.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; padding: 6px; color: #eee; } QPushButton:hover { background-color: #005fb8; color: #fff; border-color: #005fb8; }")
-                btn_action.clicked.connect(lambda checked, m_id=item['id'], m_pre=item['pre']: self.on_switch_clip_model(m_id, m_pre))
-            else:
-                btn_action.setStyleSheet("QPushButton { background-color: #222; border: 1px solid #333; border-radius: 4px; padding: 6px; color: #555; }")
+                # 正確綁定切換模型的事件，並把模型的 id 與 pre 傳過去
+                btn_action.clicked.connect(lambda checked, m_id=item['id'], pre=item['pre']: self.on_switch_clip_model(m_id, pre))
             
             row.addWidget(lbl_name)
             row.addWidget(lbl_status)
@@ -4945,13 +4775,13 @@ class SettingsDialog(QDialog):
             btn_action.setEnabled(btn_enabled)
             
             if btn_enabled and not is_installed:
-                btn_action.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #ff9800; border-radius: 4px; padding: 6px; color: #eee; } QPushButton:hover { background-color: #ff9800; color: #fff; }")
+                btn_action.setProperty("cssClass", "ActionBtn")
                 btn_action.clicked.connect(lambda checked, l=lang_code: self.start_download_ocr(l))
             elif btn_enabled and is_installed:
-                btn_action.setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 4px; padding: 6px; color: #eee; } QPushButton:hover { background-color: #4caf50; color: #fff; border-color: #4caf50; }")
-                btn_action.clicked.connect(lambda checked: QMessageBox.information(self, "提示", "此語言包已就緒！\n請至左側「資料夾管理」中，對目標資料夾點擊右鍵添加此標記即可套用。"))
+                btn_action.setProperty("cssClass", "SuccessBtn")
+                btn_action.clicked.connect(lambda checked: QMessageBox.information(self, "提示", "此語言包已就緒！..."))
             else:
-                btn_action.setStyleSheet("QPushButton { background-color: #222; border: 1px solid #333; border-radius: 4px; padding: 6px; color: #555; }")
+                btn_action.setProperty("cssClass", "ActionBtn")
             
             row.addWidget(lbl_name)
             row.addWidget(lbl_status)
@@ -5044,19 +4874,7 @@ class SettingsDialog(QDialog):
         page, layout = self._create_page_container(self.trans.t("appearance", "page_title", "🖥️ 介面與顯示 (Appearance)"))
         ui_state = self.main_window.config.get("ui_state", {}) 
 
-        combo_style = """
-            QComboBox {
-                background-color: #383838;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 8px 12px;
-                color: #ffffff;
-                font-size: 11pt;
-            }
-            QComboBox:hover { background-color: #454545; border: 1px solid #60cdff; }
-            QComboBox::drop-down { border: none; width: 24px; }
-            QComboBox QAbstractItemView { background-color: #2b2b2b; border: 1px solid #555555; selection-background-color: #383838; selection-color: #60cdff; outline: none; }
-        """
+        
 
         # ==========================================
         # 🌟 [新增] 軟體主題切換
@@ -5064,7 +4882,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel("軟體主題配色 (Theme):"))
         self.combo_theme = QComboBox()
         self.combo_theme.setFixedHeight(38)
-        self.combo_theme.setStyleSheet(combo_style)
+        
 
         # 從 ThemeManager 動態抓取可用的主題
         themes = self.main_window.theme_manager.get_available_themes()
@@ -5081,7 +4899,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel(self.trans.t("appearance", "lbl_size", "預設圖片顯示大小：")))
         self.combo_size = QComboBox()
         self.combo_size.setFixedHeight(38)
-        self.combo_size.setStyleSheet(combo_style)
+        
         
         # 🌟 套用翻譯到下拉選項
         self.combo_size.addItems([
@@ -5101,7 +4919,7 @@ class SettingsDialog(QDialog):
         
         self.combo_tag_mode = QComboBox()
         self.combo_tag_mode.setFixedHeight(38) 
-        self.combo_tag_mode.setStyleSheet(combo_style)
+        
         
         # 🌟 套用翻譯到下拉選項
         self.combo_tag_mode.addItems([
@@ -5136,19 +4954,7 @@ class SettingsDialog(QDialog):
         page, layout = self._create_page_container(self.trans.t("hotkeys", "page_title", "⌨️ 操作與快捷鍵 (Hotkeys)"))
         ui_state = self.main_window.config.get("ui_state", {})
 
-        combo_style = """
-            QComboBox {
-                background-color: #383838;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 8px 12px;
-                color: #ffffff;
-                font-size: 11pt;
-            }
-            QComboBox:hover { background-color: #454545; border: 1px solid #60cdff; }
-            QComboBox::drop-down { border: none; width: 24px; }
-            QComboBox QAbstractItemView { background-color: #2b2b2b; border: 1px solid #555555; selection-background-color: #383838; selection-color: #60cdff; outline: none; }
-        """
+        
 
         # 🌟 套用翻譯
         group_nav = QGroupBox(self.trans.t("hotkeys", "grp_nav_title", "預覽導覽行為"))
@@ -5159,7 +4965,7 @@ class SettingsDialog(QDialog):
         layout_nav.addWidget(lbl_nav)
     
         self.combo_wasd = QComboBox()
-        self.combo_wasd.setStyleSheet(combo_style)
+        
         self.combo_wasd.setFixedHeight(38)
         self.combo_wasd.addItems([
             self.trans.t("hotkeys", "nav_opt_a", "選項 A：移動背景游標並保持預覽 (預設)"),
@@ -5181,7 +4987,7 @@ class SettingsDialog(QDialog):
         layout_ocr.addWidget(lbl_ocr)
     
         self.combo_ocr = QComboBox()
-        self.combo_ocr.setStyleSheet(combo_style)
+        
         self.combo_ocr.setFixedHeight(38)
         self.combo_ocr.addItems([
             self.trans.t("hotkeys", "ocr_opt_hold", "模式 A：長按 Shift 顯示紅框，放開隱藏 (Hold)"),
@@ -5333,14 +5139,7 @@ class SettingsDialog(QDialog):
 
         self.combo_lang = QComboBox()
         self.combo_lang.setFixedHeight(38)
-        self.combo_lang.setStyleSheet("""
-            QComboBox {
-                background-color: #383838; border: 1px solid #555555; border-radius: 4px; padding: 8px 12px; color: #ffffff; font-size: 14px;
-            }
-            QComboBox:hover { background-color: #454545; border: 1px solid #60cdff; }
-            QComboBox::drop-down { border: none; width: 24px; }
-            QComboBox QAbstractItemView { background-color: #2b2b2b; border: 1px solid #555555; selection-background-color: #383838; selection-color: #60cdff; outline: none; }
-        """)
+        
         
         self.lang_options = []
         base_dir = os.path.dirname(os.path.abspath(__file__))

@@ -43,3 +43,180 @@ QRadioButton { color: @text_sec; spacing: 8px; }
 QRadioButton::indicator { width: 18px; height: 18px; border-radius: 9px; border: 2px solid @border_light; background-color: @bg_input; }
 QRadioButton::indicator:checked { border: 5px solid @primary; background-color: @bg_app; }
 QRadioButton:hover { color: @text_main; }
+
+/* ==========================================
+   元件專屬樣式 (Component Specific Styles)
+   ========================================== */
+
+/* --- 1. 側邊欄 Sidebar --- */
+QFrame#Sidebar { background-color: @bg_panel; border-right: 1px solid @border_main; }
+QPushButton#SidebarToggle { background: transparent; border: none; color: @text_sec; }
+QPushButton#SidebarToggle:hover { background-color: @bg_hover; color: @text_main; }
+
+QPushButton#SidebarRow1 { 
+    background: transparent; color: @text_sec; border: none; border-left: 3px solid transparent; 
+}
+QPushButton#SidebarRow1:hover { 
+    background-color: @bg_hover; color: @text_main; border-left: 3px solid @primary; 
+}
+/* 🌟 利用屬性選擇器來控制展開/收合，消滅 Python 裡的 if-else QSS */
+QPushButton#SidebarRow1[expanded="true"] { text-align: left; padding-left: 18px; font-size: 15px;}
+QPushButton#SidebarRow1[expanded="false"] { text-align: center; padding-left: 0px; font-size: 22px;}
+
+
+/* --- 2. 右側面板 InspectorPanel --- */
+QFrame#InspectorPanel { background-color: @bg_app; border-left: 1px solid @border_main; }
+QTabWidget#InspectorTabs::pane { border: none; border-top: 1px solid @border_main; background: @bg_app; }
+QTabWidget#InspectorTabs QTabBar::tab { background: @bg_panel; color: @text_muted; padding: 10px 15px; border: none; font-weight: bold; font-size: 13px; }
+QTabWidget#InspectorTabs QTabBar::tab:selected { color: @primary; border-bottom: 2px solid @primary; background: @bg_app; }
+QTabWidget#InspectorTabs QTabBar::tab:hover:!selected { color: @text_main; background: @bg_input; }
+
+
+/* --- 3. 設定視窗 SettingsDialog --- */
+QDialog#SettingsDialog { background-color: @bg_app; }
+QStackedWidget#SettingsStack { background-color: @bg_card; border-radius: 8px; }
+
+QListWidget#SettingsNavList { border: none; background-color: @bg_panel; border-radius: 8px; padding: 10px 0px; }
+QListWidget#SettingsNavList::item { color: @text_sec; padding: 12px 15px; font-size: 15px; border-radius: 0px; margin: 2px 10px; }
+QListWidget#SettingsNavList::item:hover { background-color: @bg_hover; border-radius: 6px; }
+QListWidget#SettingsNavList::item:selected { background-color: @bg_hover; color: @text_main; font-weight: bold; border-left: 4px solid @primary; border-radius: 6px; }
+
+QLabel#PageTitle { color: @text_main; font-size: 22px; font-weight: bold; }
+QFrame#PageHLine { border-top: 1px solid @border_main; }
+
+/* --- 修復：下拉選單的展開清單 (解決白底白字) --- */
+QComboBox QAbstractItemView {
+    background-color: @bg_input;
+    border: 1px solid @border_main;
+    selection-background-color: @bg_hover;
+    selection-color: @primary;
+    outline: none;
+    color: @text_main;
+}
+
+/* --- 修復：歷史搜尋紀錄清單 --- */
+QListWidget#HistoryList {
+    background-color: @bg_card;
+    border: 1px solid @border_main;
+    border-radius: 8px;
+}
+
+/* --- 修復：AI 引擎設定分頁 (AITabs) --- */
+QTabWidget#AITabs::pane { border: 1px solid @border_main; border-radius: 4px; top: -1px; background-color: @bg_card; }
+QTabWidget#AITabs QTabBar::tab { background: @bg_panel; color: @text_muted; border: 1px solid @border_main; padding: 10px 20px; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; font-size: 14px; font-weight: bold; }
+QTabWidget#AITabs QTabBar::tab:selected { background: @bg_card; color: @primary; border-bottom-color: @bg_card; }
+QTabWidget#AITabs QTabBar::tab:hover:!selected { background: @bg_hover; color: @text_main; }
+
+/* --- 修復：施工中按鈕 (WipButton) --- */
+QPushButton#WipButton { background-color: @bg_card; color: @text_muted; border: 1px dashed @border_main; border-radius: 4px; padding: 25px; font-weight: bold; font-size: 15px; }
+QPushButton#WipButton:hover { background-color: @bg_hover; border-color: @primary; color: @primary; }
+
+/* --- 通用動作按鈕 (取代寫死的 #333 黑塊) --- */
+QPushButton[cssClass="ActionBtn"] { background-color: @bg_card; border: 1px solid @border_main; border-radius: 4px; padding: 6px 15px; color: @text_main; font-size: 14px; }
+QPushButton[cssClass="ActionBtn"]:hover { background-color: @bg_hover; border-color: @primary; }
+QPushButton[cssClass="ActionBtn"]:disabled { background-color: @bg_app; border-color: @border_light; color: @text_muted; }
+
+QPushButton[cssClass="DangerBtn"] { background-color: @bg_card; border: 1px solid @border_main; border-radius: 4px; padding: 6px 15px; color: @text_main; font-size: 14px; }
+QPushButton[cssClass="DangerBtn"]:hover { background-color: @danger; color: white; border-color: @danger; }
+
+QPushButton[cssClass="SuccessBtn"] { background-color: @bg_card; border: 1px solid @border_main; border-radius: 4px; padding: 6px 15px; color: @text_main; font-size: 14px; }
+QPushButton[cssClass="SuccessBtn"]:hover { background-color: #4caf50; color: white; border-color: #4caf50; }
+
+/* --- 右側控制面板與滑桿 --- */
+QSlider::groove:horizontal { border: 1px solid @border_main; height: 4px; background: @bg_input; border-radius: 2px; }
+QSlider::handle:horizontal { background: @primary; width: 14px; margin: -5px 0; border-radius: 7px; }
+
+/* --- 頂部搜尋欄 (TopBar) --- */
+QFrame#TopBar { background-color: @bg_app; border-bottom: 1px solid @border_main; }
+QFrame#SearchCapsule { background-color: @bg_input; border: 1px solid @border_main; border-radius: 19px; }
+QFrame#SearchCapsule:focus-within { border: 1px solid @primary; }
+QLabel#Breadcrumb { color: @text_main; font-family: 'Segoe UI', sans-serif; font-size: 18px; font-weight: bold; border: none; background: transparent; }
+
+QPushButton#OcrToggle { background: transparent; border: none; color: @text_muted; font-weight: bold; font-size: 13px; border-radius: 15px; }
+QPushButton#OcrToggle:checked { color: @primary; background-color: @bg_hover; }
+QPushButton#OcrToggle:hover { background-color: @bg_hover; }
+QPushButton#InspectorToggle { background-color: transparent; border: 1px solid @border_main; border-radius: 8px; color: @text_muted; font-size: 16px; }
+QPushButton#InspectorToggle:hover { background-color: @bg_hover; border-color: @border_light; }
+QPushButton#InspectorToggle:checked { background-color: @bg_card; border: 1px solid @primary; }
+
+/* --- 全域滾動條 (ScrollBar) --- */
+QScrollBar:vertical, QScrollBar:horizontal { border: none; background: @bg_app; width: 14px; height: 14px; margin: 0px; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: @border_light; min-height: 30px; min-width: 30px; border-radius: 7px; margin: 2px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: @text_muted; }
+QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page { border: none; background: none; width: 0px; height: 0px; }
+
+/* --- 4. 主畫廊 Gallery --- */
+QListView#GalleryList {
+    border: none;
+    background-color: @bg_app;
+}
+
+/* --- 5. 設定：資料夾管理清單 --- */
+QListWidget#FolderSettingsList {
+    outline: none;
+    background-color: @bg_card;
+    border: 1px solid @border_main;
+    border-radius: 8px;
+}
+QListWidget#FolderSettingsList::item {
+    border-bottom: 1px solid @border_main;
+}
+QListWidget#FolderSettingsList::item:hover {
+    background-color: @bg_hover;
+}
+QListWidget#FolderSettingsList::item:selected {
+    background-color: @bg_hover;
+    border-left: 4px solid @primary;
+}
+
+/* --- 6. 側邊欄二級資料夾選單 (FolderHoverMenu) --- */
+QFrame#MenuContainer {
+    background-color: @bg_panel;
+    border: 1px solid @border_main;
+    border-radius: 0px;
+}
+QFrame#MenuContainer QPushButton {
+    background-color: @bg_card;
+    border: 1px solid @border_main;
+    color: @text_main;
+    border-radius: 4px;
+    font-size: 16px;
+    font-weight: bold;
+    font-family: "Segoe UI", sans-serif;
+    text-align: center; 
+}
+QFrame#MenuContainer QPushButton:hover {
+    background-color: @primary;
+    color: #111111;
+    border: 1px solid @primary;
+}
+QFrame#MenuContainer QPushButton#AddBtn {
+    background-color: @bg_app;
+    font-size: 32px;
+    color: @text_muted;
+    font-weight: 300;
+    padding-bottom: 6px;
+}
+QFrame#MenuContainer QPushButton#AddBtn:hover {
+    background-color: #4caf50;
+    border: 1px solid #4caf50;
+    color: white;
+}
+QFrame#MenuContainer QPushButton#RefreshBtn {
+    background-color: @bg_app;
+    font-size: 24px;
+    color: @text_muted;
+    padding-bottom: 2px;
+}
+QFrame#MenuContainer QPushButton#RefreshBtn:hover {
+    background-color: @primary;
+    border: 1px solid @primary;
+    color: white;
+}
+QToolTip {
+    background-color: @bg_card;
+    color: @text_main;
+    border: 1px solid @border_main;
+    font-size: 14px;
+    font-family: "Segoe UI", sans-serif;
+}
