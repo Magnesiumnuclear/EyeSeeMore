@@ -1153,19 +1153,6 @@ class FloatingWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.setFixedWidth(320)
-        
-        # 🌟 只要這一行！樣式全部交給外部 QSS 接管
-        self.setObjectName("InspectorPanel")
-
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(0)
-
-        self.tabs = QTabWidget()
-        self.tabs.setObjectName("InspectorTabs") # 🌟 綁定分頁樣式
-        self.layout.addWidget(self.tabs)
-
         # 讓滑鼠點擊可以直接穿透這個標籤，避免擋住底下的紅框
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.hide()
@@ -1174,6 +1161,9 @@ class FloatingWidget(QWidget):
         self.box_poly = None
         self.cursor_pos = QPoint()
         self.mode = "anchored"
+
+
+        
 
     def update_data(self, results, box_poly, cursor_pos, mode):
         self.results = results
@@ -1737,7 +1727,7 @@ class StatsMenuWidget(QFrame):
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet("background: transparent; border: none;")
+        self.scroll_area.setObjectName("InspectorScrollArea")
         
         self.content_widget = QWidget()
         self.content_widget.setStyleSheet("background: transparent;")
@@ -2135,15 +2125,7 @@ class CollapsibleSection(QWidget):
         self.header.setCheckable(True)
         self.header.setChecked(True) # 預設展開
         self.header.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.header.setStyleSheet("""
-            QPushButton {
-                background-color: #333333;
-                border: none;
-                border-top: 1px solid #3c3c3c;
-            }
-            QPushButton:hover { background-color: #3c3c3c; }
-            QPushButton:checked { border-bottom: 1px solid #333333; }
-        """)
+        self.header.setObjectName("CollapseHeader")
         
         # --- 解決跳動的魔法：在按鈕內部建立專屬 Layout ---
         self.header_layout = QHBoxLayout(self.header)
@@ -2159,9 +2141,8 @@ class CollapsibleSection(QWidget):
         self.lbl_title = QLabel(title)
         
         # 統一設定標籤樣式，並讓滑鼠點擊「穿透」標籤，確保按鈕能正常被點擊
-        label_style = "color: #cccccc; font-size: 13px; font-weight: bold; background: transparent;"
-        self.lbl_arrow.setStyleSheet(label_style)
-        self.lbl_title.setStyleSheet(label_style)
+        
+        self.lbl_arrow.setObjectName("CollapseArrow")
         self.lbl_arrow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.lbl_title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
@@ -2202,19 +2183,14 @@ class CollapsibleSection(QWidget):
 
     def set_status_active(self, is_active):
         """層級二：控制檢索過濾區塊的動態底線"""
-        if is_active:
-            self.lbl_title.setStyleSheet("color: #60cdff; font-size: 13px; font-weight: bold; background: transparent;")
-            self.header.setStyleSheet("""
-                QPushButton { background-color: #333333; border: none; border-bottom: 2px solid #60cdff; }
-                QPushButton:hover { background-color: #3c3c3c; }
-            """)
-        else:
-            self.lbl_title.setStyleSheet("color: #cccccc; font-size: 13px; font-weight: bold; background: transparent;")
-            self.header.setStyleSheet("""
-                QPushButton { background-color: #333333; border: none; border-top: 1px solid #3c3c3c; border-bottom: none; }
-                QPushButton:hover { background-color: #3c3c3c; }
-                QPushButton:checked { border-bottom: 1px solid #333333; }
-            """)
+        state_str = "true" if is_active else "false"
+        self.header.setProperty("active", state_str)
+        self.lbl_title.setProperty("active", state_str)
+        
+        self.header.style().unpolish(self.header)
+        self.header.style().polish(self.header)
+        self.lbl_title.style().unpolish(self.lbl_title)
+        self.lbl_title.style().polish(self.lbl_title)
 
 import calendar
 from datetime import date, timedelta
@@ -2231,25 +2207,14 @@ class RangeCalendarWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("""
-            QWidget { background-color: transparent; }
-            QLabel { color: #eeeeee; font-weight: bold; font-size: 13px; }
-            QPushButton {
-                background-color: transparent; border: none; color: #dddddd;
-                font-size: 13px; border-radius: 14px;
-            }
-            QPushButton:hover { background-color: #383838; }
-            QPushButton:disabled { color: #555555; background-color: transparent; }
-            QPushButton[is_endpoint="true"] { background-color: #60cdff; color: #111111; font-weight: bold; }
-            QPushButton[in_range="true"] { background-color: rgba(96, 205, 255, 0.2); border-radius: 0px; }
-            QPushButton[is_today="true"] { border: 1px solid #60cdff; }
-        """)
+        
         self.today = date.today()
         self.current_year = self.today.year
         self.current_month = self.today.month
         self.start_date = None
         self.end_date = None
         self.btn_dates_map = {}
+        self.setObjectName("RangeCalendar")
         self.init_ui()
         self.update_calendar()
 
@@ -2300,20 +2265,20 @@ class RangeCalendarWidget(QWidget):
         footer_layout.setContentsMargins(0, 5, 0, 0)
         
         self.btn_clear = QPushButton("清除"); self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_clear.setStyleSheet("QPushButton { color: #aaa; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; } QPushButton:hover { color: #ff6b6b; border-color: #ff6b6b; }")
+        self.btn_clear.setProperty("cssClass", "DangerBtn")
         self.btn_clear.clicked.connect(self.clear_selection)
         
         self.btn_today = QPushButton("今天"); self.btn_today.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_today.setStyleSheet("QPushButton { color: #aaa; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; } QPushButton:hover { color: #60cdff; border-color: #60cdff; }")
+        self.btn_today.setProperty("cssClass", "ActionBtn")
         self.btn_today.clicked.connect(self.go_to_today)
 
         self.btn_apply = QPushButton("套用結果"); self.btn_apply.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_apply.setStyleSheet("QPushButton { background-color: #2b2b2b; color: #eee; border: 1px solid #60cdff; border-radius: 4px; padding: 4px 10px; font-weight: bold; } QPushButton:hover { background-color: #383838; } QPushButton:disabled { border-color: #444; color: #666; font-weight: normal; }")
+        self.btn_apply.setProperty("cssClass", "ActionBtn")
         self.btn_apply.clicked.connect(lambda: self.apply_requested.emit(self.start_date, self.end_date))
         self.btn_apply.setEnabled(False)
 
         self.btn_search = QPushButton("直接搜尋"); self.btn_search.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_search.setStyleSheet("QPushButton { background-color: #005fb8; color: white; border: none; border-radius: 4px; padding: 5px 10px; font-weight: bold; } QPushButton:hover { background-color: #0078d4; } QPushButton:disabled { background-color: #333; color: #666; font-weight: normal; }")
+        self.btn_search.setProperty("cssClass", "ActionBtn")
         self.btn_search.clicked.connect(lambda: self.search_requested.emit(self.start_date, self.end_date))
         self.btn_search.setEnabled(False)
 
@@ -2431,6 +2396,7 @@ class InspectorPanel(QFrame):
     time_filter_applied = pyqtSignal(float, float) 
     time_search_requested = pyqtSignal(float, float)
     time_filter_cleared = pyqtSignal()
+    weights_changed = pyqtSignal(dict)
     
     # [新增] 權重改變的訊號
     weights_changed = pyqtSignal(dict)
@@ -2439,6 +2405,8 @@ class InspectorPanel(QFrame):
         super().__init__(parent)
         self.main_window = parent# [新增] 儲存父視窗以便讀寫設定
         self.setFixedWidth(320)
+
+        self.setObjectName("InspectorPanel")
         
         # 專屬的現代化暗色系樣式
         
@@ -2448,6 +2416,9 @@ class InspectorPanel(QFrame):
 
         # 建立分頁元件
         self.tabs = QTabWidget()
+
+        self.tabs.setObjectName("InspectorTabs")
+
         self.layout.addWidget(self.tabs)
 
         # --- 分頁 1: 搜尋控制 ---
@@ -2481,10 +2452,11 @@ class InspectorPanel(QFrame):
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll_area.setObjectName("InspectorScrollArea")
         
         container = QWidget()
-        container.setStyleSheet("background: transparent;")
+        container.setObjectName("SearchTabContainer")
+        
         self.search_main_layout = QVBoxLayout(container)
         self.search_main_layout.setContentsMargins(0, 0, 0, 0)
         self.search_main_layout.setSpacing(0)
@@ -2498,13 +2470,7 @@ class InspectorPanel(QFrame):
         self.btn_time_range = QPushButton("📅 全部時間 (All Time)")
         self.btn_time_range.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_time_range.setCheckable(True)
-        self.btn_time_range.setStyleSheet("""
-            QPushButton {
-                background-color: #2b2b2b; color: #eeeeee; border: 1px solid #444; border-radius: 4px; padding: 8px 12px; text-align: left; font-size: 13px;
-            }
-            QPushButton:hover { background-color: #383838; border-color: #60cdff; }
-            QPushButton:checked { background-color: #383838; border-color: #60cdff; color: #60cdff; }
-        """)
+        self.btn_time_range.setObjectName("TimeRangeBtn")
         self.btn_time_range.clicked.connect(self.toggle_calendar)
         self.sec_filter.addWidget(self.btn_time_range)
 
@@ -2546,10 +2512,7 @@ class InspectorPanel(QFrame):
         self.btn_sort_order = QPushButton("↓")
         self.btn_sort_order.setFixedSize(32, 32)
         self.btn_sort_order.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_sort_order.setStyleSheet("""
-            QPushButton { background-color: #333333; color: #eeeeee; border: 1px solid #555555; border-radius: 4px; font-size: 16px; font-weight: bold; }
-            QPushButton:hover { background-color: #454545; border-color: #60cdff; color: #ffffff; }
-        """)
+        self.btn_sort_order.setObjectName("SortOrderBtn")
         self.btn_sort_order.clicked.connect(self.toggle_sort_order)
         sort_layout.addWidget(self.btn_sort_order)
         
@@ -2567,7 +2530,7 @@ class InspectorPanel(QFrame):
         self.sec_advanced.addLayout(mode_layout)
 
         self.lbl_formula = QLabel()
-        self.lbl_formula.setStyleSheet("color: #888888; font-size: 11px; margin-bottom: 5px;")
+        self.lbl_formula.setObjectName("FormulaLabel")
         self.sec_advanced.addWidget(self.lbl_formula)
 
         self.lbl_clip_weight = QLabel()
@@ -2615,7 +2578,7 @@ class InspectorPanel(QFrame):
         
         btn_reset = QPushButton("🔄 重置為預設權重")
         btn_reset.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_reset.setStyleSheet("QPushButton { background-color: transparent; color: #aaa; border: 1px solid #555; padding: 6px; border-radius: 4px; margin-top: 10px;} QPushButton:hover { background-color: #333; color: white; }")
+        btn_reset.setObjectName("ResetWeightBtn")
         btn_reset.clicked.connect(self.reset_weights_to_default)
         self.sec_advanced.addWidget(btn_reset)
         
@@ -2630,13 +2593,7 @@ class InspectorPanel(QFrame):
 
         self.btn_clear_all = QPushButton("🗑️ 清除所有過濾條件")
         self.btn_clear_all.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_clear_all.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 71, 71, 0.05); color: #ff6b6b; border: 1px solid #802020; 
-                border-radius: 4px; padding: 10px; font-weight: bold; font-size: 13px; margin: 10px 20px;
-            }
-            QPushButton:hover { background-color: rgba(255, 71, 71, 0.2); border-color: #ff6b6b; color: #ffffff; }
-        """)
+        self.btn_clear_all.setObjectName("ClearFilterBtn")
         self.btn_clear_all.clicked.connect(self.clear_all_filters)
         self.btn_clear_all.hide()
         tab_layout.addWidget(self.btn_clear_all)
@@ -2697,22 +2654,19 @@ class InspectorPanel(QFrame):
         self.preview_lbl = QLabel("尚未選取圖片")
         self.preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_lbl.setMinimumHeight(180)
-        self.preview_lbl.setStyleSheet("background-color: #252525; border: 1px solid #333; border-radius: 6px;")
+        self.preview_lbl.setObjectName("PreviewImage")
         layout.addWidget(self.preview_lbl)
 
         # 檔案名稱
         self.filename_lbl = QLabel("尚未選取檔案")
         self.filename_lbl.setWordWrap(True)
-        self.filename_lbl.setStyleSheet("color: #ffffff; font-size: 15px; font-weight: bold;")
+        self.filename_lbl.setStyleSheet("font-size: 15px; font-weight: bold; background: transparent;")
         layout.addWidget(self.filename_lbl)
 
         # 開啟資料夾按鈕
         self.btn_open_folder = QPushButton("📂 開啟檔案位置")
         self.btn_open_folder.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_open_folder.setStyleSheet("""
-            QPushButton { background-color: #2b2b2b; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 6px; } 
-            QPushButton:hover { background-color: #383838; border-color: #60cdff; color: #fff; }
-        """)
+        self.btn_open_folder.setProperty("cssClass", "ActionBtn")
         layout.addWidget(self.btn_open_folder)
 
         # 🌟 [修正 1] 新增一個變數來記住現在點到哪張圖，並只在初始化時綁定一次訊號！
@@ -2727,9 +2681,9 @@ class InspectorPanel(QFrame):
         
         for i, key in enumerate(properties):
             lbl_key = QLabel(key)
-            lbl_key.setStyleSheet("color: #aaaaaa; font-size: 12px;")
+            lbl_key.setObjectName("InfoLabelKey")
             lbl_value = QLabel("-")
-            lbl_value.setStyleSheet("color: #ffffff; font-size: 12px;")
+            lbl_value.setObjectName("InfoLabelValue")
             lbl_value.setWordWrap(True)
             self.grid.addWidget(lbl_key, i, 0, Qt.AlignmentFlag.AlignTop)
             self.grid.addWidget(lbl_value, i, 1, Qt.AlignmentFlag.AlignTop)

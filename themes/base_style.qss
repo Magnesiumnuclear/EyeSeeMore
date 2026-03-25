@@ -14,7 +14,8 @@ QPushButton#MenuButton:hover { background-color: @bg_hover; border-color: @borde
 QPushButton#GhostButton { background-color: transparent; color: @text_sec; border-radius: 4px; padding: 4px; }
 QPushButton#GhostButton:hover { background-color: @bg_hover; color: @text_main; }
 
-QScrollArea { border: none; background-color: transparent; }
+QScrollArea#InspectorScrollArea { border: none; background-color: transparent; }
+QWidget#SearchTabContainer { background-color: transparent; }
 QProgressBar { border: none; background-color: @bg_app; height: 3px; }
 QProgressBar::chunk { background-color: @primary; }
 
@@ -84,7 +85,7 @@ QListWidget#SettingsNavList::item:selected { background-color: @bg_hover; color:
 QLabel#PageTitle { color: @text_main; font-size: 22px; font-weight: bold; }
 QFrame#PageHLine { border-top: 1px solid @border_main; }
 
-/* --- 修復：下拉選單的展開清單 (解決白底白字) --- */
+/* --- 修復：下拉選單的展開清單 (解決白底白字與透明背景) --- */
 QComboBox QAbstractItemView {
     background-color: @bg_input;
     border: 1px solid @border_main;
@@ -92,6 +93,10 @@ QComboBox QAbstractItemView {
     selection-color: @primary;
     outline: none;
     color: @text_main;
+}
+/* 🌟 核心修復：強制把下拉選單的「內部畫布(viewport)」塗上底色，阻止它繼承透明屬性 */
+QComboBox QAbstractItemView::viewport {
+    background-color: @bg_input;
 }
 
 /* --- 修復：歷史搜尋紀錄清單 --- */
@@ -220,3 +225,56 @@ QToolTip {
     font-size: 14px;
     font-family: "Segoe UI", sans-serif;
 }
+
+/* --- 7. 右側控制面板 (Inspector & Collapsible) --- */
+/* 摺疊標題按鈕 */
+QPushButton#CollapseHeader {
+    background-color: @bg_panel;
+    border: none;
+    border-top: 1px solid @border_main;
+}
+QPushButton#CollapseHeader:hover { background-color: @bg_hover; }
+QPushButton#CollapseHeader:checked { border-bottom: 1px solid @bg_panel; }
+QPushButton#CollapseHeader[active="true"] { border-bottom: 2px solid @primary; }
+
+QLabel#CollapseTitle { color: @text_main; font-size: 13px; font-weight: bold; background: transparent; }
+QLabel#CollapseTitle[active="true"] { color: @primary; }
+QLabel#CollapseArrow { color: @text_sec; font-size: 13px; font-weight: bold; background: transparent; }
+
+/* 日曆元件 */
+QWidget#RangeCalendar { background-color: transparent; }
+QWidget#RangeCalendar QLabel { color: @text_main; font-weight: bold; font-size: 13px; }
+QWidget#RangeCalendar QPushButton {
+    background-color: transparent; border: none; color: @text_main;
+    font-size: 13px; border-radius: 14px;
+}
+QWidget#RangeCalendar QPushButton:hover { background-color: @bg_hover; }
+QWidget#RangeCalendar QPushButton:disabled { color: @text_muted; background-color: transparent; }
+QWidget#RangeCalendar QPushButton[is_endpoint="true"] { background-color: @primary; color: #111111; font-weight: bold; }
+QWidget#RangeCalendar QPushButton[in_range="true"] { background-color: @bg_hover; border-radius: 0px; }
+QWidget#RangeCalendar QPushButton[is_today="true"] { border: 1px solid @primary; }
+
+/* 面板內部按鈕與標籤 */
+QPushButton#TimeRangeBtn {
+    background-color: @bg_card; color: @text_main; border: 1px solid @border_main; border-radius: 4px; padding: 8px 12px; text-align: left; font-size: 13px;
+}
+QPushButton#TimeRangeBtn:hover { background-color: @bg_hover; border-color: @primary; }
+QPushButton#TimeRangeBtn:checked { background-color: @bg_hover; border-color: @primary; color: @primary; }
+
+QPushButton#SortOrderBtn { background-color: @bg_panel; color: @text_main; border: 1px solid @border_main; border-radius: 4px; font-size: 16px; font-weight: bold; }
+QPushButton#SortOrderBtn:hover { background-color: @bg_hover; border-color: @primary; color: @text_main; }
+
+QPushButton#ResetWeightBtn { background-color: transparent; color: @text_sec; border: 1px solid @border_main; padding: 6px; border-radius: 4px; margin-top: 10px; }
+QPushButton#ResetWeightBtn:hover { background-color: @bg_hover; color: @text_main; border-color: @primary; }
+
+QPushButton#ClearFilterBtn {
+    background-color: transparent; color: @danger; border: 1px solid @danger;
+    border-radius: 4px; padding: 10px; font-weight: bold; font-size: 13px; margin: 10px 20px;
+}
+QPushButton#ClearFilterBtn:hover { background-color: @danger; color: white; }
+
+/* 資訊分頁 */
+QLabel#PreviewImage { background-color: @bg_panel; border: 1px solid @border_main; border-radius: 6px; }
+QLabel#InfoLabelValue { color: @text_main; font-size: 12px; }
+QLabel#InfoLabelKey { color: @text_muted; font-size: 12px; }
+QLabel#FormulaLabel { color: @text_muted; font-size: 11px; margin-bottom: 5px; }

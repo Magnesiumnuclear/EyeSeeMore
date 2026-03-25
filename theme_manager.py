@@ -60,7 +60,7 @@ class ThemeManager:
                     qss_content = f.read()
                     
                 # 執行佔位符替換 (例如把 @bg_app 換成 #1e1e1e)
-                for key, hex_color in self.current_colors.items():
+                for key, hex_color in sorted(self.current_colors.items(), key=lambda x: len(x[0]), reverse=True):
                     qss_content = qss_content.replace(f"@{key}", hex_color)
                     
                 app.setStyleSheet(qss_content)
