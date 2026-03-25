@@ -8,6 +8,8 @@
         "nav_ai": "🧠 AI Engine",
         "nav_appearance": "🖥️ Appearance",
         "nav_hotkeys": "⌨️ Hotkeys",
+        "nav_performance": "⚡ Performance",
+        "nav_auto_tasks": "🕒 Automated Tasks",
         "nav_language": "🌍 Language",
         "nav_about": "ℹ️ About"
     },
@@ -42,6 +44,14 @@
         "chk_precise": "Enable Precise Text Highlight (Color keywords only)",
         "chk_margin": "↳ Enable Margin Compensation",
         "chk_dedup": "Enable Multi-language Deduplication"
+    },
+    "performance": {
+        "page_title": "⚡ Performance",
+        "wip_text": "🚧 Work in Progress: Animation & Resource Control"
+    },
+    "auto_tasks": {
+        "page_title": "🕒 Automated Tasks",
+        "wip_text": "🚧 Work in Progress: Background Scheduling & Auto-Scan"
     },
     "ai_engine": {
         "page_title": "🧠 AI Engine",

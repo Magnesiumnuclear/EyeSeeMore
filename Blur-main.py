@@ -4530,6 +4530,8 @@ class SettingsDialog(QDialog):
             self.trans.t("settings", "nav_ai", "🧠 AI 引擎設定"),
             self.trans.t("settings", "nav_appearance", "🖥️ 介面與顯示"),
             self.trans.t("settings", "nav_hotkeys", "⌨️ 操作與快捷鍵"),
+            self.trans.t("settings", "nav_performance", "⚡ 效能調整"), # NEW
+            self.trans.t("settings", "nav_auto_tasks", "🕒 自動任務"), # NEW
             self.trans.t("settings", "nav_language", "🌍 語言與翻譯"),
             self.trans.t("settings", "nav_about", "ℹ️ 關於與說明")
         ]
@@ -4547,6 +4549,8 @@ class SettingsDialog(QDialog):
         self.init_page_ai()
         self.init_page_appearance()
         self.init_page_hotkeys()
+        self.init_page_performance() # 🌟 加入呼叫
+        self.init_page_auto_tasks()  # 🌟 加入呼叫
         self.init_page_language() # 語言設定頁面
         self.init_page_about()
         self.nav_list.setCurrentRow(0)
@@ -5270,6 +5274,37 @@ class SettingsDialog(QDialog):
         layout_visual.addWidget(self.chk_dedup)
         layout.addWidget(group_visual)
         
+        layout.addStretch(1)
+        self.stack.addWidget(page)
+
+    def init_page_performance(self):
+        page, layout = self._create_page_container(self.trans.t("performance", "page_title", "⚡ 效能調整 (Performance)"))
+        
+        # 建立一個施工中的大區塊，等待之後填入動畫開關等設定
+        btn_wip = QPushButton(self.trans.t("performance", "wip_text", "🚧 施工中：動畫效果與系統資源控制"))
+        btn_wip.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_wip.setStyleSheet("""
+            QPushButton { 
+                background-color: #2b2b2b; color: #888888; border: 1px dashed #444; border-radius: 4px; padding: 25px; font-weight: bold; font-size: 15px;
+            } 
+            QPushButton:hover { background-color: #333333; border-color: #60cdff; color: #60cdff; }
+        """)
+        layout.addWidget(btn_wip)
+        layout.addStretch(1)
+        self.stack.addWidget(page)
+
+    def init_page_auto_tasks(self):
+        page, layout = self._create_page_container(self.trans.t("auto_tasks", "page_title", "🕒 自動任務 (Automated Tasks)"))
+        
+        btn_wip = QPushButton(self.trans.t("auto_tasks", "wip_text", "🚧 施工中：背景排程與自動掃描"))
+        btn_wip.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_wip.setStyleSheet("""
+            QPushButton { 
+                background-color: #2b2b2b; color: #888888; border: 1px dashed #444; border-radius: 4px; padding: 25px; font-weight: bold; font-size: 15px;
+            } 
+            QPushButton:hover { background-color: #333333; border-color: #60cdff; color: #60cdff; }
+        """)
+        layout.addWidget(btn_wip)
         layout.addStretch(1)
         self.stack.addWidget(page)
 

@@ -8,14 +8,16 @@
         "nav_ai": "🧠 AI 引擎設定",
         "nav_appearance": "🖥️ 介面與顯示",
         "nav_hotkeys": "⌨️ 操作與快捷鍵",
+        "nav_performance": "⚡ 效能調整",
+        "nav_auto_tasks": "🕒 自動任務",
         "nav_language": "🌍 語言與翻譯",
         "nav_about": "ℹ️ 關於與說明"
     },
     "folders": {
-        "page_title": "📁 Folders",
-        "hint": "Tip: Drag items to reorder. Right-click an item to set language tags and icons.",
-        "btn_add": "+ Add Folder",
-        "btn_remove": "- Remove Selected"
+        "page_title": "📁 資料夾管理 (Folders)",
+        "hint": "提示：拖曳列表項目可改變排序。在項目上「點擊右鍵」可設定語系標記與圖示。",
+        "btn_add": "+ 新增資料夾",
+        "btn_remove": "- 移除選取"
     },
     "appearance": {
         "page_title": "🖥️ 介面與顯示 (Appearance)",
@@ -42,6 +44,14 @@
         "chk_precise": "啟用精確文字高亮 (僅著色關鍵字部分)",
         "chk_margin": "↳ 啟用邊緣縮減補償 (Margin Compensation)",
         "chk_dedup": "啟用多語系重疊防護 (Deduplication)"
+    },
+    "performance": {
+        "page_title": "⚡ 效能調整 (Performance)",
+        "wip_text": "🚧 施工中：動畫效果與系統資源控制"
+    },
+    "auto_tasks": {
+        "page_title": "🕒 自動任務 (Automated Tasks)",
+        "wip_text": "🚧 施工中：背景排程與自動掃描"
     },
     "ai_engine": {
         "page_title": "🧠 AI 引擎設定 (AI Engine)",
