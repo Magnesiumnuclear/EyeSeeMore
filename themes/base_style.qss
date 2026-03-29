@@ -278,3 +278,19 @@ QLabel#PreviewImage { background-color: @bg_panel; border: 1px solid @border_mai
 QLabel#InfoLabelValue { color: @text_main; font-size: 12px; }
 QLabel#InfoLabelKey { color: @text_muted; font-size: 12px; }
 QLabel#FormulaLabel { color: @text_muted; font-size: 11px; margin-bottom: 5px; }
+
+/* 檢索過濾的動態標題 */
+QLabel#FilterTitle {
+    color: @text_sec;
+    font-size: 13px;
+    border: none;
+    font-weight: normal;
+    padding-bottom: 0px;
+    background: transparent;
+}
+QLabel#FilterTitle[active="true"] {
+    color: @primary;
+    border-bottom: 2px solid @primary;
+    font-weight: bold;
+    padding-bottom: 4px;
+}

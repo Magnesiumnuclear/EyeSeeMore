@@ -2465,6 +2465,7 @@ class InspectorPanel(QFrame):
         # --- 區塊 1: 🔍 檢索過濾 (FILTER) ---
         self.sec_filter = CollapsibleSection("檢索過濾")
         self.lbl_time_title = QLabel("時間維度 (Time Range):")
+        self.lbl_time_title.setObjectName("FilterTitle")
         self.sec_filter.addWidget(self.lbl_time_title)
         
         self.btn_time_range = QPushButton("📅 全部時間 (All Time)")
@@ -2483,6 +2484,7 @@ class InspectorPanel(QFrame):
         self.sec_filter.addWidget(self.calendar_widget)
 
         self.lbl_aspect_title = QLabel("視覺規格 (Visual Specs):")
+        self.lbl_aspect_title.setObjectName("FilterTitle")
         self.sec_filter.addWidget(self.lbl_aspect_title)
         
         self.combo_aspect = QComboBox()
@@ -2813,12 +2815,17 @@ class InspectorPanel(QFrame):
         
         any_active = (active_count > 0)
 
-        # 1. 層級三：強制切換 StyleSheet (維持上一版的穩定解法)
-        active_lbl_style = "color: #60cdff; border-bottom: 2px solid #60cdff; font-size: 13px; font-weight: bold; padding-bottom: 4px;"
-        normal_lbl_style = "color: #cccccc; font-size: 13px; border: none; font-weight: normal; padding-bottom: 0px;"
-
-        self.lbl_time_title.setStyleSheet(active_lbl_style if is_time_filtered else normal_lbl_style)
-        self.lbl_aspect_title.setStyleSheet(active_lbl_style if is_aspect_filtered else normal_lbl_style)
+        # 1. 層級三：屬性控制 (交由 QSS 處理顏色)
+        time_state = "true" if is_time_filtered else "false"
+        aspect_state = "true" if is_aspect_filtered else "false"
+        
+        self.lbl_time_title.setProperty("active", time_state)
+        self.lbl_aspect_title.setProperty("active", aspect_state)
+        
+        self.lbl_time_title.style().unpolish(self.lbl_time_title)
+        self.lbl_time_title.style().polish(self.lbl_time_title)
+        self.lbl_aspect_title.style().unpolish(self.lbl_aspect_title)
+        self.lbl_aspect_title.style().polish(self.lbl_aspect_title)
 
         # 2. 層級二：檢索過濾區塊底線
         self.sec_filter.set_status_active(any_active)
@@ -3065,7 +3072,7 @@ class MainWindow(QMainWindow):
 
         self.input = QLineEdit()
         self.input.setPlaceholderText("Search images...")
-        self.input.setStyleSheet("QLineEdit { background: transparent; border: none; color: white; font-size: 14px; }")
+        self.input.setStyleSheet("QLineEdit { background: transparent; border: none; font-size: 14px; }")
         self.input.returnPressed.connect(self.start_search)
         capsule_layout.addWidget(self.input, stretch=1)
 
