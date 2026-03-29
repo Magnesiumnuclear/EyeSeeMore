@@ -248,8 +248,14 @@ class ThumbnailLoader(QRunnable):
         self.file_path = file_path
         self.target_size = target_size
         self.signals = WorkerSignals()
+        self.is_cancelled = False
 
     def run(self):
+        # 🌟 修復 1：被取消時，必須發射空訊號結案，釋放 Model 的鎖死狀態
+        if self.is_cancelled:
+            self.signals.result.emit(self.file_path, QPixmap())
+            return
+
         try:
             reader = QImageReader(self.file_path)
             orig_size = reader.size()
@@ -257,19 +263,26 @@ class ThumbnailLoader(QRunnable):
                 self.signals.result.emit(self.file_path, QPixmap())
                 return
 
-            # 🌟 [Opt 1] 在背景執行緒直接計算好完美符合 UI 的長寬比
+            # 🌟 修復 2：由於上面抓取尺寸可能耗時，縮放前再檢查一次是否被取消
+            if self.is_cancelled:
+                self.signals.result.emit(self.file_path, QPixmap())
+                return
+
             scaled_size = orig_size.scaled(
                 self.target_size, 
-                Qt.AspectRatioMode.KeepAspectRatio  # 改用 KeepAspectRatio 避免變形
+                Qt.AspectRatioMode.KeepAspectRatio
             )
             
             reader.setScaledSize(scaled_size)
             reader.setAutoTransform(True)
-
             image = reader.read()
+            
+            # 🌟 修復 3：轉檔前最後一次檢查
+            if self.is_cancelled:
+                self.signals.result.emit(self.file_path, QPixmap())
+                return
+
             if not image.isNull():
-                # 🌟 [Opt 7] 強制轉換為 GPU 渲染最快的「預乘 Alpha」格式
-                # 這樣 QPainter 畫圖時就不需要再透過 CPU 轉換格式了！
                 image = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
                 self.signals.result.emit(self.file_path, QPixmap.fromImage(image))
             else:
@@ -288,12 +301,16 @@ class SearchResultsModel(QAbstractListModel):
         
         self.item_size = item_size 
         self._thumbnail_cache = OrderedDict()
-        self.CACHE_SIZE = 200 
+        
+        # 🌟 修復 4：暴力美學，直接將快取提升至 1000，徹底消滅短距離回滾重載的問題
+        self.CACHE_SIZE = 1000 
+        
         self._loading_set = set() 
+        self._active_workers = {} # 🌟 新增：用來追蹤執行中的 Worker 以便取消
+        
         self.thread_pool = QThreadPool.globalInstance()
-        self.thread_pool.setMaxThreadCount(4) 
+        self.thread_pool.setMaxThreadCount(8) # 建議提高到 8 榨乾 CPU 讀圖效能
 
-        # 🌟 [Opt 5] 信號減壓緩衝區與計時器 (50毫秒 = 20FPS 的刷新率)
         self._pending_updates = set()
         self.update_timer = QTimer()
         self.update_timer.setInterval(50)
@@ -307,8 +324,14 @@ class SearchResultsModel(QAbstractListModel):
 
     def set_search_results(self, results_dict_list):
         self.beginResetModel()
+        
+        # 🌟 修復 5：搜尋新關鍵字時，一槍斃命所有前一次搜尋留下的舊任務
+        for worker in self._active_workers.values():
+            worker.is_cancelled = True
+        self._active_workers.clear()
+        
         self.all_items = []
-        self.display_items = [] # 先清空畫面
+        self.display_items = [] 
         self._thumbnail_cache.clear()
         self._loading_set.clear()
         
@@ -388,18 +411,26 @@ class SearchResultsModel(QAbstractListModel):
         self._loading_set.add(file_path)
         loader = ThumbnailLoader(file_path, self.item_size)
         loader.signals.result.connect(self.on_thumbnail_loaded)
+        
+        # 🌟 紀錄到活躍任務字典中
+        self._active_workers[file_path] = loader
+        
         self.thread_pool.start(loader)
 
     def on_thumbnail_loaded(self, file_path, pixmap):
+        # 🌟 修復 6：無論收到的是正常圖片還是空圖片(被取消)，都要從追蹤名單中徹底釋放
+        if file_path in self._active_workers:
+            del self._active_workers[file_path]
+            
         if file_path in self._loading_set:
             self._loading_set.remove(file_path)
 
+        # 只有在非空圖片（沒有被取消且讀取成功）時，才加入快取與更新畫面
         if not pixmap.isNull():
             self._thumbnail_cache[file_path] = pixmap
             if len(self._thumbnail_cache) > self.CACHE_SIZE:
                 self._thumbnail_cache.popitem(last=False)
 
-            # 🌟 [Opt 5] 找到要更新的列，丟進緩衝區，而不是直接發射訊號
             for row, item in enumerate(self.display_items):
                 if item.path == file_path:
                     self._pending_updates.add(row)
@@ -3809,6 +3840,12 @@ class MainWindow(QMainWindow):
         # setContentsMargins: 四周邊界
         # 關鍵差異：這裡把 Top (第二個參數) 也設為 space，不再鎖死 20
         self.list_view.setContentsMargins(space, space, space, space)
+
+        # 🌟 [新增終極鎖定] 直接告訴 ListView 每個網格的絕對大小
+        # 網格大小 = 卡片本身大小 + 右邊和下方的間距
+        grid_w = self.current_card_size.width() + space
+        grid_h = self.current_card_size.height() + space
+        self.list_view.setGridSize(QSize(grid_w, grid_h))
 
     def on_item_clicked(self, index):
         if not index.isValid(): return
