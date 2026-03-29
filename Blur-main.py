@@ -1258,9 +1258,10 @@ class FloatingWidget(QWidget):
                 max_lang_w = w
 
         # 畫背景面板 (深灰色)
-        painter.setBrush(QBrush(QColor(35, 35, 35, 240)))
-        painter.setPen(QPen(QColor(85, 85, 85, 255), 1))
-        painter.drawRoundedRect(panel_rect.adjusted(0, 0, -1, -1), 6, 6)
+        bg_color_str = self.window().theme_manager.current_colors.get("bg_floating", "#f0232323")
+        painter.setBrush(QColor(bg_color_str))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(self.rect(), 8, 8)
 
         current_y = panel_rect.top() + pad_y + fm_text.ascent()
 
@@ -1269,26 +1270,27 @@ class FloatingWidget(QWidget):
             text_str = r.get("text", "")
             conf_str = f" {r.get('conf', 0.0):.2f}"
 
-            # 1. 畫語言標籤 (藍色)
-            painter.setPen(QColor("#60cdff"))
+            # 🌟 取得主題顏色
+            colors = self.window().theme_manager.current_colors
+            
+            # 1. 畫語言標籤 (主題主色)
+            painter.setPen(QColor(colors.get("primary", "#60cdff")))
             painter.drawText(panel_rect.left() + pad_x, current_y, lang_str)
 
             # 2. 計算信心度寬度 (靠右對齊用)
             conf_w = fm_text.boundingRect(conf_str).width()
 
-            # 3. 畫辨識文字 (白色，過長自動省略)
-            # [關鍵修改] 使用統一的 max_lang_w 來推算 X 座標，確保所有文字垂直對齊
+            # 3. 畫辨識文字 (主題主要文字色)
             text_start_x = panel_rect.left() + pad_x + max_lang_w
             text_max_w = panel_rect.width() - (pad_x * 2) - max_lang_w - conf_w
-            
             if text_max_w < 20: text_max_w = 20
             elided_text = fm_text.elidedText(text_str, Qt.TextElideMode.ElideRight, text_max_w)
             
-            painter.setPen(QColor(255, 255, 255))
+            painter.setPen(QColor(colors.get("text_main", "#ffffff")))
             painter.drawText(text_start_x, current_y, elided_text)
 
-            # 4. 畫信心度 (灰色，靠右邊緣對齊)
-            painter.setPen(QColor("#aaaaaa"))
+            # 4. 畫信心度 (主題次要文字色)
+            painter.setPen(QColor(colors.get("text_muted", "#aaaaaa")))
             painter.drawText(panel_rect.right() - pad_x - conf_w, current_y, conf_str)
 
             current_y += fm_text.height() + line_spacing
@@ -1560,7 +1562,11 @@ class OCRLabel(QLabel):
                         ny = pt[1] * scale_y + offset_y
                         poly_points.append(QPoint(int(nx), int(ny)))
                 
-                    painter.setBrush(QBrush(QColor(255, 255, 0, 100))) 
+                    # 🌟 從頂層視窗取得 ThemeManager
+                    colors = self.window().theme_manager.current_colors
+                    highlight_color = QColor(colors.get("ocr_highlight", "#64ffff00"))
+                    
+                    painter.setBrush(QBrush(highlight_color)) 
                     painter.setPen(Qt.PenStyle.NoPen)
                     painter.drawPolygon(QPolygon(poly_points))
             
@@ -1570,13 +1576,20 @@ class OCRLabel(QLabel):
                     ny = pt[1] * scale_y + offset_y
                     full_poly_points.append(QPoint(int(nx), int(ny)))
                     
+                # 🌟 從主題取得基礎色與懸停色
+                colors = self.window().theme_manager.current_colors
+                hover_bg = QColor(colors.get("primary", "#60cdff"))
+                hover_bg.setAlpha(60) # 加上透明度
+                hover_pen = QColor(colors.get("primary", "#60cdff"))
+                normal_pen = QColor(colors.get("ocr_box_normal", "#c8ff0000"))
+
                 if i == self.hovered_index:
-                    painter.setBrush(QBrush(QColor(96, 205, 255, 60))) 
-                    painter.setPen(QPen(QColor("#60cdff"), 3))
+                    painter.setBrush(QBrush(hover_bg)) 
+                    painter.setPen(QPen(hover_pen, 3))
                     painter.drawPolygon(QPolygon(full_poly_points))
                 else:
                     painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-                    painter.setPen(QPen(QColor(255, 0, 0, 200), 2))
+                    painter.setPen(QPen(normal_pen, 2))
                     painter.drawPolygon(QPolygon(full_poly_points))
 
 

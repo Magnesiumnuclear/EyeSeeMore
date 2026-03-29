@@ -22,9 +22,9 @@
         "text_warning": "#ff9800",
         "text_success": "#4caf50",
         "text_link": "#00aaff",
-        "bg_floating": "rgba(35, 35, 35, 240)",
-        "ocr_box_normal": "rgba(255, 0, 0, 200)",
+        "bg_floating": "#f0232323",
+        "ocr_box_normal": "#c8ff0000",
         "ocr_box_hover": "#60cdff",
-        "ocr_highlight": "rgba(255, 255, 0, 100)"
+        "ocr_highlight": "#64ffff00"
     }
 }
