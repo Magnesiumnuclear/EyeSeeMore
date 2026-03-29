@@ -294,3 +294,49 @@ QLabel#FilterTitle[active="true"] {
     font-weight: bold;
     padding-bottom: 4px;
 }
+
+/* ==========================================
+   第一波除垢：日曆與統計面板
+========================================== */
+
+/* --- 📅 日曆元件 --- */
+QLabel#CalendarWeekday {
+    color: @text_muted;
+    font-size: 12px;
+}
+QLabel#CalendarStatus {
+    font-size: 12px;
+    margin-top: 4px;
+}
+QLabel#CalendarStatus[state="normal"] { color: @text_muted; }
+QLabel#CalendarStatus[state="primary"] { color: @primary; }
+QLabel#CalendarStatus[state="error"] { color: @danger; font-weight: bold; }
+QLabel#CalendarStatus[state="success"] { color: @success; font-weight: bold; }
+
+/* 日曆非本月日期的按鈕顏色退化 */
+QPushButton[is_other_month="true"] {
+    color: @text_muted;
+    background: transparent;
+}
+
+/* --- 📊 統計面板 --- */
+QLabel#StatsTitle {
+    color: @text_main;
+    font-weight: bold;
+    font-size: 14px;
+}
+QLabel#StatsTotal {
+    color: @primary;
+    font-weight: bold;
+}
+QLabel#StatsRowName {
+    font-size: 13px;
+    color: @text_main;
+}
+QLabel#StatsRowCount {
+    color: @text_muted;
+    font-size: 13px;
+    background-color: @bg_hover;
+    padding: 2px 8px;
+    border-radius: 10px;
+}

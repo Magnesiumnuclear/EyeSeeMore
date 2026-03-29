@@ -1709,7 +1709,6 @@ class StatsMenuWidget(QFrame):
         self.setFixedHeight(500)
         self.setStyleSheet("""
             QFrame { background-color: #252525; border: 1px solid #3e3e3e; border-radius: 6px; }
-            QLabel { color: #ccc; border: none; background: transparent; }
         """)
         
         self.main_layout = QVBoxLayout(self)
@@ -1721,7 +1720,7 @@ class StatsMenuWidget(QFrame):
         title_layout = QHBoxLayout(title_container)
         title_layout.setContentsMargins(15, 10, 15, 10)
         title_lbl = QLabel("Indexed Folders")
-        title_lbl.setStyleSheet("color: white; font-weight: bold; font-size: 14px;")
+        title_lbl.setObjectName("StatsTitle")
         title_layout.addWidget(title_lbl)
         self.main_layout.addWidget(title_container)
 
@@ -1744,7 +1743,7 @@ class StatsMenuWidget(QFrame):
         footer_layout = QHBoxLayout(footer_container)
         footer_layout.setContentsMargins(15, 8, 15, 8)
         self.total_label = QLabel("Total: 0 images")
-        self.total_label.setStyleSheet("color: #60cdff; font-weight: bold;")
+        self.total_label.setObjectName("StatsTotal")
         footer_layout.addWidget(self.total_label, alignment=Qt.AlignmentFlag.AlignRight)
         self.main_layout.addWidget(footer_container)
 
@@ -1774,10 +1773,11 @@ class StatsMenuWidget(QFrame):
             
             lbl_name = QLabel(display_text)
             lbl_name.setToolTip(folder)
-            lbl_name.setStyleSheet("font-size: 13px; color: #dddddd;")
+            lbl_name.setObjectName("StatsRowName")
+            
             
             lbl_count = QLabel(f"{count}")
-            lbl_count.setStyleSheet("color: #aaaaaa; font-size: 13px; background-color: #333; padding: 2px 8px; border-radius: 10px;")
+            lbl_count.setObjectName("StatsRowCount")
             lbl_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             
             row_layout.addWidget(lbl_name, stretch=1)
@@ -2236,7 +2236,9 @@ class RangeCalendarWidget(QWidget):
         # 2. 星期標籤
         week_layout = QHBoxLayout()
         for wd in ["日", "一", "二", "三", "四", "五", "六"]:
-            lbl = QLabel(wd); lbl.setAlignment(Qt.AlignmentFlag.AlignCenter); lbl.setStyleSheet("color: #888888; font-size: 12px;")
+            lbl = QLabel(wd)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setObjectName("CalendarWeekday")
             week_layout.addWidget(lbl)
         main_layout.addLayout(week_layout)
 
@@ -2257,7 +2259,8 @@ class RangeCalendarWidget(QWidget):
         # 4. 狀態訊息提示區
         self.lbl_status = QLabel("💡 請點選開始與結束日期...")
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_status.setStyleSheet("color: #888888; font-size: 12px; margin-top: 4px;")
+        self.lbl_status.setObjectName("CalendarStatus")
+        self.lbl_status.setProperty("state", "normal")
         main_layout.addWidget(self.lbl_status)
 
         # 5. 底部控制按鈕區
@@ -2293,25 +2296,20 @@ class RangeCalendarWidget(QWidget):
     def set_status(self, text, state="normal"):
         """供外部控制訊息區的文字與顏色"""
         self.lbl_status.setText(text)
-        if state == "error":
-            self.lbl_status.setStyleSheet("color: #ff6b6b; font-size: 12px; font-weight: bold; margin-top: 4px;")
-        elif state == "success":
-            self.lbl_status.setStyleSheet("color: #4caf50; font-size: 12px; font-weight: bold; margin-top: 4px;")
-        else:
-            self.lbl_status.setStyleSheet("color: #60cdff; font-size: 12px; margin-top: 4px;")
+        self.lbl_status.setProperty("state", state) # 🌟 狀態交給 QSS 判定
+        self.lbl_status.style().unpolish(self.lbl_status)
+        self.lbl_status.style().polish(self.lbl_status)
 
     def update_action_buttons(self):
-        """檢查是否選好起訖日，來啟用或停用主要按鈕"""
         can_action = bool(self.start_date and self.end_date)
         self.btn_apply.setEnabled(can_action)
         self.btn_search.setEnabled(can_action)
         
         if can_action:
             days = (self.end_date - self.start_date).days + 1
-            self.set_status(f"💡 已選取 {days} 天，請選擇動作。")
+            self.set_status(f"💡 已選取 {days} 天，請選擇動作。", "primary")
         else:
-            self.lbl_status.setText("💡 請點選結束日期...")
-            self.lbl_status.setStyleSheet("color: #888888; font-size: 12px; margin-top: 4px;")
+            self.set_status("💡 請點選結束日期...", "normal")
 
     # ---------------- 內部邏輯與事件 ----------------
     def update_calendar(self):
@@ -2327,8 +2325,9 @@ class RangeCalendarWidget(QWidget):
                 self.btn_dates_map[btn] = day_obj
                 btn.setProperty("is_endpoint", "false"); btn.setProperty("in_range", "false"); btn.setProperty("is_today", "false")
 
-                if day_obj.month != self.current_month: btn.setStyleSheet("color: #555555;")
-                else: btn.setStyleSheet("") 
+                # 【修改後】改成屬性標記
+                is_other = "true" if day_obj.month != self.current_month else "false"
+                btn.setProperty("is_other_month", is_other)
 
                 if day_obj == self.today: btn.setProperty("is_today", "true")
 
@@ -2367,8 +2366,7 @@ class RangeCalendarWidget(QWidget):
     def clear_selection(self):
         self.start_date = None; self.end_date = None
         self.update_calendar()
-        self.lbl_status.setText("💡 請點選開始與結束日期...")
-        self.lbl_status.setStyleSheet("color: #888888; font-size: 12px; margin-top: 4px;")
+        self.set_status("💡 請點選開始與結束日期...", "normal")
         self.cleared.emit()
 
     def go_to_today(self):

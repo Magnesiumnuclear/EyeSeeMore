@@ -18,6 +18,13 @@
         "primary": "#005fb8",
         "primary_hover": "#0078d4",
         "primary_active": "#004a99",
-        "danger": "#d32f2f"
+        "danger": "#d32f2f",
+        "text_warning": "#ff9800",
+        "text_success": "#4caf50",
+        "text_link": "#00aaff",
+        "bg_floating": "rgba(35, 35, 35, 240)",
+        "ocr_box_normal": "rgba(255, 0, 0, 200)",
+        "ocr_box_hover": "#60cdff",
+        "ocr_highlight": "rgba(255, 255, 0, 100)"
     }
 }
