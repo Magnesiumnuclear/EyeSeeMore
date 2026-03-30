@@ -396,3 +396,33 @@ QWidget#StatsRow:hover {
     background-color: @bg_hover;
     border-radius: 4px;
 }
+
+/* ==========================================
+   第四波除垢：主視窗與其他小零件
+========================================== */
+
+/* 歷史紀錄刪除按鈕 */
+QPushButton#HistoryDelBtn {
+    font-size: 18px; 
+    padding-bottom: 4px; 
+    background: transparent; 
+    border: none;
+    color: @text_muted;
+}
+QPushButton#HistoryDelBtn:hover {
+    color: @danger;
+}
+
+/* 底部狀態列 */
+QLabel#StatusBarText {
+    color: @text_muted;
+    font-size: 12px;
+    border: none;
+    background: transparent;
+}
+
+/* 主視窗分隔線 */
+QSplitter#MainSplitter::handle {
+    background-color: @border_main;
+    width: 1px;
+}

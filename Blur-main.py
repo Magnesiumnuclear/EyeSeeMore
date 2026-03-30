@@ -1746,8 +1746,10 @@ class HistoryItemWidget(QWidget):
         layout = QHBoxLayout(self); layout.setContentsMargins(10, 0, 5, 0)
         self.label = QLabel(text); self.label.setStyleSheet("background: transparent;"); self.label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor)); self.label.mousePressEvent = self.on_label_clicked
         layout.addWidget(self.label, stretch=1)
-        self.del_btn = QPushButton("x"); self.del_btn.setObjectName("GhostButton"); self.del_btn.setFixedSize(28, 28); self.del_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.del_btn.setStyleSheet("QPushButton { font-size: 18px; padding-bottom: 4px; background: transparent; border: none; } QPushButton:hover { color: #ff6b6b; }")
+        self.del_btn = QPushButton("x")
+        self.del_btn.setObjectName("HistoryDelBtn") # 🌟 換成專屬身分證
+        self.del_btn.setFixedSize(28, 28)
+        self.del_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.del_btn.clicked.connect(self.on_delete_clicked); layout.addWidget(self.del_btn)
     def on_label_clicked(self, event):
         if event.button() == Qt.MouseButton.LeftButton: self.search_callback(self.text)
@@ -3154,7 +3156,7 @@ class MainWindow(QMainWindow):
 
         # 系統訊息顯示
         self.status = QLabel("Initializing...")
-        self.status.setStyleSheet("color: #888888; font-size: 12px; border: none; background: transparent;")
+        self.status.setObjectName("StatusBarText")
         right_actions_layout.addWidget(self.status, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # 右側面板開關
@@ -3176,7 +3178,7 @@ class MainWindow(QMainWindow):
         # 使用 QSplitter 來完美分割左畫廊與右面板
         # ==========================================
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.main_splitter.setStyleSheet("QSplitter::handle { background-color: #333333; width: 1px; }")
+        self.main_splitter.setObjectName("MainSplitter")
 
         # List View (畫廊)
         self.list_view = QListView()
