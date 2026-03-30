@@ -626,10 +626,13 @@ class ImageDelegate(QStyledItemDelegate):
         # 🌟 [Opt 6] 直接使用預先處理好的 float 數值與 string 字串
         if item.score_val > 0.0001:
             if item.score_val > 0.3:
-                painter.setPen(QColor("#60cdff"))
+                # 🌟 高分：使用主題的 primary 顏色 (深/淺模式會自動適應)
+                score_color = colors.get("primary", "#60cdff")
             else:
-                painter.setPen(QColor("#999999"))
-            # 不再呼叫 f"{score_val:.4f}"，直接畫出預存好的字串
+                # 🌟 低分：使用主題的 muted 顏色 (柔和的灰色)
+                score_color = colors.get("text_muted", "#999999")
+                
+            painter.setPen(QColor(score_color))
             painter.drawText(score_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, item.score_str)
         else:
             # 如果分數是 0 (例如剛啟動顯示全部圖片時)，顯示日期可能比較實用，或者留白
@@ -644,11 +647,16 @@ class ImageDelegate(QStyledItemDelegate):
                 score_rect.top() + 2,
                 tag_width, 16
             )
-            painter.setBrush(QBrush(QColor("#4caf50")))
+            # 🌟 標籤背景：使用我們在 JSON 裡新增的 text_success (綠色)
+            tag_bg = colors.get("text_success", "#4caf50")
+            painter.setBrush(QBrush(QColor(tag_bg)))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(tag_rect, 3, 3)
+            
             painter.setFont(self.font_tag)
-            painter.setPen(QColor("white"))
+            # 💡 這裡刻意保留純白色 "#ffffff"。
+            # 因為無論在深色還是淺色模式，標籤底色都是綠色，白字在綠底上的對比度與閱讀性永遠是最好的。
+            painter.setPen(QColor("#ffffff"))
             painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter, tag_text)
 
         painter.restore()
