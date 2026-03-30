@@ -4289,7 +4289,15 @@ class SettingsDialog(QDialog):
         line.setFrameShape(QFrame.Shape.HLine)
         line.setObjectName("PageHLine")
         layout.addWidget(line)
+        line.setObjectName("PageHLine")
+        layout.addWidget(line)
         return page, layout
+    
+    def _create_construction_button(self, text):
+        btn = QPushButton(text)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setObjectName("WipButton") 
+        return btn
 
     def init_page_folders(self):
         # 🌟 套用翻譯
@@ -4999,14 +5007,9 @@ class SettingsDialog(QDialog):
     def init_page_auto_tasks(self):
         page, layout = self._create_page_container(self.trans.t("auto_tasks", "page_title", "🕒 自動任務 (Automated Tasks)"))
         
-        btn_wip = QPushButton(self.trans.t("auto_tasks", "wip_text", "🚧 施工中：背景排程與自動掃描"))
-        btn_wip.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_wip.setStyleSheet("""
-            QPushButton { 
-                background-color: #2b2b2b; color: #888888; border: 1px dashed #444; border-radius: 4px; padding: 25px; font-weight: bold; font-size: 15px;
-            } 
-            QPushButton:hover { background-color: #333333; border-color: #60cdff; color: #60cdff; }
-        """)
+        # 🌟 直接呼叫公用工具函式，讓它自動套用 base_style.qss 的 WipButton 樣式
+        btn_wip = self._create_construction_button(self.trans.t("auto_tasks", "wip_text", "🚧 施工中：背景排程與自動掃描"))
+        
         layout.addWidget(btn_wip)
         layout.addStretch(1)
         self.stack.addWidget(page)
