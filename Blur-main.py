@@ -1759,16 +1759,16 @@ class StatsMenuWidget(QFrame):
         self.hide()
         self.setFixedWidth(420)
         self.setFixedHeight(500)
-        self.setStyleSheet("""
-            QFrame { background-color: #252525; border: 1px solid #3e3e3e; border-radius: 6px; }
-        """)
+        # 🌟 1. 主體面板發放身分證
+        self.setObjectName("StatsPanel")
         
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(1, 1, 1, 1)
         self.main_layout.setSpacing(0)
         
         title_container = QWidget()
-        title_container.setStyleSheet("background-color: #2d2d2d; border-bottom: 1px solid #3e3e3e; border-top-left-radius: 6px; border-top-right-radius: 6px;")
+        # 🌟 2. 標題區塊發放身分證
+        title_container.setObjectName("StatsHeader")
         title_layout = QHBoxLayout(title_container)
         title_layout.setContentsMargins(15, 10, 15, 10)
         title_lbl = QLabel("Indexed Folders")
@@ -1791,7 +1791,8 @@ class StatsMenuWidget(QFrame):
         self.main_layout.addWidget(self.scroll_area)
         
         footer_container = QWidget()
-        footer_container.setStyleSheet("background-color: #2d2d2d; border-top: 1px solid #3e3e3e; border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;")
+        # 🌟 3. 底部區塊發放身分證
+        footer_container.setObjectName("StatsFooter")
         footer_layout = QHBoxLayout(footer_container)
         footer_layout.setContentsMargins(15, 8, 15, 8)
         self.total_label = QLabel("Total: 0 images")
@@ -1835,7 +1836,8 @@ class StatsMenuWidget(QFrame):
             row_layout.addWidget(lbl_name, stretch=1)
             row_layout.addWidget(lbl_count)
             
-            row.setStyleSheet(".QWidget:hover { background-color: #333333; border-radius: 4px; }")
+            # 🌟 4. 資料行發放身分證
+            row.setObjectName("StatsRow")
             
             self.content_layout.addWidget(row)
             

@@ -363,3 +363,36 @@ QLabel#PreviewOverlayHint {
     margin-top: 5px;
     background: transparent; 
 }
+
+/* ==========================================
+   第三波除垢：統計面板 (StatsMenuWidget)
+========================================== */
+
+/* 主體外框 */
+QFrame#StatsPanel {
+    background-color: @bg_panel;
+    border: 1px solid @border_main;
+    border-radius: 6px;
+}
+
+/* 頂部標題區塊 */
+QWidget#StatsHeader {
+    background-color: @bg_input;
+    border-bottom: 1px solid @border_main;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+}
+
+/* 底部總計區塊 */
+QWidget#StatsFooter {
+    background-color: @bg_input;
+    border-top: 1px solid @border_main;
+    border-bottom-left-radius: 6px;
+    border-bottom-right-radius: 6px;
+}
+
+/* 清單項目懸停效果 */
+QWidget#StatsRow:hover {
+    background-color: @bg_hover;
+    border-radius: 4px;
+}
