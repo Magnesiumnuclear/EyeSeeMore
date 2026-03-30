@@ -529,7 +529,7 @@ class ImageDelegate(QStyledItemDelegate):
             border_color = QColor(colors.get("primary", "#60cdff"))
             border_width = 2
         elif item.is_ocr_match:
-            border_color = QColor(colors.get("danger", "#4caf50")) # 這裡借用綠色
+            border_color = QColor(colors.get("text_success", "#4caf50")) # 這裡借用綠色
             border_width = 1
         elif is_hover:
             bg_color = QColor(colors.get("bg_hover", "#383838"))
