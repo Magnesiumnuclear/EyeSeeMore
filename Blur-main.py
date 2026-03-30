@@ -4297,7 +4297,7 @@ class SettingsDialog(QDialog):
         
         # 🌟 套用翻譯
         lbl_hint = QLabel(self.trans.t("folders", "hint", "提示：拖曳列表項目可改變排序。在項目上「點擊右鍵」可設定語系標記與圖示。"))
-        lbl_hint.setStyleSheet("color: #aaa; font-size: 13px;")
+        lbl_hint.setObjectName("SettingsHint")
         layout.addWidget(lbl_hint)
         
         self.folder_list = TransparentDragListWidget()
@@ -4558,10 +4558,7 @@ class SettingsDialog(QDialog):
         self.dl_progress.setValue(0)
         self.dl_progress.setTextVisible(False)
         self.dl_progress.setFixedHeight(2)
-        self.dl_progress.setStyleSheet("""
-            QProgressBar { border: none; background-color: #444; border-radius: 1px; }
-            QProgressBar::chunk { background-color: #60cdff; border-radius: 1px; }
-        """)
+        self.dl_progress.setObjectName("DownloadProgress")
         
         dl_layout.addWidget(self.dl_status_label)
         dl_layout.addWidget(self.dl_progress)
@@ -4590,26 +4587,28 @@ class SettingsDialog(QDialog):
         
         for item in mock_clips:
             row = QHBoxLayout()
-            lbl_name = QLabel(f"{item['name']}<br><span style='color:#888; font-size:12px;'>{item['desc']}</span>")
+            
+            # 🌟 1. 動態取得主題顏色注入 HTML
+            muted_color = self.main_window.theme_manager.current_colors.get("text_muted", "#888888")
+            lbl_name = QLabel(f"{item['name']}<br><span style='color:{muted_color}; font-size:12px;'>{item['desc']}</span>")
             lbl_name.setFixedWidth(240)
             lbl_name.setTextFormat(Qt.TextFormat.RichText)
             
             is_active = (item['id'] == current_model)
             if is_active:
-                # 🌟 套用翻譯：CLIP 狀態 (運行中)
                 status_text = self.trans.t("ai_engine", "status_running", "✅ 運行中")
-                status_color = "#4caf50"
+                state_val = "running"  # 🌟 改用狀態標記
                 btn_text = self.trans.t("ai_engine", "btn_in_use", "目前使用中")
                 btn_enabled = False
             else:
-                # 🌟 套用翻譯：CLIP 狀態 (已安裝)
                 status_text = self.trans.t("ai_engine", "status_installed", "💾 已安裝")
-                status_color = "#aaaaaa"
+                state_val = "installed" # 🌟 改用狀態標記
                 btn_text = self.trans.t("ai_engine", "btn_switch", "切換並重啟")
                 btn_enabled = True
                 
             lbl_status = QLabel(status_text)
-            lbl_status.setStyleSheet(f"color: {status_color}; font-size: 13px; font-weight: bold;")
+            lbl_status.setObjectName("ModelStatusLabel") # 🌟 發放身分證
+            lbl_status.setProperty("state", state_val)   # 🌟 設定狀態
             
             btn_action = QPushButton(btn_text)
             btn_action.setFixedWidth(100)
@@ -4693,20 +4692,20 @@ class SettingsDialog(QDialog):
             is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
             is_running = lang_code in active_langs
             
-            # 🌟 動態按鈕翻譯判斷
+            # 🌟 換成狀態指派，拔除寫死的 color
             if is_running and is_installed:
                 status = self.trans.t("ai_engine", "status_running", "✅ 運行中")
-                color = "#4caf50"
+                state_val = "running"
                 btn_text = self.trans.t("ai_engine", "btn_enabled", "已啟用")
                 btn_enabled = False
             elif is_installed:
                 status = self.trans.t("ai_engine", "status_installed", "💾 已安裝")
-                color = "#aaaaaa"
+                state_val = "installed"
                 btn_text = self.trans.t("ai_engine", "btn_apply", "套用")
                 btn_enabled = True
             else:
                 status = self.trans.t("ai_engine", "status_not_installed", "📥 未安裝")
-                color = "#ff9800"
+                state_val = "missing"
                 btn_text = self.trans.t("ai_engine", "btn_import", "匯入")
                 btn_enabled = True
                 
@@ -4719,7 +4718,8 @@ class SettingsDialog(QDialog):
             lbl_name.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
             
             lbl_status = QLabel(status)
-            lbl_status.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold; background: transparent;")
+            lbl_status.setObjectName("ModelStatusLabel") # 🌟 發放身分證
+            lbl_status.setProperty("state", state_val)   # 🌟 設定狀態
             
             btn_action = QPushButton(btn_text)
             btn_action.setFixedWidth(90)
@@ -4990,15 +4990,8 @@ class SettingsDialog(QDialog):
     def init_page_performance(self):
         page, layout = self._create_page_container(self.trans.t("performance", "page_title", "⚡ 效能調整 (Performance)"))
         
-        # 建立一個施工中的大區塊，等待之後填入動畫開關等設定
-        btn_wip = QPushButton(self.trans.t("performance", "wip_text", "🚧 施工中：動畫效果與系統資源控制"))
-        btn_wip.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_wip.setStyleSheet("""
-            QPushButton { 
-                background-color: #2b2b2b; color: #888888; border: 1px dashed #444; border-radius: 4px; padding: 25px; font-weight: bold; font-size: 15px;
-            } 
-            QPushButton:hover { background-color: #333333; border-color: #60cdff; color: #60cdff; }
-        """)
+        # 🌟 呼叫公用函式，自動套用 QSS 樣式
+        btn_wip = self._create_construction_button(self.trans.t("performance", "wip_text", "🚧 施工中：動畫效果與系統資源控制"))
         layout.addWidget(btn_wip)
         layout.addStretch(1)
         self.stack.addWidget(page)
@@ -5085,7 +5078,7 @@ class SettingsDialog(QDialog):
 
         # 🌟 套用翻譯：說明文字
         lbl_desc = QLabel(self.trans.t("language_page", "lbl_desc", "請選擇軟體的顯示語言。系統將會從 languages/ 資料夾讀取對應的翻譯檔。\n(變更語言後，將於下次啟動程式時生效)"))
-        lbl_desc.setStyleSheet("color: #ccc;")
+        lbl_desc.setObjectName("SettingsHint")
         layout_lang.addWidget(lbl_desc)
 
         self.combo_lang = QComboBox()
@@ -5126,7 +5119,7 @@ class SettingsDialog(QDialog):
 
         # 🌟 套用翻譯：重啟提示
         self.lbl_lang_restart_hint = QLabel(self.trans.t("language_page", "restart_hint", "⚠️ 語言已變更！請手動重新啟動程式以套用新語言。"))
-        self.lbl_lang_restart_hint.setStyleSheet("color: #ff9800; font-weight: bold; margin-top: 10px;")
+        self.lbl_lang_restart_hint.setObjectName("SettingsWarning")
         self.lbl_lang_restart_hint.hide() 
         layout_lang.addWidget(self.lbl_lang_restart_hint)
 
@@ -5173,7 +5166,9 @@ class SettingsDialog(QDialog):
         layout.addWidget(tech_label)
 
         # 🌟 套用翻譯：連結與版權
-        link_label = QLabel(self.trans.t("about_page", "github_link", '<a href="https://github.com/Magnesiumnuclear/EyeSeeMore" style="color: #00aaff; text-decoration: none;">🌐 專案 GitHub 主頁 (回報問題與建議)</a>'))
+        link_color = self.main_window.theme_manager.current_colors.get("text_link", "#00aaff")
+        link_html = f'<a href="https://github.com/Magnesiumnuclear/EyeSeeMore" style="color: {link_color}; text-decoration: none;">🌐 專案 GitHub 主頁 (回報問題與建議)</a>'
+        link_label = QLabel(self.trans.t("about_page", "github_link", link_html))
         link_label.setOpenExternalLinks(True) 
         layout.addWidget(link_label)
 

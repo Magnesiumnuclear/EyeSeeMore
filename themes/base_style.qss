@@ -426,3 +426,39 @@ QSplitter#MainSplitter::handle {
     background-color: @border_main;
     width: 1px;
 }
+
+/* ==========================================
+   第五波除垢：設定頁面內部 (SettingsDialog)
+========================================== */
+
+/* 下載進度條 */
+QProgressBar#DownloadProgress { 
+    border: none; 
+    background-color: @bg_hover; 
+    border-radius: 1px; 
+}
+QProgressBar#DownloadProgress::chunk { 
+    background-color: @primary; 
+    border-radius: 1px; 
+}
+
+/* AI 與 OCR 狀態標籤 */
+QLabel#ModelStatusLabel {
+    font-size: 13px; 
+    font-weight: bold; 
+    background: transparent;
+}
+QLabel#ModelStatusLabel[state="running"] { color: @text_success; }
+QLabel#ModelStatusLabel[state="installed"] { color: @text_muted; }
+QLabel#ModelStatusLabel[state="missing"] { color: @text_warning; }
+
+/* 設定頁面提示文字 */
+QLabel#SettingsHint {
+    color: @text_muted; 
+    font-size: 13px;
+}
+QLabel#SettingsWarning {
+    color: @text_warning; 
+    font-weight: bold; 
+    margin-top: 10px;
+}
