@@ -462,3 +462,45 @@ QLabel#SettingsWarning {
     font-weight: bold; 
     margin-top: 10px;
 }
+
+/* ==========================================
+   第六波除垢：設定頁面殘留細節
+========================================== */
+
+/* 快捷鍵頁面的子選項與分隔線 */
+QCheckBox#SubCheckBox { 
+    margin-left: 25px; 
+    color: @text_muted; 
+}
+QCheckBox#SubCheckBox::indicator { 
+    margin-left: 0px; 
+}
+QFrame#DashedLine { 
+    border-top: 1px dashed @border_light; 
+    margin-top: 5px; 
+    margin-bottom: 5px; 
+}
+QFrame#SolidLine { 
+    border-top: 1px solid @border_main; 
+}
+
+/* 資料夾清單的數量與標籤 */
+QLabel#FolderCountLabel { 
+    color: @text_muted; 
+    background: transparent; 
+}
+QLabel#FolderTagLabel { 
+    font-size: 13px; 
+    background: transparent; 
+}
+QLabel#FolderTagLabel[active="true"] { 
+    color: @primary; 
+    font-weight: bold; 
+}
+
+/* AI 下載狀態提示字 */
+QLabel#DlStatusLabel { 
+    color: @primary; 
+    font-size: 13px; 
+    font-weight: bold; 
+}

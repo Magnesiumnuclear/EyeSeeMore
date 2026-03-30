@@ -4379,7 +4379,7 @@ class SettingsDialog(QDialog):
             lbl_count = QLabel(f"({count})")
             lbl_count.setFixedWidth(60)
             lbl_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            lbl_count.setStyleSheet("color: #aaaaaa; background: transparent;")
+            lbl_count.setObjectName("FolderCountLabel")
             row_layout.addWidget(lbl_count)
             
             # 與標籤區保持一段距離
@@ -4392,10 +4392,13 @@ class SettingsDialog(QDialog):
                 lbl_tag.setFixedWidth(40)  # 鎖死標籤寬度
                 lbl_tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 
-                if is_active:
-                    # 給啟用的標籤漂亮的顏色
-                    lbl_tag.setStyleSheet("color: #60cdff; font-weight: bold; font-size: 13px; background: transparent;")
+                lbl_tag.setObjectName("FolderTagLabel") # 🌟 發放身分證
                 
+                if is_active:
+                    lbl_tag.setProperty("active", "true")
+                else:
+                    lbl_tag.setProperty("active", "false")
+                    
                 row_layout.addWidget(lbl_tag)
                 
             # 將我們做好的列元件塞進清單中
@@ -4558,7 +4561,7 @@ class SettingsDialog(QDialog):
         dl_layout.setSpacing(5)
         
         self.dl_status_label = QLabel("")
-        self.dl_status_label.setStyleSheet("color: #60cdff; font-size: 13px; font-weight: bold;")
+        self.dl_status_label.setObjectName("DlStatusLabel")
         self.dl_status_label.hide()
         
         self.dl_progress = QProgressBar()
@@ -4633,7 +4636,7 @@ class SettingsDialog(QDialog):
             row.addWidget(btn_action)
             clip_list_layout.addLayout(row)
             
-            line = QFrame(); line.setFrameShape(QFrame.Shape.HLine); line.setStyleSheet("border-top: 1px solid #444;")
+            line = QFrame(); line.setFrameShape(QFrame.Shape.HLine); line.setObjectName("SolidLine")
             clip_list_layout.addWidget(line)
             
         clip_layout.addWidget(group_clip)
@@ -4752,7 +4755,7 @@ class SettingsDialog(QDialog):
             
             line = QFrame()
             line.setFrameShape(QFrame.Shape.HLine)
-            line.setStyleSheet("border-top: 1px solid #444;")
+            line.setObjectName("SolidLine")
             self.lang_layout.addWidget(line)
 
     def start_download_ocr(self, lang_code):
@@ -4920,7 +4923,7 @@ class SettingsDialog(QDialog):
         layout_nav = QVBoxLayout(group_nav)
         layout_nav.setSpacing(10)
         lbl_nav = QLabel(self.trans.t("hotkeys", "lbl_nav", "空白鍵預覽時，按下 W/A/S/D 的反應："))
-        lbl_nav.setStyleSheet("color: #ccc;")
+        lbl_nav.setObjectName("SettingsHint")
         layout_nav.addWidget(lbl_nav)
     
         self.combo_wasd = QComboBox()
@@ -4942,7 +4945,7 @@ class SettingsDialog(QDialog):
         layout_ocr = QVBoxLayout(group_ocr)
         layout_ocr.setSpacing(10)
         lbl_ocr = QLabel(self.trans.t("hotkeys", "lbl_ocr", "預覽圖片時，Shift 鍵的觸發邏輯："))
-        lbl_ocr.setStyleSheet("color: #ccc;")
+        lbl_ocr.setObjectName("SettingsHint")
         layout_ocr.addWidget(lbl_ocr)
     
         self.combo_ocr = QComboBox()
@@ -4968,7 +4971,7 @@ class SettingsDialog(QDialog):
         self.chk_precise_ocr.setChecked(is_precise)
         
         self.chk_margin_comp = QCheckBox(self.trans.t("hotkeys", "chk_margin", "↳ 啟用邊緣縮減補償 (Margin Compensation)"))
-        self.chk_margin_comp.setStyleSheet("QCheckBox { margin-left: 25px; color: #aaa; } QCheckBox::indicator { margin-left: 0px; }")
+        self.chk_margin_comp.setObjectName("SubCheckBox")
         is_margin = ui_state.get("margin_compensation", True) 
         self.chk_margin_comp.setChecked(is_margin)
         self.chk_margin_comp.setEnabled(is_precise)
@@ -4986,7 +4989,7 @@ class SettingsDialog(QDialog):
         
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("border-top: 1px dashed #444; margin-top: 5px; margin-bottom: 5px;")
+        line.setObjectName("DashedLine")
         layout_visual.addWidget(line)
         
         layout_visual.addWidget(self.chk_dedup)
