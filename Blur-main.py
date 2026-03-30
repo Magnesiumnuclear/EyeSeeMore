@@ -1629,7 +1629,7 @@ class PreviewOverlay(QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.hide()
-        self.setStyleSheet("background-color: rgba(0, 0, 0, 220);")
+        self.setObjectName("PreviewOverlayMask")
         
         self.layout = QVBoxLayout(self)
         self.layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1647,12 +1647,12 @@ class PreviewOverlay(QWidget):
         self.layout.addWidget(self.image_label)
         
         self.filename_label = QLabel()
-        self.filename_label.setStyleSheet("color: white; font-size: 18px; font-weight: bold; background: transparent; margin-top: 10px;")
+        self.filename_label.setObjectName("PreviewOverlayFilename")
         self.filename_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.layout.addWidget(self.filename_label)
         
         self.ocr_hint = QLabel("Hold SHIFT to view OCR text locations")
-        self.ocr_hint.setStyleSheet("color: #888; font-size: 12px; margin-top: 5px;")
+        self.ocr_hint.setObjectName("PreviewOverlayHint")
         self.layout.addWidget(self.ocr_hint, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.floating_tag = FloatingWidget(self)

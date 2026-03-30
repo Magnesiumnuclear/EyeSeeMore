@@ -340,3 +340,26 @@ QLabel#StatsRowCount {
     padding: 2px 8px;
     border-radius: 10px;
 }
+
+/* ==========================================
+   第二波除垢：全螢幕預覽介面 (PreviewOverlay)
+========================================== */
+QWidget#PreviewOverlayMask {
+    /* 這裡使用 bg_floating，它在深色模式是黑色，淺色模式是白色，且帶有透明度 */
+    background-color: @bg_floating; 
+}
+
+QLabel#PreviewOverlayFilename {
+    color: @text_main;
+    font-size: 18px; 
+    font-weight: bold; 
+    background: transparent; 
+    margin-top: 10px;
+}
+
+QLabel#PreviewOverlayHint {
+    color: @text_muted;
+    font-size: 12px; 
+    margin-top: 5px;
+    background: transparent; 
+}
