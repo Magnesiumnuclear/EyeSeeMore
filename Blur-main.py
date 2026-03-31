@@ -3028,6 +3028,8 @@ class MainWindow(QMainWindow):
         self.search_history = [] 
         self.current_selected_path = None
 
+        self.current_folder_path = self.config.get("ui_state", {}).get("default_startup_folder", "ALL")
+
         self.is_ocr_locked = False
 
         self.last_search_results = [] # 儲存最近一次檢索回來的原始資料
@@ -3315,6 +3317,8 @@ class MainWindow(QMainWindow):
     # [修正] 實作資料夾篩選邏輯
     def on_folder_filter(self, path):
         if not self.engine: return
+
+        self.current_folder_path = path
         
         print(f"Filtering by: {path}")
 
@@ -3686,6 +3690,8 @@ class MainWindow(QMainWindow):
         # 這裡會去抓取資料夾統計，並建立二級選單的按鈕
         if self.engine:
             self.refresh_sidebar()
+
+            self.on_folder_filter(self.current_folder_path)
     
     def update_status(self, text):
         self.status.setText(text)
@@ -3733,12 +3739,10 @@ class MainWindow(QMainWindow):
     def on_db_reloaded(self):
         """背景載入完畢，安全跳回主執行緒更新畫面"""
         if not self.engine: return
-        # 🌟 主執行緒自己去取得最新資料
-        all_imgs = self.engine.get_all_images_sorted()
         
-        self.set_base_results(all_imgs)
+        # 🌟 [修正] 不要強制切回 ALL，而是維持目前所在的資料夾並重新整理！
+        self.on_folder_filter(self.current_folder_path)
         self.refresh_sidebar()
-        self.status.setText(f"System Ready ({len(all_imgs)} images)")
 
     # 右鍵選單邏輯
     def show_context_menu(self, pos):
@@ -4857,6 +4861,38 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.combo_theme)
         layout.addSpacing(10)
 
+        layout.addWidget(QLabel(self.trans.t("appearance", "lbl_startup", "啟動時預設顯示的資料夾：")))
+        self.combo_startup = QComboBox()
+        self.combo_startup.setFixedHeight(38)
+
+        # 1. 綁定「全部圖片」選項 (ID 固定為 "ALL")
+        self.combo_startup.addItem(self.trans.t("appearance", "startup_all", "全部圖片 (All Images)"), "ALL")
+
+        # 2. 動態載入使用者目前設定的實體資料夾
+        source_folders = self.main_window.config.get("source_folders", [])
+        for f in source_folders:
+            path = f["path"]
+            
+            # 🌟 修復：嚴格檢查圖示，如果是空字串就給預設的資料夾符號
+            icon = f.get("icon", "")
+            if not icon:
+                icon = "📁"
+                
+            folder_name = os.path.basename(path)
+            
+            # 🌟 拿掉醜醜的括號，直接顯示圖示與名稱，多加一個空格讓排版更透氣
+            self.combo_startup.addItem(f"{icon}  {folder_name}", path)
+
+        # 3. 讀取並套用目前的設定值
+        startup_path = ui_state.get("default_startup_folder", "ALL")
+        index_to_set = self.combo_startup.findData(startup_path)
+        if index_to_set >= 0:
+            self.combo_startup.setCurrentIndex(index_to_set)
+
+        self.combo_startup.currentIndexChanged.connect(self.on_startup_folder_changed)
+        layout.addWidget(self.combo_startup)
+        layout.addSpacing(10)
+
         # 🌟 套用翻譯
         layout.addWidget(QLabel(self.trans.t("appearance", "lbl_size", "預設圖片顯示大小：")))
         self.combo_size = QComboBox()
@@ -4909,7 +4945,13 @@ class SettingsDialog(QDialog):
         ui_state["ocr_tag_mode"] = mode
         self.main_window.config.set("ui_state", ui_state)
 
-
+    # [新增] 儲存啟動資料夾設定
+    def on_startup_folder_changed(self, index):
+        # 取得我們剛剛偷偷藏在選項背後的 Data (即 "ALL" 或 "實際路徑")
+        selected_path = self.combo_startup.itemData(index)
+        ui_state = self.main_window.config.get("ui_state", {})
+        ui_state["default_startup_folder"] = selected_path
+        self.main_window.config.set("ui_state", ui_state)
 
     def init_page_hotkeys(self):
         # 🌟 套用翻譯
