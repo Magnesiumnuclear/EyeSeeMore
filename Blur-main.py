@@ -296,7 +296,8 @@ class SearchResultsModel(QAbstractListModel):
     def __init__(self, item_size):
         super().__init__()
         # 🌟 瘦身 1：只保留唯一的 all_items 陣列
-        self.all_items = []      
+        self.all_items = []  
+        self.is_scrolling = False
         
         self.item_size = item_size 
         self._thumbnail_cache = OrderedDict()
@@ -374,10 +375,16 @@ class SearchResultsModel(QAbstractListModel):
         elif role == Qt.ItemDataRole.UserRole:
             return item 
         elif role == Qt.ItemDataRole.DecorationRole:
+            # 1. 如果圖片已經在記憶體快取裡，就算在高速滾動也直接顯示（不會消耗效能）
             if item.path in self._thumbnail_cache:
                 self._thumbnail_cache.move_to_end(item.path)
                 return self._thumbnail_cache[item.path]
             
+            # 🌟 2. 防抖核心：如果正在高速滾動，直接回傳空圖，絕對不建立讀圖任務！
+            if getattr(self, 'is_scrolling', False):
+                return None
+                
+            # 3. 如果沒在滾動，且還沒讀取過，才派發背景任務去讀取硬碟
             if item.path not in self._loading_set:
                 self.request_thumbnail(item.path)
             return None
@@ -3161,6 +3168,17 @@ class MainWindow(QMainWindow):
         self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list_view.setObjectName("GalleryList")
 
+        # ==========================================
+        # 🌟 [新增] 滾動防抖 (Scroll Debounce) 系統
+        # ==========================================
+        self.scroll_timer = QTimer(self)
+        self.scroll_timer.setSingleShot(True)
+        self.scroll_timer.setInterval(150) # 150毫秒：人類放開滑鼠的完美體感延遲
+        self.scroll_timer.timeout.connect(self.on_scroll_stopped)
+        
+        # 重新綁定滾動條的監聽事件
+        self.list_view.verticalScrollBar().valueChanged.connect(self.on_gallery_scrolling)
+
 
         self.current_card_size = QSize(CARD_SIZE[0], CARD_SIZE[1])
         self.current_thumb_size = QSize(CARD_SIZE[0], THUMBNAIL_SIZE[1])
@@ -3487,6 +3505,27 @@ class MainWindow(QMainWindow):
                     self.preview_overlay.show_image(item, current_query, is_precise)
                     self.is_ocr_locked = False
                     self.preview_overlay.set_ocr_visible(False)
+
+    def on_gallery_scrolling(self, value):
+        """當滾動條被拖曳或滾輪滾動時，瞬間觸發"""
+        if not hasattr(self, 'model'): return
+        
+        # 踩下煞車：告訴 Model 不要再去讀硬碟了
+        self.model.is_scrolling = True
+        
+        # 只要還在滑，計時器就會不斷被「重置」，永遠不會觸發 timeout
+        self.scroll_timer.start() 
+
+    def on_scroll_stopped(self):
+        """當滾動條安靜下來超過 150 毫秒時，觸發此函式"""
+        if not hasattr(self, 'model'): return
+        
+        # 鬆開煞車
+        self.model.is_scrolling = False
+        
+        # 🌟 魔法指令：強制 QListView 重新繪製目前「肉眼可見」的畫面
+        # 這會重新觸發 data() 函式，此時 is_scrolling 已經是 False，圖片就會瞬間開始讀取！
+        self.list_view.viewport().update()
 
 
     def apply_gallery_sort(self):
