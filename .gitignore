@@ -59,3 +59,7 @@ latent_space.html
 Thumbs.db
 *.zip
 *.7z
+
+# --- [7] 快取資料夾 ---
+.cache/
+thumbnails/

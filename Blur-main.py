@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QStyledItemDelegate, QStyle, QFileIconProvider, QAbstractItemView, QListView,
                              QRadioButton, QGroupBox, QStackedWidget, QTabWidget, QGridLayout, QSplitter
                              , QSlider)
-from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QPoint, QRect, QRectF, QSize, QEvent, 
+from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QPoint, QPointF, QRect, QRectF, QSize, QEvent, 
                           QFileInfo, QTimer, QAbstractListModel, QRunnable, QThreadPool, QObject, QModelIndex)
 from PyQt6.QtGui import (QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, 
                          QShortcut, QFontMetrics, QPainter, QBrush, QPen, QIcon, QPainterPath, QPolygon, QImageReader
@@ -251,44 +251,57 @@ class ThumbnailLoader(QRunnable):
         self.is_cancelled = False
 
     def run(self):
-        # 🌟 修復 1：被取消時，必須發射空訊號結案，釋放 Model 的鎖死狀態
+        # 🌟 修復 1：被取消時，必須發射空訊號結案
         if self.is_cancelled:
             self.signals.result.emit(self.file_path, QPixmap())
             return
 
-        try:
-            reader = QImageReader(self.file_path)
-            orig_size = reader.size()
-            if not orig_size.isValid():
-                self.signals.result.emit(self.file_path, QPixmap())
-                return
+        import hashlib
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        cache_dir = os.path.join(base_dir, ".cache", "thumbnails")
+        
+        # 計算此圖片的 L2 快取路徑
+        path_hash = hashlib.md5(self.file_path.encode('utf-8')).hexdigest()
+        cache_path = os.path.join(cache_dir, f"{path_hash}.webp")
 
-            # 🌟 修復 2：由於上面抓取尺寸可能耗時，縮放前再檢查一次是否被取消
-            if self.is_cancelled:
-                self.signals.result.emit(self.file_path, QPixmap())
-                return
+        image = QImage()
+        
+        # ==========================================
+        # 🌟 L2 快取讀取層 (毫秒級)
+        # ==========================================
+        if os.path.exists(cache_path):
+            image.load(cache_path)
 
-            scaled_size = orig_size.scaled(
-                self.target_size, 
-                Qt.AspectRatioMode.KeepAspectRatio
-            )
-            
-            reader.setScaledSize(scaled_size)
-            reader.setAutoTransform(True)
-            image = reader.read()
-            
-            # 🌟 修復 3：轉檔前最後一次檢查
-            if self.is_cancelled:
-                self.signals.result.emit(self.file_path, QPixmap())
-                return
+        # ==========================================
+        # 🌟 L3 原始硬碟讀取層 (備用方案，秒級)
+        # 如果 L2 被意外刪除，或者尚未建立，退回傳統讀大圖並自動補齊 L2
+        # ==========================================
+        if image.isNull():
+            try:
+                reader = QImageReader(self.file_path)
+                orig_size = reader.size()
+                if orig_size.isValid():
+                    scaled_size = orig_size.scaled(self.target_size, Qt.AspectRatioMode.KeepAspectRatio)
+                    reader.setScaledSize(scaled_size)
+                    reader.setAutoTransform(True)
+                    image = reader.read()
+                    
+                    # 動態補建 L2 (Lazy Loading)
+                    if not image.isNull() and not self.is_cancelled:
+                        os.makedirs(cache_dir, exist_ok=True)
+                        image.save(cache_path, "WEBP", 80)
+            except Exception:
+                pass
 
-            if not image.isNull():
-                image = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
-                self.signals.result.emit(self.file_path, QPixmap.fromImage(image))
-            else:
-                self.signals.result.emit(self.file_path, QPixmap())
-                
-        except Exception:
+        # 🌟 修復 3：轉換前最後一次檢查
+        if self.is_cancelled:
+            self.signals.result.emit(self.file_path, QPixmap())
+            return
+
+        if not image.isNull():
+            image = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+            self.signals.result.emit(self.file_path, QPixmap.fromImage(image))
+        else:
             self.signals.result.emit(self.file_path, QPixmap())
 
 class SearchResultsModel(QAbstractListModel):
@@ -330,10 +343,12 @@ class SearchResultsModel(QAbstractListModel):
         self._active_workers.clear()
         
         self.all_items = []
+        self.path_to_row = {}
+
         self._thumbnail_cache.clear()
         self._loading_set.clear()
         
-        for res in results_dict_list:
+        for idx, res in enumerate(results_dict_list):
             item = ImageItem(
                 path=res['path'],
                 filename=res['filename'],
@@ -347,6 +362,7 @@ class SearchResultsModel(QAbstractListModel):
             if res.get('is_ocr_match', False):
                 item.is_ocr_match = True
             self.all_items.append(item)
+            self.path_to_row[item.path] = idx
             
         self.endResetModel()
         # 🌟 瘦身 2：拔除 load_more_items 呼叫
@@ -411,6 +427,8 @@ class SearchResultsModel(QAbstractListModel):
             if len(self._thumbnail_cache) > self.CACHE_SIZE:
                 self._thumbnail_cache.popitem(last=False)
 
+            row = getattr(self, 'path_to_row', {}).get(file_path)
+
             for row, item in enumerate(self.all_items): # 🌟 瘦身 6：這裡也要改成比對 all_items
                 if item.path == file_path:
                     self._pending_updates.add(row)
@@ -449,10 +467,22 @@ class ImageDelegate(QStyledItemDelegate):
         # 使用一個不存在的 .jpg 檔名來獲取系統對 jpg 的預設圖示
         self.placeholder_icon = provider.icon(QFileInfo("template.jpg"))
 
+        self.placeholder_pixmap = None
+        self._update_placeholder_pixmap()
+
     # [新增] 更新尺寸的方法
     def set_view_params(self, card_size, thumb_height):
         self.card_size = card_size
         self.thumb_height = thumb_height
+        # 🌟 尺寸改變時，重新算一次佔空圖就好
+        self._update_placeholder_pixmap()
+
+    def _update_placeholder_pixmap(self):
+        """預先將高耗能的 QIcon 轉成純點陣圖 (Pixmap)"""
+        img_w = self.card_size.width() - 2 * self.padding
+        min_dim = min(img_w, self.thumb_height)
+        icon_size = max(48, int(min_dim * 0.80))
+        self.placeholder_pixmap = self.placeholder_icon.pixmap(QSize(icon_size, icon_size))
 
     def sizeHint(self, option, index):
         return self.card_size
@@ -561,29 +591,24 @@ class ImageDelegate(QStyledItemDelegate):
             )
         else:
             # ==========================================
-            # [修改] 動態計算預設圖示大小
+            # 🌟 [終極修復] 放棄 QRectF 自動對齊，改用精確的浮點數座標 (QPointF)
             # ==========================================
-            
-            # 1. 計算可用空間的最小邊 (寬或高)
-            min_dim = min(img_rect.width(), img_rect.height())
-            
-            # 2. 設定圖示大小為可用空間的 45% (看起來比較像 Windows 檔案總管)
-            # 你可以調整 0.80 這個數值 (0.3 ~ 0.6 效果都不錯)
-            icon_size = int(min_dim * 0.80)
-            
-            # 3. 設定最小限制，避免圖示小到看不見
-            icon_size = max(48, icon_size)
-            
-            # 4. 居中計算
-            icon_rect = QRect(
-                img_rect.center().x() - icon_size // 2,
-                img_rect.center().y() - icon_size // 2,
-                icon_size, icon_size
-            )
-            
-            painter.setOpacity(0.2) # 稍微透明一點，讓它看起來像背景浮水印
-            self.placeholder_icon.paint(painter, icon_rect)
-            painter.setOpacity(1.0)
+            if self.placeholder_pixmap:
+                # 1. 取得圖示大小
+                p_width = self.placeholder_pixmap.width()
+                p_height = self.placeholder_pixmap.height()
+                
+                # 2. 核心魔法：使用浮點數除法 (/ 2.0) 計算出絕對精準的左上角 x, y 座標
+                x_off = img_rect.left() + (img_rect.width() - p_width) / 2.0
+                y_off = img_rect.top() + (img_rect.height() - p_height) / 2.0
+                
+                # 3. 繪製
+                painter.setOpacity(0.2)
+                
+                # 直接餵給 QPointF，Qt 會在亞像素層級進行平滑渲染，且完全不會觸發 DPI 縮放 Bug
+                painter.drawPixmap(QPointF(x_off, y_off), self.placeholder_pixmap)
+                
+                painter.setOpacity(1.0)
 
         painter.setClipping(False)
 
@@ -591,8 +616,8 @@ class ImageDelegate(QStyledItemDelegate):
         painter.setFont(self.font_name)
         painter.setPen(text_color)
         elided_name = item.get_elided_name(self.fm_name, text_rect.width())
-        fm = QFontMetrics(self.font_name)
-        elided_name = fm.elidedText(item.filename, Qt.TextElideMode.ElideRight, text_rect.width())
+        
+        
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, elided_name)
 
         # 4. 繪製分數
@@ -3163,6 +3188,7 @@ class MainWindow(QMainWindow):
         self.list_view.setResizeMode(QListView.ResizeMode.Adjust)
         self.list_view.setUniformItemSizes(True) 
         self.list_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.list_view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.list_view.setSpacing(MIN_SPACING)
         self.list_view.setMouseTracking(True)
         self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -3173,7 +3199,7 @@ class MainWindow(QMainWindow):
         # ==========================================
         self.scroll_timer = QTimer(self)
         self.scroll_timer.setSingleShot(True)
-        self.scroll_timer.setInterval(150) # 150毫秒：人類放開滑鼠的完美體感延遲
+        self.scroll_timer.setInterval(10) # 10毫秒：人類放開滑鼠的完美體感延遲
         self.scroll_timer.timeout.connect(self.on_scroll_stopped)
         
         # 重新綁定滾動條的監聽事件

@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import hashlib
 from PIL import Image, ExifTags, ImageOps
 from PIL import Image
 import numpy as np
@@ -76,6 +77,28 @@ class NumpyPreprocess:
         img_arr = img_arr.transpose((2, 0, 1))
         img_arr = (img_arr - self.mean) / self.std
         return img_arr
+
+# ==========================================
+# [新增] L2 磁碟縮圖快取生成器
+# ==========================================
+def generate_l2_cache(img_rgb, original_path):
+    """將記憶體中的 RGB 圖片縮小並存入 .cache/thumbnails"""
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        cache_dir = os.path.join(base_dir, ".cache", "thumbnails")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # 使用 MD5 雜湊原始路徑作為安全檔名
+        path_hash = hashlib.md5(original_path.encode('utf-8')).hexdigest()
+        cache_path = os.path.join(cache_dir, f"{path_hash}.webp")
+        
+        if not os.path.exists(cache_path):
+            # 複製一份影像進行縮放 (256x256 足夠涵蓋各種卡片比例)
+            thumb = img_rgb.copy()
+            thumb.thumbnail((256, 256), Image.Resampling.BICUBIC)
+            thumb.save(cache_path, format="WEBP", quality=80)
+    except Exception as e:
+        perf_print(f"L2 快取生成失敗: {e}")
 
 # ==========================================
 # [新增] 效能監控「總開關」與動態工具
@@ -376,8 +399,9 @@ class IndexerService:
                         w, h = raw_h, raw_w
 
                     with Image.open(path) as pil_img:
-                        # 🌟 [AI 準確度升級] 使用 exif_transpose 把圖片轉正再送給 AI
                         img_rgb = ImageOps.exif_transpose(pil_img).convert('RGB')
+                        
+                        generate_l2_cache(img_rgb, path)
                         
                     batch_images.append(np.expand_dims(preprocess(img_rgb), axis=0))
                     batch_meta.append((path, os.path.basename(path), os.path.dirname(path), os.path.getmtime(path), w, h, file_size))
@@ -452,6 +476,8 @@ class IndexerService:
                     with Image.open(path) as pil_img:
                         # 🌟 [AI 準確度升級] 轉正送給 CLIP
                         img_rgb = ImageOps.exif_transpose(pil_img).convert('RGB')
+                        # 🌟 [新增] 軌道 B 也搭便車
+                        generate_l2_cache(img_rgb, path)
                     batch_images.append(np.expand_dims(preprocess(img_rgb), axis=0)); valid_paths.append(path)
                 except Exception: continue
 
