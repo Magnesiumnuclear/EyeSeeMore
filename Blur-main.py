@@ -292,24 +292,23 @@ class ThumbnailLoader(QRunnable):
             self.signals.result.emit(self.file_path, QPixmap())
 
 class SearchResultsModel(QAbstractListModel):
-    """核心 Model：管理搜尋結果列表、圖片快取與增量載入 (Incremental Loading)"""
+    """核心 Model：管理搜尋結果列表與圖片快取 (完全原生虛擬化)"""
     def __init__(self, item_size):
         super().__init__()
+        # 🌟 瘦身 1：只保留唯一的 all_items 陣列
         self.all_items = []      
-        self.display_items = []  
-        self.CHUNK_SIZE = 50     
         
         self.item_size = item_size 
         self._thumbnail_cache = OrderedDict()
         
-        # 🌟 修復 4：暴力美學，直接將快取提升至 1000，徹底消滅短距離回滾重載的問題
+        # 快取大小維持 1000 確保回滾流暢
         self.CACHE_SIZE = 1000 
         
         self._loading_set = set() 
-        self._active_workers = {} # 🌟 新增：用來追蹤執行中的 Worker 以便取消
+        self._active_workers = {} 
         
         self.thread_pool = QThreadPool.globalInstance()
-        self.thread_pool.setMaxThreadCount(8) # 建議提高到 8 榨乾 CPU 讀圖效能
+        self.thread_pool.setMaxThreadCount(8)
 
         self._pending_updates = set()
         self.update_timer = QTimer()
@@ -325,17 +324,14 @@ class SearchResultsModel(QAbstractListModel):
     def set_search_results(self, results_dict_list):
         self.beginResetModel()
         
-        # 🌟 修復 5：搜尋新關鍵字時，一槍斃命所有前一次搜尋留下的舊任務
         for worker in self._active_workers.values():
             worker.is_cancelled = True
         self._active_workers.clear()
         
         self.all_items = []
-        self.display_items = [] 
         self._thumbnail_cache.clear()
         self._loading_set.clear()
         
-        # 1. 建立全部的 ImageItem (純 Python 記憶體操作，10萬筆也只要幾毫秒)
         for res in results_dict_list:
             item = ImageItem(
                 path=res['path'],
@@ -352,45 +348,26 @@ class SearchResultsModel(QAbstractListModel):
             self.all_items.append(item)
             
         self.endResetModel()
-        
-        # 🌟 2. 觸發第一批載入
-        self.load_more_items()
+        # 🌟 瘦身 2：拔除 load_more_items 呼叫
 
-    def load_more_items(self):
-        """🌟 增量載入核心邏輯：從 all_items 切割下一批放進 display_items"""
-        current_len = len(self.display_items)
-        total_len = len(self.all_items)
-        
-        if current_len >= total_len:
-            return False # 已經載入到底了
-            
-        end_idx = min(current_len + self.CHUNK_SIZE, total_len)
-        
-        # 通知 Qt 視窗：「我要在清單最下面插入新列囉」，這比 ResetModel 輕量一萬倍
-        self.beginInsertRows(QModelIndex(), current_len, end_idx - 1)
-        self.display_items.extend(self.all_items[current_len:end_idx])
-        self.endInsertRows()
-        
-        return True
+    # 🌟 瘦身 3：將原本的 load_more_items 整組刪除
 
     def sort_items(self, key_func, reverse=False):
-        """排序時，排完整資料，然後清空畫面重新載入第一批"""
+        """排序時直接對 all_items 排序，不再需要洗牌第一批"""
         self.beginResetModel()
         self.all_items.sort(key=key_func, reverse=reverse)
-        self.display_items = [] # 重新洗牌，畫面先清空
         self.endResetModel()
-        self.load_more_items()  # 瞬間載入洗牌後的第一批
 
     def rowCount(self, parent=QModelIndex()):
-        # Qt 視窗只會知道目前載入的數量
-        return len(self.display_items)
+        # 🌟 瘦身 4：解放限制，直接回傳真實總數量
+        return len(self.all_items)
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or not (0 <= index.row() < len(self.display_items)):
+        if not index.isValid() or not (0 <= index.row() < len(self.all_items)):
             return None
 
-        # 從 display_items 拿資料
-        item = self.display_items[index.row()]
+        # 🌟 瘦身 5：資料來源改為 all_items
+        item = self.all_items[index.row()]
 
         if role == Qt.ItemDataRole.DisplayRole:
             return item.filename
@@ -407,31 +384,27 @@ class SearchResultsModel(QAbstractListModel):
 
         return None
 
+    # (以下 request_thumbnail, on_thumbnail_loaded, _flush_updates 保持原樣不變)
     def request_thumbnail(self, file_path):
         self._loading_set.add(file_path)
         loader = ThumbnailLoader(file_path, self.item_size)
         loader.signals.result.connect(self.on_thumbnail_loaded)
-        
-        # 🌟 紀錄到活躍任務字典中
         self._active_workers[file_path] = loader
-        
         self.thread_pool.start(loader)
 
     def on_thumbnail_loaded(self, file_path, pixmap):
-        # 🌟 修復 6：無論收到的是正常圖片還是空圖片(被取消)，都要從追蹤名單中徹底釋放
         if file_path in self._active_workers:
             del self._active_workers[file_path]
             
         if file_path in self._loading_set:
             self._loading_set.remove(file_path)
 
-        # 只有在非空圖片（沒有被取消且讀取成功）時，才加入快取與更新畫面
         if not pixmap.isNull():
             self._thumbnail_cache[file_path] = pixmap
             if len(self._thumbnail_cache) > self.CACHE_SIZE:
                 self._thumbnail_cache.popitem(last=False)
 
-            for row, item in enumerate(self.display_items):
+            for row, item in enumerate(self.all_items): # 🌟 瘦身 6：這裡也要改成比對 all_items
                 if item.path == file_path:
                     self._pending_updates.add(row)
                     if not self.update_timer.isActive():
@@ -439,17 +412,12 @@ class SearchResultsModel(QAbstractListModel):
                     break
 
     def _flush_updates(self):
-        """🌟 [Opt 5] 減壓閥：一次性更新所有剛載好的圖片，杜絕訊號風暴"""
         if not self._pending_updates:
             return
-            
-        # 找出這批更新中，最上面和最下面的列，一次性要求 UI 重繪這個區間
         min_row = min(self._pending_updates)
         max_row = max(self._pending_updates)
-        
         start_idx = self.index(min_row, 0)
         end_idx = self.index(max_row, 0)
-        
         self.dataChanged.emit(start_idx, end_idx, [Qt.ItemDataRole.DecorationRole])
         self._pending_updates.clear()
 
@@ -3193,7 +3161,6 @@ class MainWindow(QMainWindow):
         self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list_view.setObjectName("GalleryList")
 
-        self.list_view.verticalScrollBar().valueChanged.connect(self.on_gallery_scroll)
 
         self.current_card_size = QSize(CARD_SIZE[0], CARD_SIZE[1])
         self.current_thumb_size = QSize(CARD_SIZE[0], THUMBNAIL_SIZE[1])
@@ -3521,14 +3488,6 @@ class MainWindow(QMainWindow):
                     self.is_ocr_locked = False
                     self.preview_overlay.set_ocr_visible(False)
 
-    def on_gallery_scroll(self, value):
-        """當滾動條快到底部時，觸發增量載入"""
-        scrollbar = self.list_view.verticalScrollBar()
-        
-        # 如果滾動條目前位置 >= 總長度的 80%，就繼續載入下一批 50 張
-        if scrollbar.maximum() > 0 and value >= scrollbar.maximum() * 0.8:
-            if hasattr(self, 'model'):
-                self.model.load_more_items()
 
     def apply_gallery_sort(self):
         """對目前的 Gallery 圖片進行洗牌排序"""
