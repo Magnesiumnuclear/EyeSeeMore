@@ -467,22 +467,13 @@ class ImageDelegate(QStyledItemDelegate):
         # 使用一個不存在的 .jpg 檔名來獲取系統對 jpg 的預設圖示
         self.placeholder_icon = provider.icon(QFileInfo("template.jpg"))
 
-        self.placeholder_pixmap = None
-        self._update_placeholder_pixmap()
+        
+        
 
     # [新增] 更新尺寸的方法
     def set_view_params(self, card_size, thumb_height):
         self.card_size = card_size
         self.thumb_height = thumb_height
-        # 🌟 尺寸改變時，重新算一次佔空圖就好
-        self._update_placeholder_pixmap()
-
-    def _update_placeholder_pixmap(self):
-        """預先將高耗能的 QIcon 轉成純點陣圖 (Pixmap)"""
-        img_w = self.card_size.width() - 2 * self.padding
-        min_dim = min(img_w, self.thumb_height)
-        icon_size = max(48, int(min_dim * 0.80))
-        self.placeholder_pixmap = self.placeholder_icon.pixmap(QSize(icon_size, icon_size))
 
     def sizeHint(self, option, index):
         return self.card_size
@@ -591,24 +582,25 @@ class ImageDelegate(QStyledItemDelegate):
             )
         else:
             # ==========================================
-            # 🌟 [終極修復] 放棄 QRectF 自動對齊，改用精確的浮點數座標 (QPointF)
+            # 🌟 [回歸原生] 使用 QIcon.paint() 讓 Qt 底層接管排版與 DPI 縮放
             # ==========================================
-            if self.placeholder_pixmap:
-                # 1. 取得圖示大小
-                p_width = self.placeholder_pixmap.width()
-                p_height = self.placeholder_pixmap.height()
-                
-                # 2. 核心魔法：使用浮點數除法 (/ 2.0) 計算出絕對精準的左上角 x, y 座標
-                x_off = img_rect.left() + (img_rect.width() - p_width) / 2.0
-                y_off = img_rect.top() + (img_rect.height() - p_height) / 2.0
-                
-                # 3. 繪製
-                painter.setOpacity(0.2)
-                
-                # 直接餵給 QPointF，Qt 會在亞像素層級進行平滑渲染，且完全不會觸發 DPI 縮放 Bug
-                painter.drawPixmap(QPointF(x_off, y_off), self.placeholder_pixmap)
-                
-                painter.setOpacity(1.0)
+            # 1. 取得最短邊，決定圖示比例 (這裡設為 60% 視覺上最剛好)
+            min_dim = min(img_rect.width(), img_rect.height())
+            icon_size = max(48, int(min_dim * 0.60))
+            
+            # 2. 打造一個精確的正方形模具 (QRect)
+            icon_rect = QRect(0, 0, icon_size, icon_size)
+            
+            # 3. 將模具的中心點，完美對準圖片區域的中心點
+            icon_rect.moveCenter(img_rect.center())
+            
+            # 4. 設定透明度並繪製
+            painter.setOpacity(0.2)
+            
+            # 🌟 核心魔法：把模具交給 QIcon，它會自動偵測螢幕 DPI 並完美填滿且置中！
+            self.placeholder_icon.paint(painter, icon_rect)
+            
+            painter.setOpacity(1.0)
 
         painter.setClipping(False)
 
@@ -3199,7 +3191,7 @@ class MainWindow(QMainWindow):
         # ==========================================
         self.scroll_timer = QTimer(self)
         self.scroll_timer.setSingleShot(True)
-        self.scroll_timer.setInterval(10) # 10毫秒：人類放開滑鼠的完美體感延遲
+        self.scroll_timer.setInterval(150) # 150毫秒：人類放開滑鼠的完美體感延遲
         self.scroll_timer.timeout.connect(self.on_scroll_stopped)
         
         # 重新綁定滾動條的監聽事件
