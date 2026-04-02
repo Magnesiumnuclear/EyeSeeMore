@@ -241,6 +241,42 @@ class ImageItem:
 class WorkerSignals(QObject):
     result = pyqtSignal(str, QPixmap, bool) #加入一個布林值 is_final，讓系統知道這是不是最終的高清圖
 
+class PreviewSignals(QObject):
+    result = pyqtSignal(str, QPixmap)
+
+class PreviewLoader(QRunnable):
+    """專門用於大圖預覽的高清背景讀取器 (支援精確子採樣)"""
+    def __init__(self, file_path, target_size):
+        super().__init__()
+        self.file_path = file_path
+        self.target_size = target_size
+        self.signals = PreviewSignals()
+        self.is_cancelled = False
+
+    def run(self):
+        if self.is_cancelled: return
+        try:
+            # 🌟 黑科技：使用 QImageReader 進行子採樣，12MB 的圖只解碼出螢幕需要的大小！
+            reader = QImageReader(self.file_path)
+            reader.setAutoTransform(True)
+            orig_size = reader.size()
+            
+            if orig_size.isValid():
+                # 計算適合螢幕的解析度
+                scaled_size = orig_size.scaled(self.target_size, Qt.AspectRatioMode.KeepAspectRatio)
+                reader.setScaledSize(scaled_size) # 限制解碼器只輸出這個大小
+                img = reader.read()
+                
+                if self.is_cancelled or img.isNull(): return
+                
+                # 轉換為顯示卡最愛的 ARGB32 格式，減輕主執行緒負擔
+                pixmap = QPixmap.fromImage(img.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied))
+                
+                # 發射高清圖完成訊號
+                self.signals.result.emit(self.file_path, pixmap)
+        except Exception as e:
+            print(f"Preview Loader Error: {e}")
+
 class ThumbnailLoader(QRunnable):
     """背景圖片讀取器 (智慧縮放 + GPU 材質加速版)"""
     def __init__(self, file_path, target_size):
@@ -1712,6 +1748,9 @@ class PreviewOverlay(QWidget):
         self.layout.addWidget(self.ocr_hint, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.floating_tag = FloatingWidget(self)
+
+        self.current_preview_path = ""
+        self.current_preview_worker = None
     
     def on_hover_info_changed(self, results, poly, cursor_pos):
         if not results:
@@ -1733,43 +1772,65 @@ class PreviewOverlay(QWidget):
         if not visible:
             self.floating_tag.hide()
 
-# ==========================================
-# 請找到 PreviewOverlay 類別裡面的 show_image 函式，並進行替換
-# ==========================================
-    # [修改] 加上 current_query 參數
-    def show_image(self, result_data, current_query="", is_precise_mode=False):
-        # 兼容 ImageItem 物件
+    # 🌟 接收來自 MainWindow 的 l1_pixmap
+    def show_image(self, result_data, current_query="", is_precise_mode=False, l1_pixmap=None):
         if isinstance(result_data, ImageItem):
             path = result_data.path
             ocr_boxes = result_data.ocr_data
-        else: # 字典
+        else:
             path = result_data['path']
             ocr_boxes = result_data.get('ocr_data', [])
 
         if not os.path.exists(path): return
-        
-        from PyQt6.QtGui import QImageReader
-        reader = QImageReader(path)
-        reader.setAutoTransform(True) # 讓 Qt 自動讀取 EXIF 並把圖片轉正
-        img = reader.read()
-        
-        if img.isNull(): return
-        
-        import copy
-        processed_boxes = copy.deepcopy(ocr_boxes)
-        
-        # 🌟 以前這裡一大堆 EXIF 矩陣計算的程式碼，現在全被砍掉了！
-        
+
+        self.current_preview_path = path
+
+        # 🌟 防護網：如果有上一張圖的高清任務還在跑，立刻無情撤銷！
+        if self.current_preview_worker:
+            self.current_preview_worker.is_cancelled = True
+            self.current_preview_worker = None
+
         screen_size = self.parent().size()
         max_w = int(screen_size.width() * 0.85)
         max_h = int(screen_size.height() * 0.85)
+        target_size = QSize(max_w, max_h)
+
+        # ==========================================
+        # 階段一：0 毫秒光速顯示 (拉伸 L1 小快取)
+        # ==========================================
+        if l1_pixmap and not l1_pixmap.isNull():
+            # 將 220x180 的小圖平滑放大到全螢幕，畫面會瞬間出現 (雖然是模糊的)
+            scaled_l1 = l1_pixmap.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.image_label.setPixmap(scaled_l1)
+        else:
+            self.image_label.clear()
+
+        # ==========================================
+        # 階段二：發射背景高清解碼任務
+        # ==========================================
+        self.current_preview_worker = PreviewLoader(path, target_size)
+        self.current_preview_worker.signals.result.connect(self.on_highres_ready)
+        QThreadPool.globalInstance().start(self.current_preview_worker)
+
+        # --- 處理 OCR 標籤與其他 UI ---
+        import copy
+        processed_boxes = copy.deepcopy(ocr_boxes)
         
-        pixmap = QPixmap.fromImage(img)
-        pixmap = pixmap.scaled(max_w, max_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        
-        self.image_label.setPixmap(pixmap)
-        
-        orig_w, orig_h = img.width(), img.height()
+        # ==========================================
+        # 🌟 [關鍵修復] 修正 OCR 紅框偏移 Bug
+        # 不論是否顯示模糊小圖，OCR 坐標必須永遠對齊原始圖片的高清解析度！
+        # ==========================================
+        if isinstance(result_data, ImageItem):
+            # 🌟 [修正] 屬性名稱是 width 和 height
+            orig_w, orig_h = result_data.width, result_data.height
+        else:
+            orig_w = result_data.get('width', target_size.width())
+            orig_h = result_data.get('height', target_size.height())
+            
+        # 🌟 終極防呆：萬一資料庫讀出來的長寬是 0 (例如舊資料庫)，借用螢幕尺寸避免報錯
+        if orig_w == 0 or orig_h == 0:
+            orig_w, orig_h = target_size.width(), target_size.height()
+
         self.image_label.set_ocr_data(processed_boxes, orig_w, orig_h, current_query, is_precise_mode)
         
         self.filename_label.setText(os.path.basename(path))
@@ -1777,6 +1838,17 @@ class PreviewOverlay(QWidget):
         self.show()
         self.raise_()
         self.setFocus()
+
+    # ==========================================
+    # 階段三：接收高清圖並「直接硬切」
+    # ==========================================
+    def on_highres_ready(self, path, pixmap):
+        # 嚴格防呆：確保這張圖是使用者「現在」正在看的這張
+        if path == self.current_preview_path and not pixmap.isNull():
+            # 瞬間硬切覆蓋！完成「對焦」的視覺魔法
+            self.image_label.setPixmap(pixmap)
+            
+            self.image_label.update()
 
     def set_ocr_visible(self, visible):
         self.image_label.set_draw_boxes(visible)
@@ -3515,10 +3587,13 @@ class MainWindow(QMainWindow):
                 if item:
                     self.is_ocr_locked = False
                     current_query = self.input.text().strip()
-                    # [新增] 從設定檔讀取是否開啟精確模式
                     is_precise = self.config.get("ui_state", {}).get("precise_ocr_highlight", False)
-                    # [修改] 傳遞參數
-                    self.preview_overlay.show_image(item, current_query, is_precise)
+                    
+                    # 🌟 從 Model 取出 L1 快取小圖
+                    l1_pixmap = self.model._thumbnail_cache.get(item.path)
+                    
+                    # 🌟 傳遞給顯示層
+                    self.preview_overlay.show_image(item, current_query, is_precise, l1_pixmap)
                     self.preview_overlay.set_ocr_visible(False)
 
     def toggle_inspector(self):
@@ -3540,36 +3615,24 @@ class MainWindow(QMainWindow):
             if item:
                 self.inspector_panel.update_info(item)
 
-        # 2. 預覽畫面同步邏輯 (沉浸模式)
+        # 2. 預覽畫面同步邏輯 (沉浸模式 WASD 切換)
         nav_mode = self.config.get("ui_state", {}).get("preview_wasd_mode", "nav")
         if self.preview_overlay.isVisible() and nav_mode == "sync":
             if current.isValid():
                 item = current.data(Qt.ItemDataRole.UserRole)
                 if item:
-                    # 🌟 [關鍵修復 1] 把搜尋框的字和精確模式狀態抓出來
+                    # 抓出目前的搜尋字與精確模式狀態
                     current_query = self.input.text().strip()
                     is_precise = self.config.get("ui_state", {}).get("precise_ocr_highlight", False)
                     
-                    # 🌟 [關鍵修復 2] 完整傳遞給顯示層，讓它知道要高亮什麼字！
-                    self.preview_overlay.show_image(item, current_query, is_precise)
+                    # 🌟 核心修改 1：從 Model 取出 L1 快取小圖
+                    l1_pixmap = self.model._thumbnail_cache.get(item.path)
                     
-                    # 🌟 [加碼優化] 保持 OCR 鎖定狀態！
-                    # 如果使用者原本就是開著紅框 (Toggle 模式)，切換下一張圖片時就繼續維持開啟，體驗更好
+                    # 🌟 核心修改 2：完整傳遞給顯示層，實現光速預覽！
+                    self.preview_overlay.show_image(item, current_query, is_precise, l1_pixmap)
+                    
+                    # 🌟 [加碼優化] 保持 OCR 鎖定狀態
                     self.preview_overlay.set_ocr_visible(self.is_ocr_locked)
-
-        # ==========================================
-        # 2. 原本的預覽同步邏輯 (維持不變)
-        # ==========================================
-        nav_mode = self.config.get("ui_state", {}).get("preview_wasd_mode", "nav")
-        if self.preview_overlay.isVisible() and nav_mode == "sync":
-            if current.isValid():
-                item = current.data(Qt.ItemDataRole.UserRole)
-                if item:
-                    current_query = self.input.text().strip()
-                    is_precise = self.config.get("ui_state", {}).get("precise_ocr_highlight", False)
-                    self.preview_overlay.show_image(item, current_query, is_precise)
-                    self.is_ocr_locked = False
-                    self.preview_overlay.set_ocr_visible(False)
 
     
 
