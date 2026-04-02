@@ -333,7 +333,8 @@ class SearchResultsModel(QAbstractListModel):
         super().__init__()
         # 🌟 瘦身 1：只保留唯一的 all_items 陣列
         self.all_items = []  
-        self.is_scrolling = False
+        self._pending_batch_requests = OrderedDict() # 收集同一幀內的所有讀圖請求
+        self._batch_timer_active = False # 確保單幀只啟動一次計時器
         
         self.item_size = item_size 
         self._thumbnail_cache = OrderedDict()
@@ -423,21 +424,45 @@ class SearchResultsModel(QAbstractListModel):
         elif role == Qt.ItemDataRole.UserRole:
             return item 
         elif role == Qt.ItemDataRole.DecorationRole:
-            # 1. 如果圖片已經在記憶體快取裡，就算在高速滾動也直接顯示（不會消耗效能）
             if item.path in self._thumbnail_cache:
                 self._thumbnail_cache.move_to_end(item.path)
                 return self._thumbnail_cache[item.path]
             
-            # 🌟 2. 防抖核心：如果正在高速滾動，直接回傳空圖，絕對不建立讀圖任務！
-            if getattr(self, 'is_scrolling', False):
-                return None
-                
-            # 3. 如果沒在滾動，且還沒讀取過，才派發背景任務去讀取硬碟
+            # 🌟 單幀批量攔截：不直接發送任務，而是先丟進「購物車」
             if item.path not in self._loading_set:
-                self.request_thumbnail(item.path)
+                self._pending_batch_requests[item.path] = None
+                
+                # 如果這一幀還沒叫結帳員，就呼叫他 (0毫秒後也就是這幀結束時觸發)
+                if not self._batch_timer_active:
+                    self._batch_timer_active = True
+                    QTimer.singleShot(0, self._process_batch_requests)
             return None
 
         return None
+    
+    def _process_batch_requests(self):
+        """單幀結束時瞬間觸發：負責結算並過濾這 16 毫秒內的暴衝請求"""
+        self._batch_timer_active = False
+        if not self._pending_batch_requests:
+            return
+            
+        # 取得這一幀內累積的所有圖片請求
+        paths_to_load = list(self._pending_batch_requests.keys())
+        self._pending_batch_requests.clear()
+        
+        # 🌟 核心過濾魔法：判斷是「精確導航」還是「快速拖拽」
+        # XL 模式一頁約 15 張，M 模式約 50 張。我們取一個合理的閥值 (例如 40)
+        if len(paths_to_load) > 40:
+            # 請求數量異常龐大 -> 狂刷中！只取「最後面」的 40 張 (目前顯示在畫面上的)
+            target_paths = paths_to_load[-40:]
+        else:
+            # 請求數量正常 -> WASD 導航！全部保留
+            target_paths = paths_to_load
+            
+        # 正式派發背景任務
+        for path in target_paths:
+            if path not in self._loading_set: # 雙重檢查
+                self.request_thumbnail(path)
 
     # (以下 request_thumbnail, on_thumbnail_loaded, _flush_updates 保持原樣不變)
     def request_thumbnail(self, file_path):
@@ -3217,16 +3242,7 @@ class MainWindow(QMainWindow):
         self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list_view.setObjectName("GalleryList")
 
-        # ==========================================
-        # 🌟 [新增] 滾動防抖 (Scroll Debounce) 系統
-        # ==========================================
-        self.scroll_timer = QTimer(self)
-        self.scroll_timer.setSingleShot(True)
-        self.scroll_timer.setInterval(150) # 150毫秒：人類放開滑鼠的完美體感延遲
-        self.scroll_timer.timeout.connect(self.on_scroll_stopped)
         
-        # 重新綁定滾動條的監聽事件
-        self.list_view.verticalScrollBar().valueChanged.connect(self.on_gallery_scrolling)
 
 
         self.current_card_size = QSize(CARD_SIZE[0], CARD_SIZE[1])
@@ -3555,26 +3571,9 @@ class MainWindow(QMainWindow):
                     self.is_ocr_locked = False
                     self.preview_overlay.set_ocr_visible(False)
 
-    def on_gallery_scrolling(self, value):
-        """當滾動條被拖曳或滾輪滾動時，瞬間觸發"""
-        if not hasattr(self, 'model'): return
-        
-        # 踩下煞車：告訴 Model 不要再去讀硬碟了
-        self.model.is_scrolling = True
-        
-        # 只要還在滑，計時器就會不斷被「重置」，永遠不會觸發 timeout
-        self.scroll_timer.start() 
+    
 
-    def on_scroll_stopped(self):
-        """當滾動條安靜下來超過 150 毫秒時，觸發此函式"""
-        if not hasattr(self, 'model'): return
-        
-        # 鬆開煞車
-        self.model.is_scrolling = False
-        
-        # 🌟 魔法指令：強制 QListView 重新繪製目前「肉眼可見」的畫面
-        # 這會重新觸發 data() 函式，此時 is_scrolling 已經是 False，圖片就會瞬間開始讀取！
-        self.list_view.viewport().update()
+    
 
 
     def apply_gallery_sort(self):
