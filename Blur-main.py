@@ -239,7 +239,7 @@ class ImageItem:
         return self._elided_name_cache[width]
 
 class WorkerSignals(QObject):
-    result = pyqtSignal(str, QPixmap) 
+    result = pyqtSignal(str, QPixmap, bool) #加入一個布林值 is_final，讓系統知道這是不是最終的高清圖
 
 class ThumbnailLoader(QRunnable):
     """背景圖片讀取器 (智慧縮放 + GPU 材質加速版)"""
@@ -251,58 +251,81 @@ class ThumbnailLoader(QRunnable):
         self.is_cancelled = False
 
     def run(self):
-        # 🌟 修復 1：被取消時，必須發射空訊號結案
         if self.is_cancelled:
-            self.signals.result.emit(self.file_path, QPixmap())
+            self.signals.result.emit(self.file_path, QPixmap(), True)
             return
 
         import hashlib
         base_dir = os.path.dirname(os.path.abspath(__file__))
         cache_dir = os.path.join(base_dir, ".cache", "thumbnails")
         
-        # 計算此圖片的 L2 快取路徑
         path_hash = hashlib.md5(self.file_path.encode('utf-8')).hexdigest()
         cache_path = os.path.join(cache_dir, f"{path_hash}.webp")
 
         image = QImage()
+        has_l2 = False
         
-        # ==========================================
-        # 🌟 L2 快取讀取層 (毫秒級)
-        # ==========================================
         if os.path.exists(cache_path):
             image.load(cache_path)
+            if not image.isNull():
+                has_l2 = True
+
+        # 🌟 判定：目標尺寸如果大於 256 (例如 XL 模式)，代表 L2 尺寸不夠，需要升級！
+        needs_upgrade = (self.target_size.width() > 256 or self.target_size.height() > 256)
 
         # ==========================================
-        # 🌟 L3 原始硬碟讀取層 (備用方案，秒級)
-        # 如果 L2 被意外刪除，或者尚未建立，退回傳統讀大圖並自動補齊 L2
+        # 🌟 階段一：光速發射 L2 佔位圖 (毫秒級)
         # ==========================================
-        if image.isNull():
-            try:
-                reader = QImageReader(self.file_path)
-                orig_size = reader.size()
-                if orig_size.isValid():
-                    scaled_size = orig_size.scaled(self.target_size, Qt.AspectRatioMode.KeepAspectRatio)
-                    reader.setScaledSize(scaled_size)
-                    reader.setAutoTransform(True)
-                    image = reader.read()
-                    
-                    # 動態補建 L2 (Lazy Loading)
-                    if not image.isNull() and not self.is_cancelled:
-                        os.makedirs(cache_dir, exist_ok=True)
-                        image.save(cache_path, "WEBP", 80)
-            except Exception:
-                pass
+        if has_l2:
+            if self.is_cancelled:
+                self.signals.result.emit(self.file_path, QPixmap(), True)
+                return
+            
+            # 關鍵魔法：在背景將小圖「平滑放大」到目標尺寸，UI 接手時直接貼上就好！
+            scaled_l2 = image.scaled(self.target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            pixmap = QPixmap.fromImage(scaled_l2.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied))
+            
+            # 第一發射：先讓畫面有圖，並標記是否為最終圖
+            self.signals.result.emit(self.file_path, pixmap, not needs_upgrade)
+            
+            if not needs_upgrade:
+                return # M/L 模式在這裡就結束了，極度省電！
 
-        # 🌟 修復 3：轉換前最後一次檢查
+        # ==========================================
+        # 🌟 階段二：背景替換高清大圖 (重炮火力)
+        # ==========================================
         if self.is_cancelled:
-            self.signals.result.emit(self.file_path, QPixmap())
+            self.signals.result.emit(self.file_path, QPixmap(), True)
             return
 
-        if not image.isNull():
-            image = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
-            self.signals.result.emit(self.file_path, QPixmap.fromImage(image))
-        else:
-            self.signals.result.emit(self.file_path, QPixmap())
+        try:
+            reader = QImageReader(self.file_path)
+            orig_size = reader.size()
+            if orig_size.isValid():
+                scaled_size = orig_size.scaled(self.target_size, Qt.AspectRatioMode.KeepAspectRatio)
+                reader.setScaledSize(scaled_size)
+                reader.setAutoTransform(True)
+                high_res_image = reader.read()
+
+                # 動態補建 L2 (如果之前沒有的話)
+                if not has_l2 and not high_res_image.isNull() and not self.is_cancelled:
+                    os.makedirs(cache_dir, exist_ok=True)
+                    high_res_image.save(cache_path, "WEBP", 80)
+
+                if self.is_cancelled:
+                    self.signals.result.emit(self.file_path, QPixmap(), True)
+                    return
+
+                if not high_res_image.isNull():
+                    final_pixmap = QPixmap.fromImage(high_res_image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied))
+                    # 🌟 第二發射：高清原圖覆蓋上去！(is_final = True)
+                    self.signals.result.emit(self.file_path, final_pixmap, True)
+                else:
+                    self.signals.result.emit(self.file_path, QPixmap(), True)
+            else:
+                self.signals.result.emit(self.file_path, QPixmap(), True)
+        except Exception:
+            self.signals.result.emit(self.file_path, QPixmap(), True)
 
 class SearchResultsModel(QAbstractListModel):
     """核心 Model：管理搜尋結果列表與圖片快取 (完全原生虛擬化)"""
@@ -332,6 +355,15 @@ class SearchResultsModel(QAbstractListModel):
 
     def update_target_size(self, new_size):
         self.item_size = new_size
+        
+        # 🌟 智慧記憶體管理：防止 XL 的高清大圖塞爆記憶體
+        # 如果卡片寬度大於 256px (代表是 XL 模式)，快取數量縮小到 250 張
+        # 其餘模式維持 1000 張
+        if new_size.width() > 256:
+            self.CACHE_SIZE = 250
+        else:
+            self.CACHE_SIZE = 1000
+            
         self._thumbnail_cache.clear()
         self._loading_set.clear()
 
@@ -415,26 +447,25 @@ class SearchResultsModel(QAbstractListModel):
         self._active_workers[file_path] = loader
         self.thread_pool.start(loader)
 
-    def on_thumbnail_loaded(self, file_path, pixmap):
-        if file_path in self._active_workers:
-            del self._active_workers[file_path]
-            
-        if file_path in self._loading_set:
-            self._loading_set.remove(file_path)
+    def on_thumbnail_loaded(self, file_path, pixmap, is_final):
+        # 🌟 只有收到「最終訊號」，才把任務從活躍佇列中移除
+        if is_final:
+            if file_path in self._active_workers:
+                del self._active_workers[file_path]
+            if file_path in self._loading_set:
+                self._loading_set.remove(file_path)
 
         if not pixmap.isNull():
+            # 無論是 L2 還是 L3，都存入快取 (L3 來了會直接覆蓋 L2，完美)
             self._thumbnail_cache[file_path] = pixmap
             if len(self._thumbnail_cache) > self.CACHE_SIZE:
                 self._thumbnail_cache.popitem(last=False)
 
             row = getattr(self, 'path_to_row', {}).get(file_path)
-
-            for row, item in enumerate(self.all_items): # 🌟 瘦身 6：這裡也要改成比對 all_items
-                if item.path == file_path:
-                    self._pending_updates.add(row)
-                    if not self.update_timer.isActive():
-                        self.update_timer.start()
-                    break
+            if row is not None:
+                self._pending_updates.add(row)
+                if not self.update_timer.isActive():
+                    self.update_timer.start()
 
     def _flush_updates(self):
         if not self._pending_updates:
