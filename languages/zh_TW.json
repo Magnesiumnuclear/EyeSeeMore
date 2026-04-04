@@ -96,5 +96,10 @@
         "tech_perf": "<li><b>系統監控：</b> psutil (效能優化)</li>",
         "github_link": "<a href=\"https://github.com/Magnesiumnuclear/EyeSeeMore\" style=\"color: #00aaff; text-decoration: none;\">🌐 專案 GitHub 主頁 (回報問題與建議)</a>",
         "copyright": "<br><small>© 2026 HO99 Licensed under GPL v3.</small>"
+    },
+    "search_filter": {
+        "lbl_search_scope": "搜尋範圍 (Search Scope):",
+        "scope_local": "目前資料夾 (Local)",
+        "scope_global": "全域搜尋 (Global)"
     }
 }

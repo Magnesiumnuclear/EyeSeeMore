@@ -2679,24 +2679,22 @@ class InspectorPanel(QFrame):
         # --- 區塊 1: 🔍 檢索過濾 (FILTER) ---
         self.sec_filter = CollapsibleSection("檢索過濾")
 
-        self.chk_local_search = QCheckBox("僅搜尋目前資料夾")
-        self.chk_local_search.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.chk_local_search.setEnabled(False) # 預設 ALL 時禁用
-        self.sec_filter.addWidget(self.chk_local_search)
+        trans = self.main_window.config.translator
         
-        self.lbl_scope_hint = QLabel("目前範圍：全域 (ALL)")
-        self.lbl_scope_hint.setObjectName("SettingsHint")
-        self.lbl_scope_hint.setStyleSheet("font-size: 11px; margin-left: 20px; margin-bottom: 5px;")
-        self.sec_filter.addWidget(self.lbl_scope_hint)
+        self.sec_filter.addWidget(QLabel(trans.t("search_filter", "lbl_search_scope", "搜尋範圍 (Search Scope):")))
+        self.combo_search_scope = QComboBox()
+        self.combo_search_scope.addItems([
+            trans.t("search_filter", "scope_local", "📂 目前資料夾 (Local)"),
+            trans.t("search_filter", "scope_global", "🌍 全域搜尋 (Global)")
+        ])
+        self.combo_search_scope.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.combo_search_scope.setFixedHeight(38)
+        self.sec_filter.addWidget(self.combo_search_scope)
         
         line_scope = QFrame()
         line_scope.setFrameShape(QFrame.Shape.HLine)
         line_scope.setStyleSheet("border-top: 1px solid #3c3c3c; margin: 5px 0;")
         self.sec_filter.addWidget(line_scope)
-
-        self.lbl_time_title = QLabel("時間維度 (Time Range):")
-        self.lbl_time_title.setObjectName("FilterTitle")
-        self.sec_filter.addWidget(self.lbl_time_title)
         
         self.btn_time_range = QPushButton("📅 全部時間 (All Time)")
         self.btn_time_range.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -3495,18 +3493,15 @@ class MainWindow(QMainWindow):
     # [修正] 實作資料夾篩選邏輯
     def on_folder_filter(self, path):
         if not self.engine: return
-
         self.current_folder_path = path
         
-        # 🌟 [新增] 連動右側「僅搜尋目前資料夾」面板的狀態
+        # 🌟 [修改] 根據側邊欄自動切換下拉選單預設值
+        self.inspector_panel.combo_search_scope.blockSignals(True)
         if path == "ALL":
-            self.inspector_panel.chk_local_search.setEnabled(False)
-            self.inspector_panel.chk_local_search.setChecked(False)
-            self.inspector_panel.lbl_scope_hint.setText("目前範圍：全域 (ALL)")
+            self.inspector_panel.combo_search_scope.setCurrentIndex(1) # 側邊欄點ALL，右邊自動切到「全域」
         else:
-            self.inspector_panel.chk_local_search.setEnabled(True)
-            self.inspector_panel.chk_local_search.setChecked(True) # 自動鎖定！
-            self.inspector_panel.lbl_scope_hint.setText(f"目前範圍：{os.path.basename(path)}")
+            self.inspector_panel.combo_search_scope.setCurrentIndex(0) # 側邊欄點特定資料夾，右邊自動切到「目前資料夾」
+        self.inspector_panel.combo_search_scope.blockSignals(False)
         
         print(f"Filtering by: {path}")
 
@@ -4216,7 +4211,10 @@ class MainWindow(QMainWindow):
             pass
         
         target_folder = None
-        if self.inspector_panel.chk_local_search.isChecked():
+        is_local_mode = (self.inspector_panel.combo_search_scope.currentIndex() == 0)
+        
+        # 只有當選單是「目前資料夾」(Index 0) 且側邊欄真的不是「ALL」時，才鎖定路徑
+        if is_local_mode and self.current_folder_path != "ALL":
             target_folder = self.current_folder_path
 
         weight_config = self.inspector_panel.get_weight_config()

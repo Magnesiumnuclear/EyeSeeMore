@@ -96,5 +96,10 @@
         "tech_perf": "<li><b>System Monitor:</b> psutil (Performance Optimization)</li>",
         "github_link": "<a href=\"https://github.com/Magnesiumnuclear/EyeSeeMore\" style=\"color: #00aaff; text-decoration: none;\">🌐 Project GitHub (Report issues & suggestions)</a>",
         "copyright": "<br><small>© 2026 HO99 Licensed under GPL v3.</small>"
+    },
+    "search_filter": {
+        "lbl_search_scope": "Search Scope:",
+        "scope_local": "Current Folder (Local)",
+        "scope_global": "All Images (Global)"
     }
 }
