@@ -1900,6 +1900,19 @@ class PreviewOverlay(QWidget):
     def mousePressEvent(self, event):
         self.hide()
 
+    def hideEvent(self, event):
+        if self.current_preview_worker:
+            self.current_preview_worker.is_cancelled = True
+            self.current_preview_worker = None
+        super().hideEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Escape):
+            self.hide() # 這裡只要單純 hide，上面的 hideEvent 就會自動幫我們清垃圾了
+
+    def mousePressEvent(self, event):
+        self.hide()
+
 class HistoryItemWidget(QWidget):
     def __init__(self, text, search_callback, delete_callback):
         super().__init__(); self.text = text; self.search_callback = search_callback; self.delete_callback = delete_callback
