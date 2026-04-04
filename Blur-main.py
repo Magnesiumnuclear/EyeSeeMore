@@ -949,18 +949,38 @@ class ImageSearchEngine:
             return True, new_path
         except Exception as e: return False, str(e)
 
-    def search_hybrid(self, query, top_k=50, use_ocr=True, weight_config=None):
+    # 🌟 [新增] folder_path 參數
+    def search_hybrid(self, query, top_k=50, use_ocr=True, weight_config=None, folder_path=None):
         current_embeddings = self.stored_embeddings
         current_data = self.data_store
 
         if not self.is_ready or current_embeddings is None: 
             return [] 
             
+        # ==========================================
+        # 🌟 1. 局部矩陣裁切 (Pre-Filter for specific folder)
+        # ==========================================
+        valid_indices = None
+        if folder_path and folder_path != "ALL":
+            # 找出所有屬於該資料夾的路徑索引
+            norm_target = os.path.normpath(folder_path)
+            valid_indices = [
+                i for i, item in enumerate(current_data) 
+                if os.path.normpath(item["path"]).startswith(norm_target)
+            ]
+            
+            # 如果資料夾裡面沒圖片，直接回傳空陣列
+            if not valid_indices:
+                return []
+                
+            # 🌟 Numpy 魔法：只裁出符合條件的特徵向量矩陣，運算速度爆增！
+            target_embeddings = current_embeddings[valid_indices]
+        else:
+            # 全域模式：使用完整矩陣
+            target_embeddings = current_embeddings
+
         results = []; query_lower = query.lower()
         try:
-            # ==========================================
-            # 🌟 [快取機制] 如果搜尋字詞沒變，直接重用特徵矩陣
-            # ==========================================
             if hasattr(self, 'last_text_query') and self.last_text_query == query and hasattr(self, 'last_text_features'):
                 text_features = self.last_text_features
             else:
@@ -973,12 +993,12 @@ class ImageSearchEngine:
                 self.last_text_query = query
                 self.last_text_features = text_features
             
-            # 極速 Numpy 矩陣相乘計算相似度
-            scores = np.dot(text_features, current_embeddings.T).squeeze(0)
+            # 🌟 改用裁切後的 target_embeddings 運算
+            scores = np.dot(text_features, target_embeddings.T).squeeze(0)
             
         except Exception as e:
             print(f"CLIP Search Error: {e}")
-            scores = np.zeros(len(current_data))
+            scores = np.zeros(len(valid_indices) if valid_indices else len(current_data))
 
         if weight_config is None:
             weight_config = {"mode": "multiply", "clip_w": 1.0, "ocr_w": 1.0, "name_w": 0.4, "thresh_mode": "auto", "thresh_val": 0.15}
@@ -993,15 +1013,27 @@ class ImageSearchEngine:
         raw_results = []
         max_score = 0.0
 
-        for idx, item in enumerate(current_data):
-            clip_score = float(scores[idx])
+        # ==========================================
+        # 🌟 2. 局部迴圈 (只處理有被計算的分數)
+        # ==========================================
+        score_idx = 0
+        
+        # 決定要跑完整迴圈，還是只跑我們挑選出的 valid_indices
+        iter_list = valid_indices if valid_indices is not None else range(len(current_data))
+
+        for original_idx in iter_list:
+            item = current_data[original_idx]
+            
+            # 使用 score_idx 去對應剛剛算出來的縮水版分數陣列
+            clip_score = float(scores[score_idx])
+            score_idx += 1
+            
             has_ocr = use_ocr and (query_lower in item["ocr_text"])
             has_name = query_lower in item["filename"].lower()
             
             ocr_bonus = 0.0
             name_bonus = 0.0
             
-            # 視覺底標防護
             if clip_score >= 0.08:
                 if mode == "add":
                     ocr_bonus = (ocr_w / 2.0) if has_ocr else 0.0 
@@ -1026,7 +1058,6 @@ class ImageSearchEngine:
                 "height": item.get("height", 0) 
             })
 
-        # 動態門檻過濾
         if thresh_mode == "auto":
             actual_thresh = max_score * 0.5
         else:
@@ -1189,7 +1220,7 @@ class SearchWorker(QThread):
     batch_ready = pyqtSignal(list) 
     finished_search = pyqtSignal(float, int)
     
-    def __init__(self, engine, query, top_k, search_mode="text", use_ocr=True, weight_config=None): 
+    def __init__(self, engine, query, top_k, search_mode="text", use_ocr=True, weight_config=None, folder_path=None): 
         super().__init__()
         self.engine = engine
         self.query = query
@@ -1197,13 +1228,22 @@ class SearchWorker(QThread):
         self.search_mode = search_mode
         self.use_ocr = use_ocr
         self.weight_config = weight_config
+        self.folder_path = folder_path
 
     def run(self):
         start_time = time.time()
         if self.search_mode == "image":
+            # 圖片相似搜尋目前暫不實作範圍過濾
             raw_results = self.engine.search_image(self.query, self.top_k)
         else:
-            raw_results = self.engine.search_hybrid(self.query, self.top_k, self.use_ocr, self.weight_config)
+            # 🌟 [修改] 將參數傳遞給底層
+            raw_results = self.engine.search_hybrid(
+                self.query, 
+                self.top_k, 
+                self.use_ocr, 
+                self.weight_config, 
+                folder_path=self.folder_path
+            )
             
         self.batch_ready.emit(raw_results)
         self.finished_search.emit(time.time() - start_time, len(raw_results))
@@ -2638,6 +2678,22 @@ class InspectorPanel(QFrame):
 
         # --- 區塊 1: 🔍 檢索過濾 (FILTER) ---
         self.sec_filter = CollapsibleSection("檢索過濾")
+
+        self.chk_local_search = QCheckBox("僅搜尋目前資料夾")
+        self.chk_local_search.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.chk_local_search.setEnabled(False) # 預設 ALL 時禁用
+        self.sec_filter.addWidget(self.chk_local_search)
+        
+        self.lbl_scope_hint = QLabel("目前範圍：全域 (ALL)")
+        self.lbl_scope_hint.setObjectName("SettingsHint")
+        self.lbl_scope_hint.setStyleSheet("font-size: 11px; margin-left: 20px; margin-bottom: 5px;")
+        self.sec_filter.addWidget(self.lbl_scope_hint)
+        
+        line_scope = QFrame()
+        line_scope.setFrameShape(QFrame.Shape.HLine)
+        line_scope.setStyleSheet("border-top: 1px solid #3c3c3c; margin: 5px 0;")
+        self.sec_filter.addWidget(line_scope)
+
         self.lbl_time_title = QLabel("時間維度 (Time Range):")
         self.lbl_time_title.setObjectName("FilterTitle")
         self.sec_filter.addWidget(self.lbl_time_title)
@@ -3442,6 +3498,16 @@ class MainWindow(QMainWindow):
 
         self.current_folder_path = path
         
+        # 🌟 [新增] 連動右側「僅搜尋目前資料夾」面板的狀態
+        if path == "ALL":
+            self.inspector_panel.chk_local_search.setEnabled(False)
+            self.inspector_panel.chk_local_search.setChecked(False)
+            self.inspector_panel.lbl_scope_hint.setText("目前範圍：全域 (ALL)")
+        else:
+            self.inspector_panel.chk_local_search.setEnabled(True)
+            self.inspector_panel.chk_local_search.setChecked(True) # 自動鎖定！
+            self.inspector_panel.lbl_scope_hint.setText(f"目前範圍：{os.path.basename(path)}")
+        
         print(f"Filtering by: {path}")
 
         self.inspector_panel.combo_sort.blockSignals(True)
@@ -4149,8 +4215,15 @@ class MainWindow(QMainWindow):
             # 捕捉到幽靈物件！C++ 底層已被 deleteLater 刪除，安全忽略
             pass
         
+        target_folder = None
+        if self.inspector_panel.chk_local_search.isChecked():
+            target_folder = self.current_folder_path
+
         weight_config = self.inspector_panel.get_weight_config()
-        self.worker = SearchWorker(self.engine, q, k, search_mode="text", use_ocr=self.btn_ocr_toggle.isChecked(), weight_config=weight_config)
+        self.worker = SearchWorker(self.engine, q, k, search_mode="text", 
+                                   use_ocr=self.btn_ocr_toggle.isChecked(), 
+                                   weight_config=weight_config,
+                                   folder_path=target_folder)
         self.worker.batch_ready.connect(self.set_base_results)
         self.worker.finished_search.connect(self.on_finished)
         self.worker.finished.connect(self.worker.deleteLater)
