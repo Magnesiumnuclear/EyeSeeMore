@@ -4606,10 +4606,22 @@ class SettingsDialog(QDialog):
         item = self.folder_list.itemAt(pos)
         if not item: return
         
+        # 取得資料夾路徑 (保留給編輯圖示使用)
         path = item.data(Qt.ItemDataRole.UserRole)
-        config_folders = self.main_window.config.get("source_folders")
         
-        # 找出該資料夾目前啟用的語系
+        menu = QMenu(self)
+        menu.setStyleSheet("QMenu { font-size: 14px; } QMenu::item { padding: 8px 30px; }")
+        
+        # 1. 編輯圖示 (現在只保留這個功能)
+        action_edit = QAction("✏️ 編輯圖示", self)
+        action_edit.triggered.connect(self.on_edit_icon)
+        menu.addAction(action_edit)
+            
+        menu.exec(self.folder_list.mapToGlobal(pos))
+
+    def show_ocr_task_menu(self, path, global_pos):
+        """點擊資料夾列時，在滑鼠游標處彈出語系選擇選單"""
+        config_folders = self.main_window.config.get("source_folders")
         current_langs = []
         for f in config_folders:
             if os.path.normpath(f["path"]) == os.path.normpath(path):
@@ -4619,26 +4631,20 @@ class SettingsDialog(QDialog):
         menu = QMenu(self)
         menu.setStyleSheet("QMenu { font-size: 14px; } QMenu::item { padding: 8px 30px; }")
         
-        # 1. 編輯圖示
-        action_edit = QAction("✏️ 編輯圖示", self)
-        action_edit.triggered.connect(self.on_edit_icon)
-        menu.addAction(action_edit)
+        langs_map = [("ch", "中文"), ("jp", "日文"), ("kr", "韓文"), ("en", "英文")]
         
-        menu.addSeparator()
-        
-        # 2~4. 多語系標記切換
-        langs_map = [("ch", "中文"), ("jp", "日文"), ("kr", "韓文")]
         for lang_code, lang_name in langs_map:
+            # 動態判斷：如果已經存在，顯示「取消」；如果不存在，顯示「指派」
             if lang_code in current_langs:
-                action_lang = QAction(f"❌ 取消 {lang_name} OCR 標記", self)
+                action_lang = QAction(f"❌ 取消 {lang_name} OCR 任務", self)
             else:
-                action_lang = QAction(f"✅ 添加 {lang_name} OCR 標記", self)
+                action_lang = QAction(f"✅ 指派 {lang_name} OCR 任務", self)
             
-            # [修改] 將 lang_name (n=lang_name) 也傳遞給後面的判斷函式
             action_lang.triggered.connect(lambda checked, p=path, l=lang_code, n=lang_name: self.on_toggle_lang(p, l, n))
             menu.addAction(action_lang)
             
-        menu.exec(self.folder_list.mapToGlobal(pos))
+        # 讓選單直接在滑鼠點擊的位置精準彈出
+        menu.exec(global_pos)
 
     def on_toggle_lang(self, path, lang_code, lang_name):
         # 1. 先找出該資料夾目前的狀態
@@ -4648,6 +4654,46 @@ class SettingsDialog(QDialog):
             if os.path.normpath(f["path"]) == os.path.normpath(path):
                 current_langs = f.get("enabled_langs", [])
                 break
+        
+        # 2. 檢查實體模型是否存在
+        is_adding = lang_code not in current_langs
+        if is_adding:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            models_dir = os.path.join(base_dir, "models", "ocr")
+            rec_path = os.path.join(models_dir, lang_code, "rec.onnx")
+            dict_path = os.path.join(models_dir, lang_code, "dict.txt")
+            
+            is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
+            
+            # 3. 若未安裝，觸發跳轉
+            if not is_installed:
+                reply = QMessageBox.question(
+                    self, "語言包未安裝", f"尚未安裝【{lang_name}】語言包。\n\n是否前往「AI 引擎設定」進行下載？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self.nav_list.setCurrentRow(1)
+                    self.ai_tabs.setCurrentIndex(1)
+                return 
+
+        # 4. 正常切換標記並更新畫面
+        self.main_window.config.toggle_folder_lang(path, lang_code)
+        
+        # 🌟 同步更新三個會被影響的頁面
+        self.refresh_folder_list()    # 更新資料夾管理
+        self.refresh_ocr_status()     # 更新 AI 引擎
+        self.refresh_ocr_task_list()  # 更新自動任務 (本頁)
+
+        # 5. 避免「後續加上沒有偵測」的防呆引導
+        if is_adding:
+            reply = QMessageBox.question(
+                self, 
+                "任務已指派", 
+                f"已成功對資料夾指派【{lang_name}】OCR 任務。\n\n是否要立即重新掃描此資料夾，為現有的圖片補跑 {lang_name} 的文字辨識？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.main_window.on_refresh_clicked()
         
         # 2. 檢查實體模型是否存在
         is_adding = lang_code not in current_langs
@@ -5308,7 +5354,6 @@ class SettingsDialog(QDialog):
 
     def refresh_ocr_task_list(self):
         """動態生成 OCR 任務資料夾的 UI 列表"""
-        # 1. 清空舊的 UI 元件
         while self.ocr_tasks_list_layout.count():
             item = self.ocr_tasks_list_layout.takeAt(0)
             if item.widget():
@@ -5319,7 +5364,6 @@ class SettingsDialog(QDialog):
                     if sub_item.widget(): sub_item.widget().deleteLater()
                 item.layout().deleteLater()
 
-        # 2. 讀取設定檔中的資料夾
         config_folders = self.main_window.config.get("source_folders", [])
         
         if not config_folders:
@@ -5328,11 +5372,8 @@ class SettingsDialog(QDialog):
             self.ocr_tasks_list_layout.addWidget(lbl_empty)
             return
 
-        # 3. 仿照 AI 引擎列表的風格逐一繪製
         for i, f in enumerate(config_folders):
             path = f.get("path", "")
-            
-            # 🌟 修正：嚴格檢查圖示，如果是空字串就給預設的資料夾符號
             icon = f.get("icon", "")
             if not icon:
                 icon = "📁"
@@ -5341,59 +5382,51 @@ class SettingsDialog(QDialog):
             
             row_widget = QWidget()
             row_widget.setObjectName("OcrTaskRow")
-            
-            # 🌟 關鍵魔法：啟用背景繪製能力
             row_widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
             
-            # 🌟 動態取得主題的 Hover 顏色，寫入區域 QSS
             bg_hover = self.main_window.theme_manager.current_colors.get("bg_hover", "#383838")
             row_widget.setStyleSheet(f"""
-                QWidget#OcrTaskRow {{
-                    background-color: transparent;
-                    border-radius: 8px;
-                }}
-                QWidget#OcrTaskRow:hover {{
-                    background-color: {bg_hover};
-                }}
+                QWidget#OcrTaskRow {{ background-color: transparent; border-radius: 8px; }}
+                QWidget#OcrTaskRow:hover {{ background-color: {bg_hover}; }}
             """)
             
-            # 設定手型游標，暗示這整列未來可以點擊互動
             row_widget.setCursor(Qt.CursorShape.PointingHandCursor)
-
             row = QHBoxLayout(row_widget)
-            # 🌟 把上下左右稍微撐開一點 (原本是 0,5,0,5)，讓 Hover 的色塊包覆得更漂亮
             row.setContentsMargins(10, 8, 10, 8) 
             
-            # --- 左側：圖示與路徑 (RichText 雙層顯示) ---
             folder_name = os.path.basename(path)
             muted_color = self.main_window.theme_manager.current_colors.get("text_muted", "#888888")
             lbl_name = QLabel(f"<span style='font-size:15px; font-weight:bold;'>{icon}  {folder_name}</span><br><span style='color:{muted_color}; font-size:12px;'>{path}</span>")
             lbl_name.setFixedWidth(260)
             lbl_name.setTextFormat(Qt.TextFormat.RichText)
+            # 讓標籤忽略滑鼠事件，確保點擊能精準傳遞給底層的 row_widget
+            lbl_name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             
-            # --- 中間：狀態與語系標籤 ---
             tags_layout = QHBoxLayout()
             tags_layout.setSpacing(5)
             tags_layout.setContentsMargins(10, 0, 0, 0)
             
+            # 同時顯示多個語系標籤 (例如 [CH] [JP])
             if enabled_langs:
                 for lang in enabled_langs:
                     lbl_tag = QLabel(f"[{lang.upper()}]")
                     lbl_tag.setObjectName("FolderTagLabel")
-                    lbl_tag.setProperty("active", "true") # 套用綠色/藍色高亮標籤樣式
+                    lbl_tag.setProperty("active", "true") 
                     lbl_tag.setFixedWidth(42)
                     lbl_tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     tags_layout.addWidget(lbl_tag)
                 
             tags_layout.addStretch(1)
             
-            # 將元件加入主列中
+            # 🌟 核心修改：直接把點擊事件綁定到這整列，並取得滑鼠游標目前的絕對座標
+            row_widget.mouseReleaseEvent = lambda event, p=path: self.show_ocr_task_menu(p, event.globalPosition().toPoint())
+            
             row.addWidget(lbl_name)
             row.addLayout(tags_layout, stretch=1)
+            # (移除 btn_action 相關程式碼)
             
             self.ocr_tasks_list_layout.addWidget(row_widget)
             
-            # 加入分隔線
             line = QFrame()
             line.setFrameShape(QFrame.Shape.HLine)
             line.setObjectName("SolidLine")
