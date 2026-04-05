@@ -5243,14 +5243,161 @@ class SettingsDialog(QDialog):
         self.stack.addWidget(page)
 
     def init_page_auto_tasks(self):
+        # 1. 建立頁面容器與主佈局
         page, layout = self._create_page_container(self.trans.t("auto_tasks", "page_title", "🕒 自動任務 (Automated Tasks)"))
         
-        # 🌟 直接呼叫公用工具函式，讓它自動套用 base_style.qss 的 WipButton 樣式
-        btn_wip = self._create_construction_button(self.trans.t("auto_tasks", "wip_text", "🚧 施工中：背景排程與自動掃描"))
+        # 移除頂部的分隔線，保持與 AI 引擎頁面一致的乾淨外觀
+        line = layout.itemAt(1).widget()
+        if isinstance(line, QFrame):
+            line.hide()
+
+        # 2. 建立分頁標籤 (仿照 self.ai_tabs)
+        self.auto_tabs = QTabWidget()
+        self.auto_tabs.setObjectName("AutoTabs")
         
-        layout.addWidget(btn_wip)
-        layout.addStretch(1)
+        # ==========================================
+        # 分頁 1: OCR 任務資料夾
+        # ==========================================
+        tab_ocr_tasks = QWidget()
+        ocr_tasks_layout = QVBoxLayout(tab_ocr_tasks)
+        ocr_tasks_layout.setContentsMargins(20, 20, 20, 20)
+        ocr_tasks_layout.setSpacing(15)
+        
+        # 群組標題 (仿照 AI 引擎的 QGroupBox)
+        group_ocr = QGroupBox(self.trans.t("auto_tasks", "grp_ocr_folders", "資料夾 OCR 任務綁定 (Folder OCR Tasks)"))
+        group_ocr_layout = QVBoxLayout(group_ocr)
+        group_ocr_layout.setSpacing(10)
+        
+        # 頂部說明文字
+        lbl_desc = QLabel(self.trans.t("auto_tasks", "lbl_ocr_desc", "為資料夾指定背景自動辨識的語系。當系統偵測到新圖片時，將自動執行對應的文字萃取任務。"))
+        lbl_desc.setObjectName("SettingsHint")
+        group_ocr_layout.addWidget(lbl_desc)
+        
+        # 建立一個專屬容器用來放動態列表，方便未來刷新 (Clear & Redraw)
+        self.ocr_tasks_container = QWidget()
+        self.ocr_tasks_list_layout = QVBoxLayout(self.ocr_tasks_container)
+        self.ocr_tasks_list_layout.setContentsMargins(0, 5, 0, 0)
+        self.ocr_tasks_list_layout.setSpacing(5)
+        group_ocr_layout.addWidget(self.ocr_tasks_container)
+        
+        ocr_tasks_layout.addWidget(group_ocr)
+        ocr_tasks_layout.addStretch(1)
+        
+        # 加入分頁
+        self.auto_tabs.addTab(tab_ocr_tasks, self.trans.t("auto_tasks", "tab_ocr_mapping", "📝 OCR 任務綁定"))
+        
+        # ==========================================
+        # 分頁 2: 背景排程 (預留施工中)
+        # ==========================================
+        tab_schedule = QWidget()
+        schedule_layout = QVBoxLayout(tab_schedule)
+        schedule_layout.setContentsMargins(20, 20, 20, 20)
+        
+        btn_wip = self._create_construction_button(self.trans.t("auto_tasks", "wip_schedule", "🚧 施工中：背景定時掃描與效能限制"))
+        schedule_layout.addWidget(btn_wip)
+        schedule_layout.addStretch(1)
+        
+        self.auto_tabs.addTab(tab_schedule, self.trans.t("auto_tasks", "tab_schedule", "⏳ 排程與控制"))
+        
+        # 將 TabWidget 加入主畫面
+        layout.addWidget(self.auto_tabs, stretch=1)
         self.stack.addWidget(page)
+        
+        # 初始化載入畫面
+        self.refresh_ocr_task_list()
+
+    def refresh_ocr_task_list(self):
+        """動態生成 OCR 任務資料夾的 UI 列表"""
+        # 1. 清空舊的 UI 元件
+        while self.ocr_tasks_list_layout.count():
+            item = self.ocr_tasks_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                while item.layout().count():
+                    sub_item = item.layout().takeAt(0)
+                    if sub_item.widget(): sub_item.widget().deleteLater()
+                item.layout().deleteLater()
+
+        # 2. 讀取設定檔中的資料夾
+        config_folders = self.main_window.config.get("source_folders", [])
+        
+        if not config_folders:
+            lbl_empty = QLabel("目前沒有任何圖片資料夾，請先前往「資料夾管理」新增。")
+            lbl_empty.setObjectName("SettingsWarning")
+            self.ocr_tasks_list_layout.addWidget(lbl_empty)
+            return
+
+        # 3. 仿照 AI 引擎列表的風格逐一繪製
+        for i, f in enumerate(config_folders):
+            path = f.get("path", "")
+            
+            # 🌟 修正：嚴格檢查圖示，如果是空字串就給預設的資料夾符號
+            icon = f.get("icon", "")
+            if not icon:
+                icon = "📁"
+                
+            enabled_langs = f.get("enabled_langs", [])
+            
+            row_widget = QWidget()
+            row_widget.setObjectName("OcrTaskRow")
+            
+            # 🌟 關鍵魔法：啟用背景繪製能力
+            row_widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            
+            # 🌟 動態取得主題的 Hover 顏色，寫入區域 QSS
+            bg_hover = self.main_window.theme_manager.current_colors.get("bg_hover", "#383838")
+            row_widget.setStyleSheet(f"""
+                QWidget#OcrTaskRow {{
+                    background-color: transparent;
+                    border-radius: 8px;
+                }}
+                QWidget#OcrTaskRow:hover {{
+                    background-color: {bg_hover};
+                }}
+            """)
+            
+            # 設定手型游標，暗示這整列未來可以點擊互動
+            row_widget.setCursor(Qt.CursorShape.PointingHandCursor)
+
+            row = QHBoxLayout(row_widget)
+            # 🌟 把上下左右稍微撐開一點 (原本是 0,5,0,5)，讓 Hover 的色塊包覆得更漂亮
+            row.setContentsMargins(10, 8, 10, 8) 
+            
+            # --- 左側：圖示與路徑 (RichText 雙層顯示) ---
+            folder_name = os.path.basename(path)
+            muted_color = self.main_window.theme_manager.current_colors.get("text_muted", "#888888")
+            lbl_name = QLabel(f"<span style='font-size:15px; font-weight:bold;'>{icon}  {folder_name}</span><br><span style='color:{muted_color}; font-size:12px;'>{path}</span>")
+            lbl_name.setFixedWidth(260)
+            lbl_name.setTextFormat(Qt.TextFormat.RichText)
+            
+            # --- 中間：狀態與語系標籤 ---
+            tags_layout = QHBoxLayout()
+            tags_layout.setSpacing(5)
+            tags_layout.setContentsMargins(10, 0, 0, 0)
+            
+            if enabled_langs:
+                for lang in enabled_langs:
+                    lbl_tag = QLabel(f"[{lang.upper()}]")
+                    lbl_tag.setObjectName("FolderTagLabel")
+                    lbl_tag.setProperty("active", "true") # 套用綠色/藍色高亮標籤樣式
+                    lbl_tag.setFixedWidth(42)
+                    lbl_tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    tags_layout.addWidget(lbl_tag)
+                
+            tags_layout.addStretch(1)
+            
+            # 將元件加入主列中
+            row.addWidget(lbl_name)
+            row.addLayout(tags_layout, stretch=1)
+            
+            self.ocr_tasks_list_layout.addWidget(row_widget)
+            
+            # 加入分隔線
+            line = QFrame()
+            line.setFrameShape(QFrame.Shape.HLine)
+            line.setObjectName("SolidLine")
+            self.ocr_tasks_list_layout.addWidget(line)
 
     def on_precise_highlight_changed(self, state):
         is_checked = (state == Qt.CheckState.Checked.value)
