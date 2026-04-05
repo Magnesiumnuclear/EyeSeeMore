@@ -4545,7 +4545,6 @@ class SettingsDialog(QDialog):
         for i, f in enumerate(config_folders, 1):
             path = f["path"]
             icon = f.get("icon", "")
-            enabled_langs = f.get("enabled_langs", [])
             count = stats_dict.get(os.path.normpath(path), 0)
             
             display_icon = f"[{icon}]" if icon else f"[{i}]"
@@ -4562,41 +4561,24 @@ class SettingsDialog(QDialog):
             # 💡 讓滑鼠點擊「穿透」這個 Widget，右鍵選單跟拖曳排序才能正常運作
             row_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             
-            # 3. 使用水平佈局 (QHBoxLayout) 達成像檔案總管一樣的欄位對齊
+            # 3. 使用水平佈局達成欄位對齊
             row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(15, 0, 20, 0) # 左、上、右、下 邊距
+            row_layout.setContentsMargins(15, 0, 20, 0) 
             row_layout.setSpacing(10)
             
-            # --- 欄位 A: 資料夾名稱 (加上 stretch=1 讓它像彈簧一樣佔滿剩餘空間) ---
+            # --- 欄位 A: 資料夾名稱 ---
             lbl_name = QLabel(f"{display_icon}   {base_name}")
             lbl_name.setStyleSheet("font-size: 15px; font-weight: 500; background: transparent;")
             row_layout.addWidget(lbl_name, stretch=1)
             
-            # --- 欄位 B: 圖片數量 (固定寬度，靠右對齊) ---
+            # --- 欄位 B: 圖片數量 ---
             lbl_count = QLabel(f"({count})")
             lbl_count.setFixedWidth(60)
             lbl_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             lbl_count.setObjectName("FolderCountLabel")
             row_layout.addWidget(lbl_count)
             
-            # 與標籤區保持一段距離
-            row_layout.addSpacing(20)
-            
-            # --- 欄位 C, D, E: 語系標籤 (固定寬度，確保直向對齊) ---
-            for lang_code, display_text in [("ch", "CH"), ("jp", "JP"), ("kr", "KR")]:
-                is_active = lang_code in enabled_langs
-                lbl_tag = QLabel(f"[{display_text}]" if is_active else "")
-                lbl_tag.setFixedWidth(40)  # 鎖死標籤寬度
-                lbl_tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                
-                lbl_tag.setObjectName("FolderTagLabel") # 🌟 發放身分證
-                
-                if is_active:
-                    lbl_tag.setProperty("active", "true")
-                else:
-                    lbl_tag.setProperty("active", "false")
-                    
-                row_layout.addWidget(lbl_tag)
+            # (已經刪除原本的語系標籤渲染邏輯，保持畫面乾淨)
                 
             # 將我們做好的列元件塞進清單中
             self.folder_list.addItem(item)
@@ -4647,15 +4629,25 @@ class SettingsDialog(QDialog):
         menu.exec(global_pos)
 
     def on_toggle_lang(self, path, lang_code, lang_name):
-        # 1. 先找出該資料夾目前的狀態
-        config_folders = self.main_window.config.get("source_folders")
+        import copy
+        
+        # 1. 取得現有的資料夾清單 (深拷貝，避免直接改到記憶體沒觸發存檔)
+        config_folders = copy.deepcopy(self.main_window.config.get("source_folders", []))
+        
         current_langs = []
+        target_folder = None
+        
+        # 找出目標資料夾
         for f in config_folders:
-            if os.path.normpath(f["path"]) == os.path.normpath(path):
+            if os.path.normpath(f.get("path", "")) == os.path.normpath(path):
+                target_folder = f
                 current_langs = f.get("enabled_langs", [])
                 break
+                
+        if target_folder is None:
+            return # 防呆：找不到該資料夾
         
-        # 2. 檢查實體模型是否存在
+        # 2. 檢查實體模型是否存在 (如果是要新增的話)
         is_adding = lang_code not in current_langs
         if is_adding:
             base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -4665,7 +4657,7 @@ class SettingsDialog(QDialog):
             
             is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
             
-            # 3. 若未安裝，觸發跳轉
+            # 若未安裝，觸發跳轉並中斷
             if not is_installed:
                 reply = QMessageBox.question(
                     self, "語言包未安裝", f"尚未安裝【{lang_name}】語言包。\n\n是否前往「AI 引擎設定」進行下載？",
@@ -4676,59 +4668,28 @@ class SettingsDialog(QDialog):
                     self.ai_tabs.setCurrentIndex(1)
                 return 
 
-        # 4. 正常切換標記並更新畫面
-        self.main_window.config.toggle_folder_lang(path, lang_code)
+        # 🌟 3. 核心修改：執行陣列的新增或移除 (支援多選)
+        if is_adding:
+            current_langs.append(lang_code)
+        else:
+            current_langs.remove(lang_code)
+            
+        target_folder["enabled_langs"] = current_langs
         
-        # 🌟 同步更新三個會被影響的頁面
-        self.refresh_folder_list()    # 更新資料夾管理
-        self.refresh_ocr_status()     # 更新 AI 引擎
-        self.refresh_ocr_task_list()  # 更新自動任務 (本頁)
+        # 🌟 4. 強制寫回設定檔 (這會觸發 config.json 的實際儲存)
+        self.main_window.config.set("source_folders", config_folders)
+        
+        # 5. 更新所有會受到影響的畫面
+        self.refresh_folder_list()    # 雖然沒標籤了，但確保資料同步
+        self.refresh_ocr_status()     # 更新 AI 引擎頁面的狀態
+        self.refresh_ocr_task_list()  # 🌟 重新繪製自動任務清單，讓多個標籤並排顯示！
 
-        # 5. 避免「後續加上沒有偵測」的防呆引導
+        # 6. 引導重新掃描防呆
         if is_adding:
             reply = QMessageBox.question(
                 self, 
                 "任務已指派", 
                 f"已成功對資料夾指派【{lang_name}】OCR 任務。\n\n是否要立即重新掃描此資料夾，為現有的圖片補跑 {lang_name} 的文字辨識？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.main_window.on_refresh_clicked()
-        
-        # 2. 檢查實體模型是否存在
-        is_adding = lang_code not in current_langs
-        if is_adding:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            models_dir = os.path.join(base_dir, "models", "ocr")
-            rec_path = os.path.join(models_dir, lang_code, "rec.onnx")
-            dict_path = os.path.join(models_dir, lang_code, "dict.txt")
-            
-            is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
-            
-            # 3. 若未安裝，觸發跳轉
-            if not is_installed:
-                reply = QMessageBox.question(
-                    self, "語言包未安裝", f"尚未安裝【{lang_name}】語言包。\n\n是否前往「AI 引擎設定」進行下載？",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.Yes:
-                    self.nav_list.setCurrentRow(1)
-                    self.ai_tabs.setCurrentIndex(1)
-                return 
-
-        # 4. 正常切換標記並更新畫面
-        self.main_window.config.toggle_folder_lang(path, lang_code)
-        self.refresh_folder_list()
-        self.refresh_ocr_status()
-
-        # ==========================================
-        # [新增] 5. 避免「後續加上沒有偵測」的防呆引導
-        # ==========================================
-        if is_adding:
-            reply = QMessageBox.question(
-                self, 
-                "標記已添加", 
-                f"已成功對資料夾添加【{lang_name}】標記。\n\n是否要立即重新掃描此資料夾，為現有的圖片補跑 {lang_name} 的文字辨識？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.Yes:
