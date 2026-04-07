@@ -3221,6 +3221,12 @@ class MainWindow(QMainWindow):
 
         self.last_search_results = [] # 儲存最近一次檢索回來的原始資料
         self.active_time_range = None # 目前選取的時間區間 (start_ts, end_ts)
+
+        self.back_stack = []
+        self.forward_stack = []
+        self.is_navigating = False
+        self.pending_scroll_pos = None
+        self.current_image_search_path = None
         
         # 設定歷史紀錄檔路徑
         self.history_file_path = os.path.join(self.config.app_root, "search_history.json")
@@ -3293,6 +3299,21 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout(top_bar)
         header_layout.setContentsMargins(20, 0, 20, 0)
         header_layout.setSpacing(15)
+
+        self.btn_back = QPushButton("←")
+        self.btn_back.setFixedSize(32, 32)
+        self.btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_back.clicked.connect(self.navigate_back)
+        self.btn_back.setEnabled(False) # 預設停用
+
+        self.btn_forward = QPushButton("→")
+        self.btn_forward.setFixedSize(32, 32)
+        self.btn_forward.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_forward.clicked.connect(self.navigate_forward)
+        self.btn_forward.setEnabled(False) # 預設停用
+
+        header_layout.addWidget(self.btn_back)
+        header_layout.addWidget(self.btn_forward)
         
         # 1. 左側：標題與模式導覽 (Identity & Breadcrumbs)
         self.breadcrumb_lbl = QLabel("Gallery") 
@@ -3453,7 +3474,63 @@ class MainWindow(QMainWindow):
         if q and not q.startswith("[Image]"):
             self.start_search(triggered_by_slider=True)
 
-    
+    def get_current_state(self):
+        """擷取當前頁面的完整快照 (包含滾輪位置)"""
+        return {
+            "query": self.input.text().strip(),
+            "folder_path": self.current_folder_path,
+            "breadcrumb": self.breadcrumb_lbl.text(),
+            "scroll_pos": self.list_view.verticalScrollBar().value(),
+            "image_path": getattr(self, "current_image_search_path", None)
+        }
+
+    def push_current_state(self):
+        """發生新動作時，儲存現有狀態並清空「下一頁」紀錄"""
+        if self.is_navigating: return
+        state = self.get_current_state()
+        self.back_stack.append(state)
+        self.forward_stack.clear()
+        self.update_nav_buttons()
+
+    def update_nav_buttons(self):
+        """更新 ← → 按鈕的可用狀態"""
+        self.btn_back.setEnabled(len(self.back_stack) > 0)
+        self.btn_forward.setEnabled(len(self.forward_stack) > 0)
+
+    def navigate_back(self):
+        if not self.back_stack: return
+        self.is_navigating = True
+        self.forward_stack.append(self.get_current_state())
+        target_state = self.back_stack.pop()
+        self.apply_state(target_state)
+        self.update_nav_buttons()
+        self.is_navigating = False
+
+    def navigate_forward(self):
+        if not self.forward_stack: return
+        self.is_navigating = True
+        self.back_stack.append(self.get_current_state())
+        target_state = self.forward_stack.pop()
+        self.apply_state(target_state)
+        self.update_nav_buttons()
+        self.is_navigating = False
+
+    def apply_state(self, state):
+        """套用紀錄中的狀態並執行對應的載入"""
+        self.current_folder_path = state["folder_path"]
+        self.breadcrumb_lbl.setText(state["breadcrumb"])
+        
+        # 標記等待還原的滾輪位置 (交給底層的 set_base_results 處理)
+        self.pending_scroll_pos = state["scroll_pos"] 
+
+        if state["image_path"]:
+            self.start_image_search(state["image_path"])
+        elif state["query"]:
+            self.input.setText(state["query"])
+            self.start_search(triggered_by_slider=False)
+        else:
+            self.input.setText("")
+            self.on_folder_filter(state["folder_path"])
 
     def refresh_sidebar(self):
         """通知側邊欄更新資料夾狀態與排序"""
@@ -3506,6 +3583,10 @@ class MainWindow(QMainWindow):
     # [修正] 實作資料夾篩選邏輯
     def on_folder_filter(self, path):
         if not self.engine: return
+
+        if not self.is_navigating:
+            self.push_current_state()
+
         self.current_folder_path = path
         
         # 🌟 [修改] 根據側邊欄自動切換下拉選單預設值
@@ -3751,8 +3832,9 @@ class MainWindow(QMainWindow):
         # 3. 呼叫 Model 的排序方法
         self.model.sort_items(key_func, reverse=is_descending)
         
-        # 4. 排序完後，自動將視窗滾動回到最上方，體驗更好
-        self.list_view.scrollToTop()
+        # 🌟 4. 防禦：只有在「沒有」等待還原的歷史滾輪位置時，才自動滾回最上方
+        if getattr(self, 'pending_scroll_pos', None) is None:
+            self.list_view.scrollToTop()
 
     # ==========================================
     #  [NEW] 核心過濾器與資料派發機制
@@ -3798,6 +3880,13 @@ class MainWindow(QMainWindow):
         
         # 4. 順便套用目前的排序設定
         self.apply_gallery_sort() 
+
+        if getattr(self, 'pending_scroll_pos', None) is not None:
+            pos = self.pending_scroll_pos
+            self.pending_scroll_pos = None
+            # 等待極短時間讓 Grid 佈局計算完成後定位
+            QTimer.singleShot(50, lambda: self.list_view.verticalScrollBar().setValue(pos))
+
         return len(filtered)
 
     def apply_time_filter_to_gallery(self, start_ts, end_ts):
@@ -4190,6 +4279,11 @@ class MainWindow(QMainWindow):
             return
         
         if not triggered_by_slider:
+
+            if not self.is_navigating:
+                self.push_current_state()
+
+            self.current_image_search_path = None
             self.add_to_history(q)
             self.history_list.hide()
             self.progress.show()
@@ -4242,6 +4336,11 @@ class MainWindow(QMainWindow):
 
     def start_image_search(self, image_path):
         if not self.engine: return
+
+        if not self.is_navigating:
+            self.push_current_state()
+        self.current_image_search_path = image_path
+
         self.history_list.hide(); self.progress.show(); self.progress.setRange(0, 0)
         self.status.setText("Searching by Image...")
         self.input.setText(f"[Image] {os.path.basename(image_path)}")
