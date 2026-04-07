@@ -10,6 +10,7 @@ import datetime
 import psutil
 import onnxruntime as ort  # <--- 新增
 from onnx_ocr import ONNXOCR
+import cv2
 
 
 # ==========================================
@@ -386,25 +387,50 @@ class IndexerService:
         for i in range(0, len(files_full), BATCH_SIZE):
             batch_paths = files_full[i : i + BATCH_SIZE]
             batch_images = []
-            batch_meta = [] # 新增：用來裝 metadata
+            batch_meta = [] 
+            
+            # 🌟 [新增] 本批次的統一資料暫存站
+            ocr_batch_cache = {} 
+            
             if progress_callback: progress_callback(current_progress, total_files, f"Full AI: {current_progress}/{total_files}...")
 
             for path in batch_paths:
                 try:
                     file_size = os.path.getsize(path)
-                    # 🌟 [Opt] 讀取 EXIF 並交換長寬
-                    raw_w, raw_h, orientation = get_image_metadata(path)
+                    
+                    # ==========================================
+                    # 🌟 [統一讀取中心] 唯一一次觸碰硬碟！
+                    # 一次性完成：讀取尺寸、解析 EXIF、轉正、轉 RGB
+                    # ==========================================
+                    with Image.open(path) as pil_img:
+                        raw_w, raw_h = pil_img.size
+                        orientation = 1
+                        exif = pil_img.getexif()
+                        if exif:
+                            for k, v in exif.items():
+                                if ExifTags.TAGS.get(k) == 'Orientation':
+                                    orientation = v
+                                    break
+                                    
+                        # 轉正並強制轉為 RGB 空間
+                        img_rgb = ImageOps.exif_transpose(pil_img).convert('RGB')
+                        
+                    # 計算視覺上正確的長寬
                     w, h = raw_w, raw_h
                     if orientation in [5, 6, 7, 8]:
                         w, h = raw_h, raw_w
 
-                    with Image.open(path) as pil_img:
-                        img_rgb = ImageOps.exif_transpose(pil_img).convert('RGB')
+                    # 1. 派發給 L2 快取 (直接用記憶體的 img_rgb)
+                    generate_l2_cache(img_rgb, path)
                         
-                        generate_l2_cache(img_rgb, path)
-                        
+                    # 2. 派發給 CLIP 預處理
                     batch_images.append(np.expand_dims(preprocess(img_rgb), axis=0))
                     batch_meta.append((path, os.path.basename(path), os.path.dirname(path), os.path.getmtime(path), w, h, file_size))
+                    
+                    # 3. 派發給 OCR：預先將 RGB 轉為 OpenCV 需要的 BGR 陣列
+                    img_bgr = cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR)
+                    ocr_batch_cache[path] = (img_bgr, orientation, raw_w, raw_h)
+
                 except Exception: continue
 
             if batch_images:
@@ -435,15 +461,19 @@ class IndexerService:
                 ocr_insert_data = []
                 for path in batch_paths:
                     file_id = id_map.get(path)
-                    if not file_id: continue
+                    if not file_id or path not in ocr_batch_cache: continue
 
-                    raw_w, raw_h, orientation = get_image_metadata(path)
+                    # 🌟 從記憶體拿現成的 BGR 圖片與尺寸資料，不准再讀硬碟！
+                    img_bgr, orientation, raw_w, raw_h = ocr_batch_cache[path]
                     
                     required_langs = self._get_folder_ocr_setting(path, folder_ocr_map)
                     for target_lang in required_langs:
                         if target_lang in ocr_engines:
                             ocr_text_final, ocr_data_final = "[NONE]", "[]"
-                            ocr_result = ocr_engines[target_lang].ocr(path, cls=False)
+                            
+                            # 🌟 將記憶體中的 numpy 陣列直接餵給 OCR 引擎！
+                            ocr_result = ocr_engines[target_lang].ocr(img_bgr, cls=False)
+                            
                             if ocr_result and ocr_result[0]:
                                 detected_text_list = []
                                 json_data_list = []
@@ -507,6 +537,21 @@ class IndexerService:
                     if not row: continue
                     file_id = row[0]
                     
+                    # 🌟 統一讀取中心 (軌道 C 專用)
+                    with Image.open(path) as pil_img:
+                        raw_w, raw_h = pil_img.size
+                        orientation = 1
+                        exif = pil_img.getexif()
+                        if exif:
+                            for k, v in exif.items():
+                                if ExifTags.TAGS.get(k) == 'Orientation':
+                                    orientation = v
+                                    break
+                        img_rgb = ImageOps.exif_transpose(pil_img).convert('RGB')
+                        
+                    # 轉換為 OCR 需要的 BGR 陣列
+                    img_bgr = cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR)
+                    
                     # 找出這張圖片到底「缺」了哪些標記
                     cursor.execute("SELECT lang FROM ocr_results WHERE file_id=?", (file_id,))
                     done_langs = set(r[0] for r in cursor.fetchall())
@@ -516,11 +561,10 @@ class IndexerService:
                     # 針對缺少的語系補跑
                     for target_lang in missing_langs:
                         if target_lang in ocr_engines:
-                            # 🌟 取得照片 EXIF
-                            raw_w, raw_h, orientation = get_image_metadata(path) 
-                            
                             ocr_text_final, ocr_data_final = "[NONE]", "[]"
-                            ocr_result = ocr_engines[target_lang].ocr(path, cls=False)
+                            
+                            # 🌟 將陣列直接餵給 OCR 引擎！
+                            ocr_result = ocr_engines[target_lang].ocr(img_bgr, cls=False)
                             if ocr_result and ocr_result[0]:
                                 detected_text_list = []
                                 json_data_list = []

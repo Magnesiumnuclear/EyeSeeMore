@@ -37,15 +37,21 @@ class ONNXOCR:
         character.append(' ')
         return character
 
-    def ocr(self, img_path, cls=False):
-        """模擬 PaddleOCR 的 ocr 介面"""
-        
-        # [關鍵修復] 繞過 cv2.imread 不支援中文路徑的問題
-        # 舊程式碼: img = cv2.imread(img_path)
-        img = cv2.imdecode(np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR)
-        
-        if img is None:
+    def ocr(self, img_input, cls=False):
+        """
+        模擬 PaddleOCR 的 ocr 介面。
+        🌟 [優化] 支援直接輸入 numpy array (BGR 格式)，省去重複的硬碟 IO
+        """
+        # 判斷輸入是路徑還是已經解碼的圖片矩陣
+        if isinstance(img_input, str):
+            img = cv2.imdecode(np.fromfile(img_input, dtype=np.uint8), cv2.IMREAD_COLOR)
+        elif isinstance(img_input, np.ndarray):
+            img = img_input # 直接使用記憶體中的資料
+        else:
             return None
+
+        if img is None:
+            return [[]]
 
         # --- 階段 1：文字偵測 (Detection) ---
         dt_boxes = self._det_forward(img)
