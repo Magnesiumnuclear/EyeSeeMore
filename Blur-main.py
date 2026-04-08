@@ -3252,7 +3252,12 @@ class MainWindow(QMainWindow):
         # 啟動背景載入 (這裡才會去建立 ImageSearchEngine)
         threading.Thread(target=self.load_engine, daemon=True).start()
 
-        self.indexer_worker.start()
+        # 🌟 讀取設定，決定是否要在啟動時自動掃描
+        ui_state = self.config.get("ui_state", {})
+        if ui_state.get("auto_scan_on_startup", True):
+            self.indexer_worker.start()
+        else:
+            self.status.setText("自動掃描已停用。點擊左側 ⟳ 可手動更新。")
 
         # 將新的樣式表附加到現有的樣式表後
         current_stylesheet = self.styleSheet()
@@ -5395,14 +5400,31 @@ class SettingsDialog(QDialog):
         self.auto_tabs.addTab(tab_ocr_tasks, self.trans.t("auto_tasks", "tab_ocr_mapping", "📝 OCR 任務綁定"))
         
         # ==========================================
-        # 分頁 2: 背景排程 (預留施工中)
+        # 分頁 2: 排程與控制
         # ==========================================
         tab_schedule = QWidget()
         schedule_layout = QVBoxLayout(tab_schedule)
         schedule_layout.setContentsMargins(20, 20, 20, 20)
+        schedule_layout.setSpacing(15)
         
-        btn_wip = self._create_construction_button(self.trans.t("auto_tasks", "wip_schedule", "🚧 施工中：背景定時掃描與效能限制"))
-        schedule_layout.addWidget(btn_wip)
+        # 建立群組框
+        group_startup = QGroupBox(self.trans.t("auto_tasks", "grp_startup", "啟動行為 (Startup Behavior)"))
+        group_startup_layout = QVBoxLayout(group_startup)
+        group_startup_layout.setSpacing(10)
+        
+        # 建立 Checkbox
+        self.chk_scan_on_startup = QCheckBox(self.trans.t("auto_tasks", "chk_scan_startup", "啟動軟體時，自動掃描並更新所有資料夾的圖片 (預設開啟)"))
+        
+        # 讀取設定檔 (預設為 True，保持原本軟體的行為)
+        ui_state = self.main_window.config.get("ui_state", {})
+        is_auto_scan = ui_state.get("auto_scan_on_startup", True)
+        self.chk_scan_on_startup.setChecked(is_auto_scan)
+        
+        # 綁定狀態改變事件
+        self.chk_scan_on_startup.stateChanged.connect(self.on_auto_scan_changed)
+        
+        group_startup_layout.addWidget(self.chk_scan_on_startup)
+        schedule_layout.addWidget(group_startup)
         schedule_layout.addStretch(1)
         
         self.auto_tabs.addTab(tab_schedule, self.trans.t("auto_tasks", "tab_schedule", "⏳ 排程與控制"))
@@ -5413,6 +5435,13 @@ class SettingsDialog(QDialog):
         
         # 初始化載入畫面
         self.refresh_ocr_task_list()
+
+    def on_auto_scan_changed(self, state):
+        """儲存「啟動時掃描」的設定"""
+        is_checked = (state == Qt.CheckState.Checked.value)
+        ui_state = self.main_window.config.get("ui_state", {})
+        ui_state["auto_scan_on_startup"] = is_checked
+        self.main_window.config.set("ui_state", ui_state)
 
     def refresh_ocr_task_list(self):
         """動態生成 OCR 任務資料夾的 UI 列表"""
