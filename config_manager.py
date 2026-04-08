@@ -95,11 +95,18 @@ class ConfigManager:
     def add_source_folder(self, folder_path):
         folder_path = os.path.normpath(folder_path)
         current = self.config.get("source_folders", [])
+        
+        # 檢查是否已經存在相同的資料夾
         if any(os.path.normpath(f["path"]) == folder_path for f in current):
             return False
-        # [修改] 新增時預設跟隨全域設定，給予 "ch" 標記
-        default_langs = ["ch"] if self.config.get("use_ocr", True) else []
-        current.append({"path": folder_path, "icon": "", "enabled_langs": default_langs})
+            
+        
+        current.append({
+            "path": folder_path, 
+            "icon": "", 
+            "enabled_langs": []
+        })
+        
         self.set("source_folders", current)
         return True
 
