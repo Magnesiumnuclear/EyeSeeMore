@@ -3710,12 +3710,19 @@ class MainWindow(QMainWindow):
                     if not selected_indexes:
                         return False # 沒選中東西，讓系統照常處理
                         
+                    # 🌟 1. 記住目前的狀態文字 (防呆：如果目前已經是打勾狀態，就不要存)
+                    current_status = self.status.text()
+                    if not getattr(self, '_is_toast_active', False):
+                        self._previous_status_text = current_status
+                    
+                    self._is_toast_active = True # 標記進入提示狀態
+                        
                     if len(selected_indexes) == 1:
                         # 狀態 A：單選 -> 複製影像二進位實體 (LINE/Discord 直接貼上)
                         item = selected_indexes[0].data(Qt.ItemDataRole.UserRole)
                         if item and item.path:
                             self.copy_image_to_clipboard(item.path)
-                            self.status.setText("✅ 已複製影像到剪貼簿")
+                            self.status.setText("已複製影像到剪貼簿")
                     else:
                         # 狀態 B：多選 -> 複製實體檔案路徑 (Windows 檔案總管適用)
                         from PyQt6.QtCore import QMimeData, QUrl
@@ -3729,6 +3736,13 @@ class MainWindow(QMainWindow):
                         mime_data.setUrls(urls)
                         QApplication.clipboard().setMimeData(mime_data)
                         self.status.setText(f"已複製 {len(urls)} 個檔案路徑到剪貼簿")
+                        
+                    # 🌟 2. 建立還原函式，3秒後恢復文字並解除提示狀態
+                    def restore_status():
+                        self.status.setText(getattr(self, '_previous_status_text', "System Ready"))
+                        self._is_toast_active = False
+                        
+                    QTimer.singleShot(3000, restore_status)
                         
                     return True # 🌟 成功攔截並處理，不再往下傳遞
     
@@ -4190,8 +4204,28 @@ class MainWindow(QMainWindow):
     def copy_image_to_clipboard(self, path):
         try:
             img = QImage(path)
-            if not img.isNull(): QApplication.clipboard().setImage(img)
-        except: pass
+            if not img.isNull(): 
+                QApplication.clipboard().setImage(img)
+                
+                # ==========================================
+                # 🌟 [新增] 複製成功的 3 秒 Toast 視覺回饋
+                # ==========================================
+                # copy_image_to_clipboard 內的修改範例：
+                current_status = self.status.text()
+                if not getattr(self, '_is_toast_active', False):
+                    self._previous_status_text = current_status
+                    
+                self._is_toast_active = True
+                self.status.setText("已複製影像到剪貼簿")
+                
+                def restore_status():
+                    self.status.setText(getattr(self, '_previous_status_text', "System Ready"))
+                    self._is_toast_active = False
+                    
+                QTimer.singleShot(3000, restore_status)
+                
+        except Exception as e:
+            print(f"Copy image error: {e}")
 
     def show_properties_dialog(self, item):
         from datetime import datetime
