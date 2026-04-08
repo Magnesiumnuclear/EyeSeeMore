@@ -3698,6 +3698,39 @@ class MainWindow(QMainWindow):
                 elif key == Qt.Key.Key_Space:
                     self.toggle_preview()
                     return True
+                
+            # ==========================================
+            # 🌟 [新增] Ctrl+C 智慧複製 (影像實體 vs 多檔路徑)
+            # ==========================================
+            if key == Qt.Key.Key_C and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                # 確保焦點不在搜尋框內，且目前視窗是活躍狀態
+                if not self.input.hasFocus() and QApplication.activeWindow() == self:
+                    selected_indexes = self.list_view.selectionModel().selectedIndexes()
+                    
+                    if not selected_indexes:
+                        return False # 沒選中東西，讓系統照常處理
+                        
+                    if len(selected_indexes) == 1:
+                        # 狀態 A：單選 -> 複製影像二進位實體 (LINE/Discord 直接貼上)
+                        item = selected_indexes[0].data(Qt.ItemDataRole.UserRole)
+                        if item and item.path:
+                            self.copy_image_to_clipboard(item.path)
+                            self.status.setText("✅ 已複製影像到剪貼簿")
+                    else:
+                        # 狀態 B：多選 -> 複製實體檔案路徑 (Windows 檔案總管適用)
+                        from PyQt6.QtCore import QMimeData, QUrl
+                        mime_data = QMimeData()
+                        urls = []
+                        for idx in selected_indexes:
+                            item = idx.data(Qt.ItemDataRole.UserRole)
+                            if item and item.path:
+                                urls.append(QUrl.fromLocalFile(item.path))
+                        
+                        mime_data.setUrls(urls)
+                        QApplication.clipboard().setMimeData(mime_data)
+                        self.status.setText(f"已複製 {len(urls)} 個檔案路徑到剪貼簿")
+                        
+                    return True # 🌟 成功攔截並處理，不再往下傳遞
     
         # 2. 處理鍵盤放開 (KeyRelease) -> 關閉紅框 (僅限 Hold 模式)
         if event.type() == QEvent.Type.KeyRelease:
