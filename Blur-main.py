@@ -3003,6 +3003,7 @@ class InspectorPanel(QFrame):
 
     def on_calendar_cleared(self):
         """使用者按下清除日期"""
+        self._has_time_filter = False  # 🌟 [修復] 使用獨立狀態變數
         self.btn_time_range.setText("📅 全部時間 (All Time)")
         self.time_filter_cleared.emit()
 
@@ -3010,6 +3011,7 @@ class InspectorPanel(QFrame):
 
     def on_calendar_apply(self, start_date, end_date):
         """點擊 [套用結果]：轉換為 Timestamp 並發送訊號"""
+        self._has_time_filter = True   # 🌟 [修復] 標記時間過濾已啟用
         date_str = f"📅 {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
         self.btn_time_range.setText(date_str)
         
@@ -3024,6 +3026,7 @@ class InspectorPanel(QFrame):
 
     def on_calendar_search(self, start_date, end_date):
         """點擊 [直接搜尋]：轉換為 Timestamp 並發送訊號 (狀態交由 MainWindow 判定)"""
+        self._has_time_filter = True   # 🌟 [修復] 標記時間過濾已啟用
         date_str = f"📅 {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
         self.btn_time_range.setText(date_str)
         
@@ -3046,8 +3049,10 @@ class InspectorPanel(QFrame):
 
     def check_filters_active(self):
         """檢查是否有任何過濾器正在運作，並更新 UI 狀態 (包含分頁計數徽章)"""
-        is_time_filtered = ("全部時間" not in self.btn_time_range.text() and "等待操作" not in self.btn_time_range.text())
-        is_aspect_filtered = (self.combo_aspect.currentText() != "不限比例")
+        
+        # 🌟 [終極修復] 完全拔除中文字串依賴，改用隱藏屬性與 Index 判斷！
+        is_time_filtered = getattr(self, '_has_time_filter', False)
+        is_aspect_filtered = (self.combo_aspect.currentIndex() != 0) # 只要不是 0 (不限比例)，就是啟動過濾
         
         # 🌟 計算啟用的過濾條件數量
         active_count = 0
@@ -3060,11 +3065,12 @@ class InspectorPanel(QFrame):
         time_state = "true" if is_time_filtered else "false"
         aspect_state = "true" if is_aspect_filtered else "false"
         
-        self.lbl_time_title.setProperty("active", time_state)
+        # (順手修復一個潛在的報錯 BUG：原本程式碼中沒有 lbl_time_title 這個物件，應該是 btn_time_range)
+        self.btn_time_range.setProperty("active", time_state)
         self.lbl_aspect_title.setProperty("active", aspect_state)
         
-        self.lbl_time_title.style().unpolish(self.lbl_time_title)
-        self.lbl_time_title.style().polish(self.lbl_time_title)
+        self.btn_time_range.style().unpolish(self.btn_time_range)
+        self.btn_time_range.style().polish(self.btn_time_range)
         self.lbl_aspect_title.style().unpolish(self.lbl_aspect_title)
         self.lbl_aspect_title.style().polish(self.lbl_aspect_title)
 
@@ -3072,7 +3078,6 @@ class InspectorPanel(QFrame):
         self.sec_filter.set_status_active(any_active)
 
         # 🌟 3. 層級一：分頁標籤數字計數徽章 (Badge Count)
-        # 取代原本容易衝突的底線做法，直接動態修改分頁文字
         if active_count > 0:
             self.tabs.setTabText(0, f"🔎 搜尋 ({active_count})")
         else:
@@ -3085,10 +3090,11 @@ class InspectorPanel(QFrame):
         """一鍵清除所有過濾狀態"""
         # 1. 靜默重置長寬比 (不觸發訊號)
         self.combo_aspect.blockSignals(True)
-        self.combo_aspect.setCurrentText("不限比例")
+        self.combo_aspect.setCurrentIndex(0) # 🌟 [修復] 不再依賴文字 "不限比例"，直接歸零 Index
         self.combo_aspect.blockSignals(False)
         
-        # 2. 重置日曆
+        # 2. 重置日曆與時間狀態
+        self._has_time_filter = False        # 🌟 [修復] 同步歸零隱藏狀態
         self.btn_time_range.setText("📅 全部時間 (All Time)")
         self.calendar_widget.clear_selection()
         
@@ -3742,7 +3748,7 @@ class MainWindow(QMainWindow):
                         self.status.setText(getattr(self, '_previous_status_text', "System Ready"))
                         self._is_toast_active = False
                         
-                    QTimer.singleShot(3000, restore_status)
+                    QTimer.singleShot(1500, restore_status)
                         
                     return True # 🌟 成功攔截並處理，不再往下傳遞
     
@@ -4222,7 +4228,7 @@ class MainWindow(QMainWindow):
                     self.status.setText(getattr(self, '_previous_status_text', "System Ready"))
                     self._is_toast_active = False
                     
-                QTimer.singleShot(3000, restore_status)
+                QTimer.singleShot(1500, restore_status)
                 
         except Exception as e:
             print(f"Copy image error: {e}")
