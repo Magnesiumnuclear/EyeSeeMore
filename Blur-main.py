@@ -3301,12 +3301,14 @@ class MainWindow(QMainWindow):
         header_layout.setSpacing(15)
 
         self.btn_back = QPushButton("←")
+        self.btn_back.setObjectName("NavBtn")   # 🌟 新增這行發放身分證
         self.btn_back.setFixedSize(32, 32)
         self.btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_back.clicked.connect(self.navigate_back)
         self.btn_back.setEnabled(False) # 預設停用
 
         self.btn_forward = QPushButton("→")
+        self.btn_forward.setObjectName("NavBtn") # 🌟 新增這行發放身分證
         self.btn_forward.setFixedSize(32, 32)
         self.btn_forward.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_forward.clicked.connect(self.navigate_forward)

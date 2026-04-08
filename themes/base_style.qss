@@ -504,3 +504,31 @@ QLabel#DlStatusLabel {
     font-size: 13px; 
     font-weight: bold; 
 }
+
+/* --- 頂部搜尋欄 (TopBar) --- */
+QFrame#TopBar { background-color: @bg_app; border-bottom: 1px solid @border_main; }
+
+/* 🌟 新增：頂部導航按鈕 (Back/Forward) */
+QPushButton#NavBtn {
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+    color: @text_sec;
+    font-size: 18px;
+    font-weight: bold;
+}
+QPushButton#NavBtn:hover {
+    background-color: @bg_hover;
+    color: @text_main;
+}
+QPushButton#NavBtn:pressed {
+    background-color: @bg_input;
+    color: @primary;
+}
+QPushButton#NavBtn:disabled {
+    background-color: transparent;
+    color: @border_light;  /* 使用邊框的暗灰色來呈現不可用的狀態 */
+}
+
+QFrame#SearchCapsule { background-color: @bg_input; border: 1px solid @border_main; border-radius: 19px; }
+/* ... (保留底下原本的程式碼) ... */
