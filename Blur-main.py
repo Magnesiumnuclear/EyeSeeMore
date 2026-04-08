@@ -5364,7 +5364,7 @@ class SettingsDialog(QDialog):
         if isinstance(line, QFrame):
             line.hide()
 
-        # 2. 建立分頁標籤 (仿照 self.ai_tabs)
+        # 2. 建立分頁標籤
         self.auto_tabs = QTabWidget()
         self.auto_tabs.setObjectName("AutoTabs")
         
@@ -5376,7 +5376,7 @@ class SettingsDialog(QDialog):
         ocr_tasks_layout.setContentsMargins(20, 20, 20, 20)
         ocr_tasks_layout.setSpacing(15)
         
-        # 群組標題 (仿照 AI 引擎的 QGroupBox)
+        # 群組標題
         group_ocr = QGroupBox(self.trans.t("auto_tasks", "grp_ocr_folders", "資料夾 OCR 任務綁定 (Folder OCR Tasks)"))
         group_ocr_layout = QVBoxLayout(group_ocr)
         group_ocr_layout.setSpacing(10)
@@ -5386,15 +5386,24 @@ class SettingsDialog(QDialog):
         lbl_desc.setObjectName("SettingsHint")
         group_ocr_layout.addWidget(lbl_desc)
         
-        # 建立一個專屬容器用來放動態列表，方便未來刷新 (Clear & Redraw)
+        # 🌟 加入 QScrollArea 容器 (解決排版被撐破的核心)
+        self.ocr_scroll = QScrollArea()
+        self.ocr_scroll.setWidgetResizable(True)
+        self.ocr_scroll.setFrameShape(QFrame.Shape.NoFrame) # 隱藏邊框
+        self.ocr_scroll.setStyleSheet("background: transparent;")
+        
         self.ocr_tasks_container = QWidget()
+        self.ocr_tasks_container.setStyleSheet("background: transparent;") 
         self.ocr_tasks_list_layout = QVBoxLayout(self.ocr_tasks_container)
         self.ocr_tasks_list_layout.setContentsMargins(0, 5, 0, 0)
         self.ocr_tasks_list_layout.setSpacing(5)
-        group_ocr_layout.addWidget(self.ocr_tasks_container)
+        # 🌟 讓項目自動往上靠齊，避免資料夾很少時被垂直均分拉開
+        self.ocr_tasks_list_layout.setAlignment(Qt.AlignmentFlag.AlignTop) 
+        
+        self.ocr_scroll.setWidget(self.ocr_tasks_container)
+        group_ocr_layout.addWidget(self.ocr_scroll)
         
         ocr_tasks_layout.addWidget(group_ocr)
-        ocr_tasks_layout.addStretch(1)
         
         # 加入分頁
         self.auto_tabs.addTab(tab_ocr_tasks, self.trans.t("auto_tasks", "tab_ocr_mapping", "📝 OCR 任務綁定"))
@@ -5407,20 +5416,14 @@ class SettingsDialog(QDialog):
         schedule_layout.setContentsMargins(20, 20, 20, 20)
         schedule_layout.setSpacing(15)
         
-        # 建立群組框
         group_startup = QGroupBox(self.trans.t("auto_tasks", "grp_startup", "啟動行為 (Startup Behavior)"))
         group_startup_layout = QVBoxLayout(group_startup)
         group_startup_layout.setSpacing(10)
         
-        # 建立 Checkbox
         self.chk_scan_on_startup = QCheckBox(self.trans.t("auto_tasks", "chk_scan_startup", "啟動軟體時，自動掃描並更新所有資料夾的圖片 (預設開啟)"))
-        
-        # 讀取設定檔 (預設為 True，保持原本軟體的行為)
         ui_state = self.main_window.config.get("ui_state", {})
         is_auto_scan = ui_state.get("auto_scan_on_startup", True)
         self.chk_scan_on_startup.setChecked(is_auto_scan)
-        
-        # 綁定狀態改變事件
         self.chk_scan_on_startup.stateChanged.connect(self.on_auto_scan_changed)
         
         group_startup_layout.addWidget(self.chk_scan_on_startup)
