@@ -538,6 +538,16 @@ class SearchResultsModel(QAbstractListModel):
         self.dataChanged.emit(start_idx, end_idx, [Qt.ItemDataRole.DecorationRole])
         self._pending_updates.clear()
 
+    def flags(self, index):
+        # 取得預設的 flags (通常包含 Selectable 和 Enabled)
+        default_flags = super().flags(index) 
+        
+        if index.isValid():
+            # 🌟 關鍵：必須告訴 Qt 這個項目「允許被拖拽」
+            return default_flags | Qt.ItemFlag.ItemIsDragEnabled
+            
+        return default_flags
+
 class ImageDelegate(QStyledItemDelegate):
     """負責繪製列表中的每一個項目 (支援動態調整大小)"""
     def __init__(self, card_size, thumb_height, main_window):
@@ -744,6 +754,95 @@ class ImageDelegate(QStyledItemDelegate):
             painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter, tag_text)
 
         painter.restore()
+
+from PyQt6.QtCore import QMimeData, QUrl, Qt, QPoint
+from PyQt6.QtGui import QDrag, QImage, QPixmap, QPainter, QBrush, QColor, QPen, QFont
+from PyQt6.QtWidgets import QListView, QAbstractItemView
+
+class GalleryListView(QListView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 🌟 啟動進階多選與框選模式
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setSelectionRectVisible(True) # 啟用半透明框選遮罩
+        self.setDragEnabled(True)          # 啟用拖拽
+        self.setAcceptDrops(False)         # 畫廊本身不接收外部檔案丟入
+        # 🌟 [新增] 明確宣告這裡「只允許拖出，不允許拖入」
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+
+    def startDrag(self, supportedActions):
+        """當系統偵測到滑鼠按住並移動超過閥值(約10px)時，會自動觸發此函式"""
+        
+        selected_indexes = self.selectionModel().selectedIndexes()
+        if not selected_indexes:
+            return
+
+        # 1. 準備封裝資料 (MIME Data)
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        urls = []
+
+        # 收集所有選中圖片的實體路徑
+        for index in selected_indexes:
+            item = index.data(Qt.ItemDataRole.UserRole)
+            if item and item.path:
+                urls.append(QUrl.fromLocalFile(item.path))
+
+        mime_data.setUrls(urls) # 封裝路徑 (支援拖入資料夾、瀏覽器)
+
+        # 2. 根據單選/多選決定視覺鬼影 (Ghost Image) 與附加資料
+        if len(selected_indexes) == 1:
+            # --- 【單張拖拽】 ---
+            item = selected_indexes[0].data(Qt.ItemDataRole.UserRole)
+            
+            # 附加影像像素數據 (支援拖入 LINE/Discord)
+            img = QImage(item.path)
+            if not img.isNull():
+                mime_data.setImageData(img)
+
+            # 製作半透明縮圖鬼影
+            pixmap = selected_indexes[0].data(Qt.ItemDataRole.DecorationRole)
+            if pixmap and not pixmap.isNull():
+                ghost = QPixmap(pixmap.size())
+                ghost.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(ghost)
+                painter.setOpacity(0.7) # 70% 透明度
+                painter.drawPixmap(0, 0, pixmap)
+                painter.end()
+                
+                # 將鬼影縮小，避免擋住視線
+                scaled_ghost = ghost.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation)
+                drag.setPixmap(scaled_ghost)
+                drag.setHotSpot(QPoint(scaled_ghost.width() // 2, scaled_ghost.height() // 2))
+
+        else:
+            # --- 【多張拖拽】 ---
+            # 製作「代表多檔案的通用圖示 + 數量標籤」
+            badge_size = 100
+            ghost = QPixmap(badge_size, badge_size)
+            ghost.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(ghost)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            # 繪製半透明深色底框
+            painter.setBrush(QBrush(QColor(40, 40, 40, 220)))
+            painter.setPen(QPen(QColor("#60cdff"), 2)) # 主題藍色邊框
+            painter.drawRoundedRect(5, 5, badge_size-10, badge_size-10, 10, 10)
+
+            # 繪製數量文字
+            painter.setPen(QColor("#ffffff"))
+            font = QFont("Segoe UI", 20, QFont.Weight.Bold)
+            painter.setFont(font)
+            painter.drawText(ghost.rect(), Qt.AlignmentFlag.AlignCenter, f"x{len(selected_indexes)}")
+            painter.end()
+            
+            drag.setPixmap(ghost)
+            drag.setHotSpot(QPoint(badge_size // 2, badge_size // 2))
+
+        # 3. 綁定資料並強制執行「複製 (Copy)」操作
+        drag.setMimeData(mime_data)
+        drag.exec(Qt.DropAction.CopyAction)
+
 # ==========================================
 #  引擎核心
 # ==========================================
@@ -3404,7 +3503,7 @@ class MainWindow(QMainWindow):
         self.main_splitter.setObjectName("MainSplitter")
 
         # List View (畫廊)
-        self.list_view = QListView()
+        self.list_view = GalleryListView()
         self.list_view.setViewMode(QListView.ViewMode.IconMode)
         self.list_view.setResizeMode(QListView.ResizeMode.Adjust)
         self.list_view.setUniformItemSizes(True) 
@@ -3412,7 +3511,6 @@ class MainWindow(QMainWindow):
         self.list_view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.list_view.setSpacing(MIN_SPACING)
         self.list_view.setMouseTracking(True)
-        self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list_view.setObjectName("GalleryList")
 
         

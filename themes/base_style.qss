@@ -531,4 +531,19 @@ QPushButton#NavBtn:disabled {
 }
 
 QFrame#SearchCapsule { background-color: @bg_input; border: 1px solid @border_main; border-radius: 19px; }
-/* ... (保留底下原本的程式碼) ... */
+
+/* 設定畫廊的框選遮罩樣式 (Rubber Band) */
+QListView#GalleryList {
+    selection-background-color: transparent; /* 取消預設醜醜的文字底色 */
+}
+
+QListView#GalleryList::item:selected {
+    /* 選取狀態已經交由 ImageDelegate 繪製，這裡不需要額外背景 */
+    background: transparent;
+}
+
+/* 這就是那個半透明遮罩！ */
+QRubberBand {
+    background-color: rgba(96, 205, 255, 0.3); /* 這裡使用你的主題色 #60cdff，透明度 30% */
+    border: 1px solid #60cdff;
+}
