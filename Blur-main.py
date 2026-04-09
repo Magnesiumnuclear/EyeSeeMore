@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QRadioButton, QGroupBox, QStackedWidget, QTabWidget, QGridLayout, QSplitter
                              , QSlider)
 from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QPoint, QPointF, QRect, QRectF, QSize, QEvent, 
-                          QFileInfo, QTimer, QAbstractListModel, QRunnable, QThreadPool, QObject, QModelIndex)
+                          QFileInfo, QTimer, QAbstractListModel, QRunnable, QThreadPool, QObject, QModelIndex, QByteArray)
 from PyQt6.QtGui import (QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, 
                          QShortcut, QFontMetrics, QPainter, QBrush, QPen, QIcon, QPainterPath, QPolygon, QImageReader
                          , QDrag, QRegion)
@@ -3445,7 +3445,21 @@ class MainWindow(QMainWindow):
         threading.Thread(target=self.load_engine, daemon=True).start()
 
         # 🌟 讀取設定，決定是否要在啟動時自動掃描
+        # 🌟 原生視窗記憶：精準還原大小、座標與最大化狀態
+        from PyQt6.QtCore import QByteArray
         ui_state = self.config.get("ui_state", {})
+        
+        if "geometry" in ui_state and "window_state" in ui_state:
+            try:
+                self.restoreGeometry(QByteArray.fromHex(ui_state["geometry"].encode('ascii')))
+                self.restoreState(QByteArray.fromHex(ui_state["window_state"].encode('ascii')))
+            except Exception as e:
+                print(f"[UI] 視窗狀態還原失敗: {e}")
+                self.resize(1280, 900) # 失敗時的防呆預設值
+        else:
+            # 第一次開啟程式時的預設大小
+            self.resize(1280, 900)
+
         if ui_state.get("auto_scan_on_startup", True):
             self.indexer_worker.start()
         else:
@@ -4672,11 +4686,19 @@ class MainWindow(QMainWindow):
         else:
             w, h = self.width(), self.height()
             
-        # ==========================================
-        # [關鍵修復] 必須先取得「現有」的 ui_state，不能直接宣告新的空字典
-        # 否則會把設定面板裡存好的快捷鍵和 OCR 設定全部洗掉！
-        # ==========================================
+        # 🌟 原生視窗記憶：將幾何資訊與狀態轉為字串儲存
         ui_state = self.config.get("ui_state", {})
+        
+        # 使用 PyQt 原生方法取得精確資訊，並轉換為 JSON 相容的 ASCII 字串
+        ui_state["geometry"] = self.saveGeometry().toHex().data().decode('ascii')
+        ui_state["window_state"] = self.saveState().toHex().data().decode('ascii')
+        
+        # 順手清掉舊的無用參數 (避免 config.json 越來越肥)
+        for old_key in ["window_width", "window_height", "is_maximized"]:
+            ui_state.pop(old_key, None)
+            
+        # ... (其他 ui_state 的紀錄，例如 sidebar_expanded 等，請維持不變) ...
+        self.config.set("ui_state", ui_state)
         
         # 使用 dict.update() 只更新視窗相關的欄位，保留其他所有設定
         ui_state.update({
