@@ -26,6 +26,8 @@ import shutil
 # [New] 引入 OpenCV (給 Grad-CAM 用)
 import cv2
 
+import faiss
+
 # [New] 引入設定管理器
 from config_manager import ConfigManager
 from theme_manager import ThemeManager # 🌟 [新增] 引入主題引擎
@@ -951,6 +953,33 @@ class ImageSearchEngine:
             print(f"[Error] Database file not found: {self.config.db_path}")
 
     # ==========================================
+    # 在 ImageSearchEngine 類別中，載入資料庫向量之後加入這段
+    # ==========================================
+    def build_faiss_index(self, embeddings_matrix):
+        """
+        將 Numpy 矩陣轉換為 FAISS 光速索引引擎
+        :param embeddings_matrix: shape 為 (N, 1024) 的 Numpy 陣列
+        """
+        if len(embeddings_matrix) == 0:
+            self.faiss_index = None
+            return
+
+        dimension = embeddings_matrix.shape[1]
+    
+        # 🌟 由於您的 CLIP 向量在 indexer.py 中已經做過 L2 歸一化，
+        # 這裡直接使用 IP (Inner Product 內積)，它在數學上等同於 Cosine Similarity！
+    
+        # 方案 A：暴力極速版 (適合 10 萬張以下，無損精度)
+        self.faiss_index = faiss.IndexFlatIP(dimension)
+    
+        # 方案 B：HNSW 圖形演算法版 (適合百萬張以上，O(log N) 狂暴速度)
+        # self.faiss_index = faiss.IndexHNSWFlat(dimension, 32, faiss.METRIC_INNER_PRODUCT)
+    
+        # 將所有向量加入引擎 (必須是 float32 格式)
+        self.faiss_index.add(embeddings_matrix.astype(np.float32))
+        print(f"[FAISS] 成功建立 {self.faiss_index.ntotal} 筆向量索引！")
+
+    # ==========================================
     # 🌟 [新增] 統一的 WAL 資料庫連線產生器
     # ==========================================
     def get_db_conn(self):
@@ -1103,6 +1132,9 @@ class ImageSearchEngine:
                 # 在 Python 中，物件參照替換是原子操作，搜尋執行緒瞬間拿到新資料，絕不崩潰
                 self.stored_embeddings = temp_emb_matrix
                 self.data_store = temp_data_store
+
+                self.build_faiss_index(temp_emb_matrix) 
+                
                 print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
             else:
                 print(f"[Engine] No records found for model '{current_model}'.")
@@ -1148,32 +1180,21 @@ class ImageSearchEngine:
         current_embeddings = self.stored_embeddings
         current_data = self.data_store
 
-        if not self.is_ready or current_embeddings is None: 
+        # 🌟 防呆檢查：確保 FAISS 引擎已經啟動
+        if not self.is_ready or current_embeddings is None or not hasattr(self, 'faiss_index'): 
             return [] 
             
-        # ==========================================
-        # 🌟 1. 局部矩陣裁切 (Pre-Filter for specific folder)
-        # ==========================================
         valid_indices = None
         if folder_path and folder_path != "ALL":
-            # 找出所有屬於該資料夾的路徑索引
             norm_target = os.path.normpath(folder_path)
             valid_indices = [
                 i for i, item in enumerate(current_data) 
                 if os.path.normpath(item["path"]).startswith(norm_target)
             ]
-            
-            # 如果資料夾裡面沒圖片，直接回傳空陣列
             if not valid_indices:
                 return []
-                
-            # 🌟 Numpy 魔法：只裁出符合條件的特徵向量矩陣，運算速度爆增！
-            target_embeddings = current_embeddings[valid_indices]
-        else:
-            # 全域模式：使用完整矩陣
-            target_embeddings = current_embeddings
 
-        results = []; query_lower = query.lower()
+        query_lower = query.lower()
         try:
             if hasattr(self, 'last_text_query') and self.last_text_query == query and hasattr(self, 'last_text_features'):
                 text_features = self.last_text_features
@@ -1187,13 +1208,46 @@ class ImageSearchEngine:
                 self.last_text_query = query
                 self.last_text_features = text_features
             
-            # 🌟 改用裁切後的 target_embeddings 運算
-            scores = np.dot(text_features, target_embeddings.T).squeeze(0)
+            query_vector = text_features.astype(np.float32)
+            if len(query_vector.shape) == 1:
+                query_vector = np.expand_dims(query_vector, axis=0)
+
+            # ==========================================
+            # 🌟 [關鍵修復 2] 發動 FAISS，放寬到抓取前 1000 名高分候選
+            # ==========================================
+            k_results = min(1000, len(current_data))
+            top_scores_matrix, top_indices_matrix = self.faiss_index.search(query_vector, k_results)
+            top_scores = top_scores_matrix[0]
+            top_indices = top_indices_matrix[0]
+            
+            # 建立 CLIP 分數對照表
+            clip_score_map = {int(idx): float(score) for idx, score in zip(top_indices, top_scores)}
             
         except Exception as e:
             print(f"CLIP Search Error: {e}")
-            scores = np.zeros(len(valid_indices) if valid_indices else len(current_data))
+            clip_score_map = {}
+            top_indices = []
 
+        # ==========================================
+        # 🌟 混合候選名單篩選 (Hybrid Selection)
+        # ==========================================
+        candidate_set = set(top_indices)
+
+        # 光速篩選出文字或檔名命中的項目 (把它們也加入候選名單，保證文字搜尋絕對不漏接！)
+        if query_lower:
+            text_matched_indices = [
+                i for i, item in enumerate(current_data)
+                if (use_ocr and query_lower in item["ocr_text"]) or (query_lower in item["filename"].lower())
+            ]
+            candidate_set.update(text_matched_indices)
+
+        # 如果有資料夾過濾，剔除不在該資料夾的圖片
+        if valid_indices is not None:
+            candidate_set = candidate_set.intersection(set(valid_indices))
+
+        # ==========================================
+        # 🌟 執行計分迴圈 (只針對幾千張的候選名單，不跑十萬張！)
+        # ==========================================
         if weight_config is None:
             weight_config = {"mode": "multiply", "clip_w": 1.0, "ocr_w": 1.0, "name_w": 0.4, "thresh_mode": "auto", "thresh_val": 0.15}
             
@@ -1207,20 +1261,11 @@ class ImageSearchEngine:
         raw_results = []
         max_score = 0.0
 
-        # ==========================================
-        # 🌟 2. 局部迴圈 (只處理有被計算的分數)
-        # ==========================================
-        score_idx = 0
-        
-        # 決定要跑完整迴圈，還是只跑我們挑選出的 valid_indices
-        iter_list = valid_indices if valid_indices is not None else range(len(current_data))
-
-        for original_idx in iter_list:
+        for original_idx in candidate_set:
             item = current_data[original_idx]
             
-            # 使用 score_idx 去對應剛剛算出來的縮水版分數陣列
-            clip_score = float(scores[score_idx])
-            score_idx += 1
+            # 從對照表拿 CLIP 分數，沒在 Top 1000 裡的就當作 0 分
+            clip_score = clip_score_map.get(original_idx, 0.0)
             
             has_ocr = use_ocr and (query_lower in item["ocr_text"])
             has_name = query_lower in item["filename"].lower()
@@ -1228,7 +1273,8 @@ class ImageSearchEngine:
             ocr_bonus = 0.0
             name_bonus = 0.0
             
-            if clip_score >= 0.08:
+            # 🌟 修復: 只要有文字命中，或者視覺分數及格，就給予加分！
+            if clip_score >= 0.08 or has_ocr or has_name:
                 if mode == "add":
                     ocr_bonus = (ocr_w / 2.0) if has_ocr else 0.0 
                     name_bonus = (name_w / 2.0) if has_name else 0.0
@@ -1262,11 +1308,11 @@ class ImageSearchEngine:
         return results[:top_k]
 
     def search_image(self, image_path, top_k=50):
-        # 🌟 [終極防呆：取得當下指標快照]
         current_embeddings = self.stored_embeddings
         current_data = self.data_store
 
-        if not self.is_ready or current_embeddings is None: 
+        # 🌟 防呆檢查：確保 FAISS 引擎已經啟動
+        if not self.is_ready or current_embeddings is None or not hasattr(self, 'faiss_index'): 
             return []
             
         try:
@@ -1277,16 +1323,22 @@ class ImageSearchEngine:
             image_features = self.clip_image_session.run(None, {input_name: processed_image})[0]
             image_features = image_features / np.linalg.norm(image_features, axis=-1, keepdims=True)
             
-            # 這裡也必須使用 current_embeddings
-            similarity = np.dot(image_features, current_embeddings.T).squeeze(0)
+            query_vector = image_features.astype(np.float32)
             
+            # ==========================================
+            # 🌟 [關鍵修復 3] 發動 FAISS 以圖搜圖
+            # ==========================================
             k = min(top_k, len(current_data))
-            indices = np.argsort(similarity)[::-1][:k] 
-            values = similarity[indices]
+            top_scores_matrix, top_indices_matrix = self.faiss_index.search(query_vector, k)
+            
+            top_scores = top_scores_matrix[0]
+            top_indices = top_indices_matrix[0]
             
             results = []
             for i in range(k):
-                idx = indices[i]; item = current_data[idx]; score = values[i]
+                idx = top_indices[i]
+                item = current_data[idx]
+                score = top_scores[i]
                 results.append({
                     "score": float(score), "clip_score": float(score), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
                     "path": item["path"], "filename": item["filename"], 
