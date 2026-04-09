@@ -508,7 +508,7 @@ class SearchResultsModel(QAbstractListModel):
                 filename=res['filename'],
                 score=res['score'],
                 ocr_text=res.get('ocr_text', ""),
-                ocr_data=res.get('ocr_data', []),
+                # 🗑️ 刪除這行： ocr_data=res.get('ocr_data', []),  <-- 就是這行惹的禍！
                 mtime=res.get('mtime', 0),
                 width=res.get('width', 0),
                 height=res.get('height', 0)
@@ -519,9 +519,6 @@ class SearchResultsModel(QAbstractListModel):
             self.path_to_row[item.path] = idx
             
         self.endResetModel()
-        # 🌟 瘦身 2：拔除 load_more_items 呼叫
-
-    # 🌟 瘦身 3：將原本的 load_more_items 整組刪除
 
     def sort_items(self, key_func, reverse=False):
         """排序時直接對 all_items 排序，不再需要洗牌第一批"""
@@ -1060,7 +1057,7 @@ class ImageSearchEngine:
             results.append({
                 "score": 0.0, "clip_score": 0.0, "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
                 "path": item["path"], "filename": item["filename"],
-                "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0),
+                "mtime": item.get("mtime", 0),
                 "width": item.get("width", 0),   
                 "height": item.get("height", 0)  
             })
@@ -1268,7 +1265,7 @@ class ImageSearchEngine:
             raw_results.append({
                 "score": final_score, "clip_score": clip_score, "ocr_bonus": ocr_bonus, "name_bonus": name_bonus,
                 "is_ocr_match": has_ocr, "path": item["path"], "filename": item["filename"],
-                "ocr_data": item.get("ocr_data", []), "mtime": item.get("mtime", 0),
+                "mtime": item.get("mtime", 0),
                 "width": item.get("width", 0),  
                 "height": item.get("height", 0) 
             })
@@ -1316,8 +1313,7 @@ class ImageSearchEngine:
                 score = top_scores[i]
                 results.append({
                     "score": float(score), "clip_score": float(score), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
-                    "path": item["path"], "filename": item["filename"], 
-                    "ocr_data": item.get("ocr_data", []), 
+                    "path": item["path"], "filename": item["filename"],  
                     "mtime": item.get("mtime", 0),
                     "width": item.get("width", 0),   
                     "height": item.get("height", 0)  
@@ -3840,7 +3836,6 @@ class MainWindow(QMainWindow):
                     "score": 0.0,
                     "path": item["path"],
                     "filename": item["filename"],
-                    "ocr_data": item.get("ocr_data", []),
                     "mtime": item.get("mtime", 0),
                     "width": item.get("width", 0),   # 🌟 補上
                     "height": item.get("height", 0)  # 🌟 補上
