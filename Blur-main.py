@@ -1213,9 +1213,10 @@ class ImageSearchEngine:
                 query_vector = np.expand_dims(query_vector, axis=0)
 
             # ==========================================
-            # 🌟 [關鍵修復 2] 發動 FAISS，放寬到抓取前 1000 名高分候選
+            # 🌟 [關鍵修復 2] 動態發動 FAISS (支援「完全展開」)
+            # 確保最少抓 1000 張當作文字緩衝，但如果 UI 選擇 All (top_k=100000)，就水門全開！
             # ==========================================
-            k_results = min(1000, len(current_data))
+            k_results = min(max(1000, top_k), len(current_data))
             top_scores_matrix, top_indices_matrix = self.faiss_index.search(query_vector, k_results)
             top_scores = top_scores_matrix[0]
             top_indices = top_indices_matrix[0]
@@ -2906,6 +2907,9 @@ class InspectorPanel(QFrame):
         self.sec_display.addWidget(QLabel("顯示數量限制 (Limit):"))
         self.combo_limit_panel = QComboBox()
         self.combo_limit_panel.addItems(["20", "50", "100", "All"])
+
+        self.combo_limit_panel.currentIndexChanged.connect(self.on_limit_changed)
+
         self.sec_display.addWidget(self.combo_limit_panel)
 
         self.sec_display.addWidget(QLabel("Gallery 排序方式 (Sort By):"))
@@ -3269,11 +3273,22 @@ class InspectorPanel(QFrame):
         # 4. 自我更新 UI 底線狀態
         self.check_filters_active()
 
-# ==========================================
+    # ==========================================
     # 🌟 相關度權重控制邏輯 (放在 InspectorPanel 底部)
     # ==========================================
     def load_weight_settings(self):
         ui_state = self.main_window.config.get("ui_state", {})
+
+        limit_val = str(ui_state.get("search_limit", "50"))
+        index = self.combo_limit_panel.findText(limit_val)
+        if index >= 0:
+            self.combo_limit_panel.blockSignals(True) # 避免啟動時觸發不必要的搜尋
+            self.combo_limit_panel.setCurrentIndex(index)
+            self.combo_limit_panel.blockSignals(False)
+
+        mode = ui_state.get("search_calc_mode", "multiply")
+        self.combo_calc_mode.setCurrentIndex(0 if mode == "multiply" else 1)
+
         mode = ui_state.get("search_calc_mode", "multiply")
         self.combo_calc_mode.setCurrentIndex(0 if mode == "multiply" else 1)
         
@@ -3288,6 +3303,21 @@ class InspectorPanel(QFrame):
         self.update_weight_labels()
         self.on_calc_mode_changed(self.combo_calc_mode.currentIndex(), save=False)
         self.on_threshold_mode_changed(self.combo_threshold_mode.currentIndex(), save=False)
+
+    def on_limit_changed(self):
+        """當使用者改變顯示數量時，儲存設定並觸發即時重新搜尋"""
+        ui_state = self.main_window.config.get("ui_state", {})
+        
+        limit_text = self.combo_limit_panel.currentText()
+        if limit_text == "All":
+            ui_state["search_limit"] = "All"
+        else:
+            ui_state["search_limit"] = int(limit_text)
+            
+        self.main_window.config.set("ui_state", ui_state)
+        
+        # 觸發重新搜尋 (因為底層有文字特徵快取，這會是 0 毫秒瞬間更新)
+        self.weights_changed.emit(self.get_weight_config())
 
     def reset_weights_to_default(self):
         self.combo_calc_mode.setCurrentIndex(0)
@@ -3648,8 +3678,12 @@ class MainWindow(QMainWindow):
 
     def on_weights_changed(self, weight_config):
         q = self.input.text().strip()
-        if q and not q.startswith("[Image]"):
-            self.start_search(triggered_by_slider=True)
+        if q:
+            # 🌟 [新增] 如果目前是「以圖搜圖」狀態，切換 Limit 時就重跑以圖搜圖
+            if q.startswith("[Image]") and getattr(self, "current_image_search_path", None):
+                self.start_image_search(self.current_image_search_path)
+            else:
+                self.start_search(triggered_by_slider=True)
 
     def get_current_state(self):
         """擷取當前頁面的完整快照 (包含滾輪位置)"""
