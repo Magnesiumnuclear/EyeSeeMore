@@ -242,40 +242,126 @@ class WorkerSignals(QObject):
     result = pyqtSignal(str, QPixmap, bool) #加入一個布林值 is_final，讓系統知道這是不是最終的高清圖
 
 class PreviewSignals(QObject):
-    result = pyqtSignal(str, QPixmap)
+    # 🌟 關鍵修復：將跨執行緒的傳遞物件從 QPixmap 換成絕對安全的 QImage
+    result = pyqtSignal(str, QImage, list, int, int, str, bool)
 
 class PreviewLoader(QRunnable):
-    """專門用於大圖預覽的高清背景讀取器 (支援精確子採樣)"""
-    def __init__(self, file_path, target_size):
+    """專門用於大圖預覽的高清背景讀取器 + 幾何碰撞運算器"""
+    def __init__(self, file_path, target_size, raw_ocr_data, query, is_precise, orig_w, orig_h):
         super().__init__()
         self.file_path = file_path
         self.target_size = target_size
+        self.raw_ocr_data = raw_ocr_data
+        self.query = query
+        self.is_precise = is_precise
+        self.orig_w = orig_w
+        self.orig_h = orig_h
         self.signals = PreviewSignals()
         self.is_cancelled = False
 
+    def _sort_points(self, box):
+        """背景排序：將 OpenCV 隨機順序的四個點定義為 TL, TR, BR, BL"""
+        import numpy as np
+        pts = np.array(box)
+        rect = np.zeros((4, 2), dtype="float32")
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)]
+        rect[2] = pts[np.argmax(s)]
+        diff = np.diff(pts, axis=1) 
+        rect[1] = pts[np.argmin(diff)]
+        rect[3] = pts[np.argmax(diff)]
+        return rect.tolist()
+
     def run(self):
         if self.is_cancelled: return
+        
+        # ==========================================
+        # 🌟 任務 A：背景執行 Shapely 群組合併
+        # ==========================================
+        merged_data = []
         try:
-            # 🌟 黑科技：使用 QImageReader 進行子採樣，12MB 的圖只解碼出螢幕需要的大小！
+            from shapely.geometry import Polygon as ShapelyPolygon
+        except ImportError:
+            ShapelyPolygon = None
+
+        if not ShapelyPolygon:
+            for item in self.raw_ocr_data:
+                merged_data.append({
+                    "box": item.get("box", []),
+                    "results": [{"lang": item.get("lang", "unk"), "text": item.get("text", ""), "conf": item.get("conf", 0.0)}]
+                })
+        else:
+            for item in self.raw_ocr_data:
+                if self.is_cancelled: return
+                box = item.get("box")
+                if not box or len(box) != 4: continue
+                
+                try:
+                    sorted_box = self._sort_points(box)
+                    current_poly = ShapelyPolygon(sorted_box)
+                    if not current_poly.is_valid or current_poly.area <= 0: continue
+                except: 
+                    continue # 防呆：若遇到極端變形框則跳過
+                
+                is_merged = False
+                for existing in merged_data:
+                    existing_poly = existing.get("poly")
+                    if not existing_poly: continue
+                    try:
+                        if current_poly.intersects(existing_poly):
+                            inter_area = current_poly.intersection(existing_poly).area
+                            min_area = min(current_poly.area, existing_poly.area)
+                            # 重疊超過 85% 打包在一起
+                            if (inter_area / min_area) > 0.85:
+                                existing["results"].append({
+                                    "lang": item.get("lang", "unk"),
+                                    "text": item.get("text", ""),
+                                    "conf": item.get("conf", 0.0)
+                                })
+                                is_merged = True
+                                break
+                    except: pass
+                
+                if not is_merged:
+                    merged_data.append({
+                        "box": sorted_box,
+                        "poly": current_poly,
+                        "results": [{
+                            "lang": item.get("lang", "unk"),
+                            "text": item.get("text", ""),
+                            "conf": item.get("conf", 0.0)
+                        }]
+                    })
+        
+        # 🧹 拔除 Shapely 原生 poly 物件，避免跨執行緒傳遞錯誤
+        for m in merged_data:
+            m.pop("poly", None)
+
+        if self.is_cancelled: return
+
+        # ==========================================
+        # 🌟 任務 B：背景讀取高清圖片 (改用 QImage)
+        # ==========================================
+        final_img = QImage() # 建立一個空的 QImage 作為預設值
+        try:
             reader = QImageReader(self.file_path)
             reader.setAutoTransform(True)
             orig_size = reader.size()
             
             if orig_size.isValid():
-                # 計算適合螢幕的解析度
                 scaled_size = orig_size.scaled(self.target_size, Qt.AspectRatioMode.KeepAspectRatio)
-                reader.setScaledSize(scaled_size) # 限制解碼器只輸出這個大小
+                reader.setScaledSize(scaled_size)
                 img = reader.read()
                 
-                if self.is_cancelled or img.isNull(): return
-                
-                # 轉換為顯示卡最愛的 ARGB32 格式，減輕主執行緒負擔
-                pixmap = QPixmap.fromImage(img.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied))
-                
-                # 發射高清圖完成訊號
-                self.signals.result.emit(self.file_path, pixmap)
+                if not self.is_cancelled and not img.isNull():
+                    # 轉換格式，但保持為 QImage
+                    final_img = img.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
         except Exception as e:
             print(f"Preview Loader Error: {e}")
+
+        if not self.is_cancelled:
+            # 安全地將 QImage 與 OCR 資料一起發射給主執行緒
+            self.signals.result.emit(self.file_path, final_img, merged_data, self.orig_w, self.orig_h, self.query, self.is_precise)
 
 class ThumbnailLoader(QRunnable):
     """背景圖片讀取器 (智慧縮放 + GPU 材質加速版)"""
@@ -1573,73 +1659,6 @@ class OCRLabel(QLabel):
         self.hovered_index = -1
         self.cursor_pos = QPoint(0, 0)
 
-    def set_ocr_data(self, data, orig_w, orig_h, query="", is_precise=False):
-        self.original_size = QSize(orig_w, orig_h)
-        self.search_query = query.lower()
-        self.is_precise_mode = is_precise
-        self.hovered_index = -1
-        
-        # ==========================================
-        # [升級] Shapely 群組打包 (Group & Merge)
-        # ==========================================
-        merged_data = []
-        try:
-            from shapely.geometry import Polygon as ShapelyPolygon
-        except ImportError:
-            ShapelyPolygon = None
-
-        if not ShapelyPolygon:
-            # 沒有 Shapely 的備用方案：直接轉換格式
-            for item in data:
-                merged_data.append({
-                    "box": item.get("box", []),
-                    "results": [{"lang": item.get("lang", "unk"), "text": item.get("text", ""), "conf": item.get("conf", 0.0)}]
-                })
-        else:
-            for item in data:
-                box = item.get("box")
-                if not box or len(box) != 4: continue
-                
-                sorted_box = self._sort_points(box)
-                try:
-                    current_poly = ShapelyPolygon(sorted_box)
-                    if not current_poly.is_valid or current_poly.area <= 0: continue
-                except: continue
-                
-                is_merged = False
-                for existing in merged_data:
-                    existing_poly = existing["poly"]
-                    try:
-                        if current_poly.intersects(existing_poly):
-                            inter_area = current_poly.intersection(existing_poly).area
-                            min_area = min(current_poly.area, existing_poly.area)
-                            # 如果重疊超過 85%，判定為同一個區塊的不同語言結果，打包在一起！
-                            if (inter_area / min_area) > 0.85:
-                                existing["results"].append({
-                                    "lang": item.get("lang", "unk"),
-                                    "text": item.get("text", ""),
-                                    "conf": item.get("conf", 0.0)
-                                })
-                                is_merged = True
-                                break
-                    except: pass
-                
-                if not is_merged:
-                    merged_data.append({
-                        "box": sorted_box,
-                        "poly": current_poly,
-                        "results": [{
-                            "lang": item.get("lang", "unk"),
-                            "text": item.get("text", ""),
-                            "conf": item.get("conf", 0.0)
-                        }]
-                    })
-        
-        # 移除底層繪圖不需要的 poly 物件，避免記憶體洩漏或錯誤
-        for m in merged_data:
-            m.pop("poly", None)
-            
-        self.ocr_data = merged_data
 
     def set_draw_boxes(self, show):
         self.show_ocr_boxes = show
@@ -1648,21 +1667,14 @@ class OCRLabel(QLabel):
             self.hover_info_changed.emit([], QPolygon(), QPoint())
         self.update()
 
-    def _sort_points(self, box):
-        """將 OpenCV 隨機順序的四個點嚴格定義為 TL, TR, BR, BL"""
-        import numpy as np
-        pts = np.array(box)
-        rect = np.zeros((4, 2), dtype="float32")
-        
-        s = pts.sum(axis=1)
-        rect[0] = pts[np.argmin(s)] # TL
-        rect[2] = pts[np.argmax(s)] # BR
-        
-        diff = np.diff(pts, axis=1) 
-        rect[1] = pts[np.argmin(diff)] # TR
-        rect[3] = pts[np.argmax(diff)] # BL
-        
-        return rect.tolist()
+    def set_precomputed_ocr_data(self, precomputed_data, orig_w, orig_h, query="", is_precise=False):
+        """[極速版] 捨棄所有運算，直接接收背景算好的幾何資料，UI 執行緒只負責繪圖"""
+        self.original_size = QSize(orig_w, orig_h)
+        self.search_query = query.lower()
+        self.is_precise_mode = is_precise
+        self.hovered_index = -1
+        self.ocr_data = precomputed_data
+        self.update()
 
     def _calculate_ratios(self, full_text, search_query):
         """計算字元權重與起訖比例"""
@@ -1912,15 +1924,18 @@ class PreviewOverlay(QWidget):
         if isinstance(result_data, ImageItem):
             path = result_data.path
             ocr_boxes = result_data.ocr_data
+            orig_w, orig_h = result_data.width, result_data.height
         else:
             path = result_data['path']
             ocr_boxes = result_data.get('ocr_data', [])
+            screen_size = self.parent().size()
+            orig_w = result_data.get('width', int(screen_size.width() * 0.85))
+            orig_h = result_data.get('height', int(screen_size.height() * 0.85))
 
         if not os.path.exists(path): return
 
         self.current_preview_path = path
 
-        # 🌟 防護網：如果有上一張圖的高清任務還在跑，立刻無情撤銷！
         if self.current_preview_worker:
             self.current_preview_worker.is_cancelled = True
             self.current_preview_worker = None
@@ -1930,59 +1945,49 @@ class PreviewOverlay(QWidget):
         max_h = int(screen_size.height() * 0.85)
         target_size = QSize(max_w, max_h)
 
-        # ==========================================
-        # 階段一：0 毫秒光速顯示 (拉伸 L1 小快取)
-        # ==========================================
+        if orig_w == 0 or orig_h == 0:
+            orig_w, orig_h = target_size.width(), target_size.height()
+
         if l1_pixmap and not l1_pixmap.isNull():
-            # 將 220x180 的小圖平滑放大到全螢幕，畫面會瞬間出現 (雖然是模糊的)
             scaled_l1 = l1_pixmap.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.image_label.setPixmap(scaled_l1)
         else:
             self.image_label.clear()
 
         # ==========================================
-        # 階段二：發射背景高清解碼任務
+        # 🌟 階段二：發射背景高清解碼與 OCR 幾何運算任務
         # ==========================================
-        self.current_preview_worker = PreviewLoader(path, target_size)
+        import copy
+        processed_boxes = copy.deepcopy(ocr_boxes)
+
+        # 🌟 先清空舊圖的 OCR 框，避免切換瞬間看到殘影
+        self.image_label.set_precomputed_ocr_data([], orig_w, orig_h)
+
+        # 將繁重的參數全數打包，交給背景處理！
+        self.current_preview_worker = PreviewLoader(
+            path, target_size, processed_boxes, current_query, is_precise_mode, orig_w, orig_h
+        )
         self.current_preview_worker.signals.result.connect(self.on_highres_ready)
         QThreadPool.globalInstance().start(self.current_preview_worker)
 
-        # --- 處理 OCR 標籤與其他 UI ---
-        import copy
-        processed_boxes = copy.deepcopy(ocr_boxes)
-        
-        # ==========================================
-        # 🌟 [關鍵修復] 修正 OCR 紅框偏移 Bug
-        # 不論是否顯示模糊小圖，OCR 坐標必須永遠對齊原始圖片的高清解析度！
-        # ==========================================
-        if isinstance(result_data, ImageItem):
-            # 🌟 [修正] 屬性名稱是 width 和 height
-            orig_w, orig_h = result_data.width, result_data.height
-        else:
-            orig_w = result_data.get('width', target_size.width())
-            orig_h = result_data.get('height', target_size.height())
-            
-        # 🌟 終極防呆：萬一資料庫讀出來的長寬是 0 (例如舊資料庫)，借用螢幕尺寸避免報錯
-        if orig_w == 0 or orig_h == 0:
-            orig_w, orig_h = target_size.width(), target_size.height()
-
-        self.image_label.set_ocr_data(processed_boxes, orig_w, orig_h, current_query, is_precise_mode)
-        
         self.filename_label.setText(os.path.basename(path))
         self.resize(self.parent().size())
         self.show()
         self.raise_()
         self.setFocus()
 
-    # ==========================================
-    # 階段三：接收高清圖並「直接硬切」
-    # ==========================================
-    def on_highres_ready(self, path, pixmap):
-        # 嚴格防呆：確保這張圖是使用者「現在」正在看的這張
-        if path == self.current_preview_path and not pixmap.isNull():
-            # 瞬間硬切覆蓋！完成「對焦」的視覺魔法
-            self.image_label.setPixmap(pixmap)
+    def on_highres_ready(self, path, img, merged_data, orig_w, orig_h, query, is_precise):
+        # 確保是目前正在看這張圖
+        if path == self.current_preview_path:
             
+            # 1. 🌟 確保在 UI 執行緒內才把 QImage 轉換為 QPixmap，絕對安全！
+            if not img.isNull():
+                pixmap = QPixmap.fromImage(img)
+                self.image_label.setPixmap(pixmap)
+                
+            # 2. 🌟 就算圖片因為極端原因載入失敗，我們也強制把算好的 OCR 資料塞給畫布
+            # 這樣按 Shift 就絕對能看得到紅框！
+            self.image_label.set_precomputed_ocr_data(merged_data, orig_w, orig_h, query, is_precise)
             self.image_label.update()
 
     def set_ocr_visible(self, visible):
