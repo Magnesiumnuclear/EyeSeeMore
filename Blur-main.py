@@ -795,10 +795,6 @@ class GalleryListView(QListView):
             # --- 【單張拖拽】 ---
             item = selected_indexes[0].data(Qt.ItemDataRole.UserRole)
             
-            # 附加影像像素數據 (支援拖入 LINE/Discord)
-            img = QImage(item.path)
-            if not img.isNull():
-                mime_data.setImageData(img)
 
             # 製作半透明縮圖鬼影
             pixmap = selected_indexes[0].data(Qt.ItemDataRole.DecorationRole)
@@ -3804,7 +3800,7 @@ class MainWindow(QMainWindow):
                     return True
                 
             # ==========================================
-            # 🌟 [新增] Ctrl+C 智慧複製 (影像實體 vs 多檔路徑)
+            # 🌟 [新增] Ctrl+C 智慧複製 (全面統一為檔案路徑複製)
             # ==========================================
             if key == Qt.Key.Key_C and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
                 # 確保焦點不在搜尋框內，且目前視窗是活躍狀態
@@ -3814,34 +3810,33 @@ class MainWindow(QMainWindow):
                     if not selected_indexes:
                         return False # 沒選中東西，讓系統照常處理
                         
-                    # 🌟 1. 記住目前的狀態文字 (防呆：如果目前已經是打勾狀態，就不要存)
+                    # 1. 記住目前的狀態文字
                     current_status = self.status.text()
                     if not getattr(self, '_is_toast_active', False):
                         self._previous_status_text = current_status
                     
                     self._is_toast_active = True # 標記進入提示狀態
                         
-                    if len(selected_indexes) == 1:
-                        # 狀態 A：單選 -> 複製影像二進位實體 (LINE/Discord 直接貼上)
-                        item = selected_indexes[0].data(Qt.ItemDataRole.UserRole)
+                    # 🌟 【統一邏輯】無論單選或多選，一律打包成實體檔案路徑 (Urls)
+                    # 解決單張圖片無法在檔案總管 Ctrl+V 貼上的 Bug
+                    from PyQt6.QtCore import QMimeData, QUrl
+                    mime_data = QMimeData()
+                    urls = []
+                    for idx in selected_indexes:
+                        item = idx.data(Qt.ItemDataRole.UserRole)
                         if item and item.path:
-                            self.copy_image_to_clipboard(item.path)
-                            self.status.setText("已複製影像到剪貼簿")
+                            urls.append(QUrl.fromLocalFile(item.path))
+                    
+                    mime_data.setUrls(urls)
+                    QApplication.clipboard().setMimeData(mime_data)
+                    
+                    # 更新提示文字
+                    if len(urls) == 1:
+                        self.status.setText("已複製 1 個檔案到剪貼簿")
                     else:
-                        # 狀態 B：多選 -> 複製實體檔案路徑 (Windows 檔案總管適用)
-                        from PyQt6.QtCore import QMimeData, QUrl
-                        mime_data = QMimeData()
-                        urls = []
-                        for idx in selected_indexes:
-                            item = idx.data(Qt.ItemDataRole.UserRole)
-                            if item and item.path:
-                                urls.append(QUrl.fromLocalFile(item.path))
+                        self.status.setText(f"已複製 {len(urls)} 個檔案到剪貼簿")
                         
-                        mime_data.setUrls(urls)
-                        QApplication.clipboard().setMimeData(mime_data)
-                        self.status.setText(f"已複製 {len(urls)} 個檔案路徑到剪貼簿")
-                        
-                    # 🌟 2. 建立還原函式，3秒後恢復文字並解除提示狀態
+                    # 2. 建立還原函式，1.5秒後恢復文字並解除提示狀態
                     def restore_status():
                         self.status.setText(getattr(self, '_previous_status_text', "System Ready"))
                         self._is_toast_active = False
