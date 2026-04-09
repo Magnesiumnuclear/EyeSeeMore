@@ -950,6 +950,19 @@ class ImageSearchEngine:
         else:
             print(f"[Error] Database file not found: {self.config.db_path}")
 
+    # ==========================================
+    # 🌟 [新增] 統一的 WAL 資料庫連線產生器
+    # ==========================================
+    def get_db_conn(self):
+        """建立具備 WAL 模式與高容忍度的資料庫連線"""
+        # timeout=15.0 表示如果硬碟真的卡住，前端願意等 15 秒而不直接報錯當機
+        conn = sqlite3.connect(self.config.db_path, timeout=15.0)
+        # 啟動 WAL 模式 (讀寫分離，前端讀取不阻塞後台寫入)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        # 設定為 NORMAL，大幅減少硬碟同步等待時間，提升 10 倍以上寫入速度
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        return conn
+
     def load_ai_models(self):
         try:
             model_name = self.config.get("model_name")
@@ -1029,7 +1042,7 @@ class ImageSearchEngine:
 
     def load_data_from_db(self):
         print(f"[Engine] Connecting to database: {self.config.db_path}...")
-        conn = sqlite3.connect(self.config.db_path)
+        conn = self.get_db_conn()
         cursor = conn.cursor()
         try:
             current_model = self.config.get("model_name")
@@ -1104,7 +1117,7 @@ class ImageSearchEngine:
     def get_folder_stats(self):
         if not os.path.exists(self.config.db_path): return []
         try:
-            conn = sqlite3.connect(self.config.db_path)
+            conn = self.get_db_conn()
             cursor = conn.cursor()
             # [關鍵修復 2] 根據當前模型去 model_stats 抓取統計
             current_model = self.config.get("model_name")
@@ -1120,7 +1133,7 @@ class ImageSearchEngine:
         if os.path.exists(new_path): return False, "Target filename already exists."
         try:
             os.rename(old_path, new_path)
-            conn = sqlite3.connect(self.config.db_path); cursor = conn.cursor()
+            conn = self.get_db_conn(); cursor = conn.cursor()
             # [關鍵修復 3] 改為更新 files 表
             cursor.execute("UPDATE files SET file_path = ?, filename = ? WHERE file_path = ?", (new_path, new_name, old_path))
             conn.commit(); conn.close()
@@ -5001,8 +5014,8 @@ class SettingsDialog(QDialog):
             self.main_window.config.remove_source_folder(path)
             if self.main_window.engine:
                 try:
-                    conn = sqlite3.connect(self.main_window.config.db_path)
-                    conn.execute("PRAGMA foreign_keys = ON;") 
+                    conn = self.main_window.engine.get_db_conn()
+                    conn.execute("PRAGMA foreign_keys = ON;")
                     cursor = conn.cursor()
                     cursor.execute("DELETE FROM files WHERE folder_path = ?", (path,))
                     conn.commit()
