@@ -51,7 +51,7 @@ def rotate_ocr_box(box, orientation, raw_w, raw_h):
     return new_box
 
 # ==========================================
-# [新增] 純 Numpy 的圖片預處理 (完全取代 PyTorch & open_clip)
+# [極速版] 純 Numpy + OpenCV 的圖片預處理 (完全取代 PIL)
 # ==========================================
 class NumpyPreprocess:
     def __init__(self, size=224):
@@ -60,23 +60,33 @@ class NumpyPreprocess:
         self.std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32).reshape(3, 1, 1)
 
     def __call__(self, image: Image.Image):
-        # 1. 智慧縮放 (短邊對齊 224)
-        w, h = image.size
+        # 🌟 0. 瞬間將 PIL 圖片無損轉入 Numpy 陣列 (此時為 RGB 格式)
+        img_arr = np.array(image)
+        h, w = img_arr.shape[:2]
+
+        # 🌟 1. 智慧縮放 (短邊對齊 224)
         if w < h:
-            new_w = self.size; new_h = int(h * (self.size / w))
+            new_w = self.size
+            new_h = int(h * (self.size / w))
         else:
-            new_h = self.size; new_w = int(w * (self.size / h))
-        image = image.resize((new_w, new_h), Image.Resampling.BICUBIC)
-        
-        # 2. 中央裁切
-        left = (new_w - self.size) // 2
+            new_h = self.size
+            new_w = int(w * (self.size / h))
+            
+        # 使用 OpenCV 的 C++ 底層 SIMD 指令集進行極速縮放
+        # INTER_CUBIC 能保持與原本 CLIP 模型訓練時相同的像素採樣品質
+        img_arr = cv2.resize(img_arr, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+
+        # 🌟 2. 記憶體視圖裁切 (View Slicing)
+        # Numpy 的切片是 O(1) 操作，不複製記憶體，比 PIL.crop 瞬間完成
         top = (new_h - self.size) // 2
-        image = image.crop((left, top, left + self.size, top + self.size))
-        
-        # 3. 轉 Numpy、歸一化、調換維度為 CHW
-        img_arr = np.array(image).astype(np.float32) / 255.0
+        left = (new_w - self.size) // 2
+        img_arr = img_arr[top:top + self.size, left:left + self.size]
+
+        # 🌟 3. 轉 Numpy、歸一化、調換維度為 CHW
+        img_arr = img_arr.astype(np.float32) / 255.0
         img_arr = img_arr.transpose((2, 0, 1))
         img_arr = (img_arr - self.mean) / self.std
+        
         return img_arr
 
 # ==========================================
