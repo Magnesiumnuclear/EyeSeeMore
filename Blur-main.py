@@ -205,33 +205,21 @@ class TaskbarController:
             self.taskbar.contents.lpVtbl.contents.SetProgressValue(self.taskbar, self.hwnd, current, total)
 # ==========================================
 
-# ==========================================
-#  樣式表
-# ==========================================
-
-
-# ==========================================
-#  [NEW] 高效能資料模型與載入器
-# ==========================================
 
 class ImageItem:
     """單張圖片的資料結構，統一管理所有屬性"""
-    def __init__(self, path, filename, score, ocr_text="", ocr_data=None, mtime=0, width=0, height=0):
+    def __init__(self, path, filename, score, ocr_text="", mtime=0, width=0, height=0):
         self.path = path
         self.filename = filename
         self.score = score
         self.ocr_text = ocr_text
-        self.ocr_data = ocr_data if ocr_data else []
         self.mtime = mtime
         self.width = width
         self.height = height
         self.is_ocr_match = False 
 
-        # 🌟 [Opt 6] 預先格式化與轉換分數，杜絕 paint 迴圈的轉換開銷
         self.score_val = float(score)
         self.score_str = f"{self.score_val:.4f}" if self.score_val > 0.0001 else ""
-        
-        # 🌟 [Opt 6] 檔名省略 (Elided Text) 快取字典
         self._elided_name_cache = {}
 
     def get_elided_name(self, fm, width):
@@ -249,11 +237,11 @@ class PreviewSignals(QObject):
 
 class PreviewLoader(QRunnable):
     """專門用於大圖預覽的高清背景讀取器 + 幾何碰撞運算器"""
-    def __init__(self, file_path, target_size, raw_ocr_data, query, is_precise, orig_w, orig_h):
+    def __init__(self, file_path, target_size, engine, query, is_precise, orig_w, orig_h):
         super().__init__()
         self.file_path = file_path
         self.target_size = target_size
-        self.raw_ocr_data = raw_ocr_data
+        self.engine = engine  # 🌟 拿到引擎準備去撈資料
         self.query = query
         self.is_precise = is_precise
         self.orig_w = orig_w
@@ -278,6 +266,15 @@ class PreviewLoader(QRunnable):
         if self.is_cancelled: return
         
         # ==========================================
+        # 🌟 任務 A-0：背景向 SQLite 請求 JSON 解析 (秒速且不卡 UI)
+        # ==========================================
+        raw_ocr_data = []
+        if self.engine:
+            raw_ocr_data = self.engine.get_ocr_data_by_path(self.file_path)
+
+        if self.is_cancelled: return
+        
+        # ==========================================
         # 🌟 任務 A：背景執行 Shapely 群組合併
         # ==========================================
         merged_data = []
@@ -287,15 +284,17 @@ class PreviewLoader(QRunnable):
             ShapelyPolygon = None
 
         if not ShapelyPolygon:
-            for item in self.raw_ocr_data:
+            # 🌟 這裡原本用 self.raw_ocr_data，現在改用剛剛撈出來的 raw_ocr_data
+            for item in raw_ocr_data:
                 merged_data.append({
                     "box": item.get("box", []),
                     "results": [{"lang": item.get("lang", "unk"), "text": item.get("text", ""), "conf": item.get("conf", 0.0)}]
                 })
         else:
-            for item in self.raw_ocr_data:
+            for item in raw_ocr_data:
                 if self.is_cancelled: return
                 box = item.get("box")
+                # ... (下面的 Shapely 合併邏輯完全維持不變，只要確保迴圈是用 raw_ocr_data 即可) ...
                 if not box or len(box) != 4: continue
                 
                 try:
@@ -303,7 +302,7 @@ class PreviewLoader(QRunnable):
                     current_poly = ShapelyPolygon(sorted_box)
                     if not current_poly.is_valid or current_poly.area <= 0: continue
                 except: 
-                    continue # 防呆：若遇到極端變形框則跳過
+                    continue
                 
                 is_merged = False
                 for existing in merged_data:
@@ -313,7 +312,6 @@ class PreviewLoader(QRunnable):
                         if current_poly.intersects(existing_poly):
                             inter_area = current_poly.intersection(existing_poly).area
                             min_area = min(current_poly.area, existing_poly.area)
-                            # 重疊超過 85% 打包在一起
                             if (inter_area / min_area) > 0.85:
                                 existing["results"].append({
                                     "lang": item.get("lang", "unk"),
@@ -335,7 +333,6 @@ class PreviewLoader(QRunnable):
                         }]
                     })
         
-        # 🧹 拔除 Shapely 原生 poly 物件，避免跨執行緒傳遞錯誤
         for m in merged_data:
             m.pop("poly", None)
 
@@ -1076,11 +1073,10 @@ class ImageSearchEngine:
         try:
             current_model = self.config.get("model_name")
             
-            # [升級 1] SQL 動態 JSON 封裝
+            # 🌟 [效能封頂] 拔除了肥大的 JSON 組合，只保留純文字 ocr_text 用於搜尋
             cursor.execute("""
                 SELECT f.file_path, e.embedding, f.mtime, f.width, f.height, 
-                       GROUP_CONCAT(o.ocr_text, ' '), 
-                       '[' || GROUP_CONCAT('{"lang":"' || o.lang || '", "data":' || o.ocr_data || '}', ',') || ']' 
+                       GROUP_CONCAT(o.ocr_text, ' ')
                 FROM files f
                 JOIN embeddings e ON f.id = e.file_id
                 LEFT JOIN ocr_results o ON f.id = o.file_id
@@ -1089,55 +1085,33 @@ class ImageSearchEngine:
             """, (current_model,))
             rows = cursor.fetchall()
             
-            # 🌟 [方案 B：雙緩衝機制] 使用暫存變數進行載入，不干擾主線程的搜尋
             temp_data_store = [] 
             temp_embeddings_list = []
             
-            for path, blob, mtime, width, height, combined_text, combined_data_json in rows:
+            # 🌟 [效能封頂] 迴圈內不再做任何 json.loads()，啟動速度直接起飛！
+            for path, blob, mtime, width, height, combined_text in rows:
                 if not os.path.exists(path): continue 
                 
                 emb_array = np.frombuffer(blob, dtype=np.float32)
                 temp_embeddings_list.append(emb_array)
                 text_content = combined_text if combined_text else ""
                 
-                ocr_boxes = []
-                if combined_data_json and combined_data_json != "[]" and combined_data_json != "[NULL]":
-                    try:
-                        parsed_lists = json.loads(combined_data_json)
-                        for lang_group in parsed_lists:
-                            if not isinstance(lang_group, dict): continue
-                            lang = lang_group.get("lang", "unk")
-                            data = lang_group.get("data", [])
-                            if isinstance(data, list):
-                                for item in data:
-                                    item["lang"] = lang  # 關鍵：標記這是哪一國語言抓到的
-                                    ocr_boxes.append(item)
-                    except Exception as e: 
-                        print(f"JSON Parse error: {e}")
-
                 temp_data_store.append({
                     "path": path,
                     "filename": os.path.basename(path),
                     "ocr_text": text_content.lower(),
-                    "ocr_data": ocr_boxes,
                     "mtime": mtime,
                     "width": width if width else 0,
                     "height": height if height else 0
                 })
             
-            # 🌟 [方案 B] 資料準備完成後，進行「極速切換 (Atomic Swap)」
             if temp_data_store and temp_embeddings_list:
                 temp_emb_matrix = np.stack(temp_embeddings_list)
-                
-                # 在 Python 中，物件參照替換是原子操作，搜尋執行緒瞬間拿到新資料，絕不崩潰
                 self.stored_embeddings = temp_emb_matrix
                 self.data_store = temp_data_store
-
                 self.build_faiss_index(temp_emb_matrix) 
-                
                 print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
             else:
-                print(f"[Engine] No records found for model '{current_model}'.")
                 self.stored_embeddings = None
                 self.data_store = []
                 
@@ -1351,6 +1325,36 @@ class ImageSearchEngine:
             return results
         except Exception as e:
             print(f"[Error] Image search failed: {e}"); return []
+        
+    def get_ocr_data_by_path(self, file_path):
+        """🌟 [新增] 懶加載通道：只有在預覽時，才去資料庫把這張圖片的座標 JSON 撈出來"""
+        conn = self.get_db_conn()
+        cursor = conn.cursor()
+        ocr_boxes = []
+        try:
+            cursor.execute("""
+                SELECT o.lang, o.ocr_data 
+                FROM ocr_results o
+                JOIN files f ON o.file_id = f.id
+                WHERE f.file_path = ?
+            """, (file_path,))
+            
+            rows = cursor.fetchall()
+            for lang, data_json in rows:
+                if data_json and data_json != "[]" and data_json != "[NULL]":
+                    try:
+                        parsed_data = json.loads(data_json)
+                        if isinstance(parsed_data, list):
+                            for item in parsed_data:
+                                item["lang"] = lang
+                                ocr_boxes.append(item)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[Engine] Lazy load OCR data error: {e}")
+        finally:
+            conn.close()
+        return ocr_boxes
 
 from indexer import IndexerService # 確保引入
 
@@ -1985,15 +1989,12 @@ class PreviewOverlay(QWidget):
         if not visible:
             self.floating_tag.hide()
 
-    # 🌟 接收來自 MainWindow 的 l1_pixmap
     def show_image(self, result_data, current_query="", is_precise_mode=False, l1_pixmap=None):
         if isinstance(result_data, ImageItem):
             path = result_data.path
-            ocr_boxes = result_data.ocr_data
             orig_w, orig_h = result_data.width, result_data.height
         else:
             path = result_data['path']
-            ocr_boxes = result_data.get('ocr_data', [])
             screen_size = self.parent().size()
             orig_w = result_data.get('width', int(screen_size.width() * 0.85))
             orig_h = result_data.get('height', int(screen_size.height() * 0.85))
@@ -2020,18 +2021,12 @@ class PreviewOverlay(QWidget):
         else:
             self.image_label.clear()
 
-        # ==========================================
-        # 🌟 階段二：發射背景高清解碼與 OCR 幾何運算任務
-        # ==========================================
-        import copy
-        processed_boxes = copy.deepcopy(ocr_boxes)
-
-        # 🌟 先清空舊圖的 OCR 框，避免切換瞬間看到殘影
+        
         self.image_label.set_precomputed_ocr_data([], orig_w, orig_h)
 
-        # 將繁重的參數全數打包，交給背景處理！
+        # 🌟 將 engine 傳入，讓它在背景自己去撈資料！
         self.current_preview_worker = PreviewLoader(
-            path, target_size, processed_boxes, current_query, is_precise_mode, orig_w, orig_h
+            path, target_size, self.parent().engine, current_query, is_precise_mode, orig_w, orig_h
         )
         self.current_preview_worker.signals.result.connect(self.on_highres_ready)
         QThreadPool.globalInstance().start(self.current_preview_worker)
