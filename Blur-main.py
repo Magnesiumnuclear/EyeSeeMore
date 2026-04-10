@@ -1279,11 +1279,11 @@ class ImageSearchEngine:
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
-    def search_image(self, image_path, top_k=50):
+    def search_image(self, image_path, top_k=50, folder_path=None):
         current_embeddings = self.stored_embeddings
         current_data = self.data_store
 
-        # 🌟 防呆檢查：確保 FAISS 引擎已經啟動
+        # 防呆檢查：確保 FAISS 引擎已經啟動
         if not self.is_ready or current_embeddings is None or not hasattr(self, 'faiss_index'): 
             return []
             
@@ -1298,18 +1298,27 @@ class ImageSearchEngine:
             query_vector = image_features.astype(np.float32)
             
             # ==========================================
-            # 🌟 [關鍵修復 3] 發動 FAISS 以圖搜圖
+            # 🌟 [關鍵修復 3] 發動 FAISS 以圖搜圖 (超額抓取與範圍過濾)
             # ==========================================
-            k = min(top_k, len(current_data))
-            top_scores_matrix, top_indices_matrix = self.faiss_index.search(query_vector, k)
+            # 為了確保「範圍過濾」後還有足夠的圖片，我們先跟 FAISS 要一大把 (至少 2000 張)
+            fetch_limit = min(max(2000, top_k), len(current_data))
+            top_scores_matrix, top_indices_matrix = self.faiss_index.search(query_vector, fetch_limit)
             
             top_scores = top_scores_matrix[0]
             top_indices = top_indices_matrix[0]
             
+            # 準備過濾條件
+            norm_target = os.path.normpath(folder_path) if (folder_path and folder_path != "ALL") else None
+            
             results = []
-            for i in range(k):
+            for i in range(fetch_limit):
                 idx = top_indices[i]
                 item = current_data[idx]
+                
+                # 🌟 如果有指定資料夾，且圖片不在該資料夾內，直接丟棄！
+                if norm_target and not os.path.normpath(item["path"]).startswith(norm_target):
+                    continue
+                    
                 score = top_scores[i]
                 results.append({
                     "score": float(score), "clip_score": float(score), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
@@ -1318,6 +1327,11 @@ class ImageSearchEngine:
                     "width": item.get("width", 0),   
                     "height": item.get("height", 0)  
                 })
+                
+                # 收集滿目標數量就可以提早收工
+                if len(results) >= top_k:
+                    break
+                    
             return results
         except Exception as e:
             print(f"[Error] Image search failed: {e}"); return []
@@ -1480,8 +1494,8 @@ class SearchWorker(QThread):
     def run(self):
         start_time = time.time()
         if self.search_mode == "image":
-            # 圖片相似搜尋目前暫不實作範圍過濾
-            raw_results = self.engine.search_image(self.query, self.top_k)
+            # 🌟 [修改] 圖片相似搜尋現在也支援範圍過濾了！
+            raw_results = self.engine.search_image(self.query, self.top_k, folder_path=self.folder_path)
         else:
             # 🌟 [修改] 將參數傳遞給底層
             raw_results = self.engine.search_hybrid(
@@ -4114,9 +4128,7 @@ class MainWindow(QMainWindow):
             start_ts, end_ts = self.active_time_range
             filtered = [item for item in filtered if start_ts <= item["mtime"] <= end_ts]
             
-        # ==========================================
-        # 🌟 2. 長寬比過濾 (容差 5%)
-        # ==========================================
+        # 2. 長寬比過濾 (容差 5%)
         aspect_mode = self.inspector_panel.combo_aspect.currentText()
         if aspect_mode != "不限比例":
             temp_filtered = []
@@ -4131,15 +4143,23 @@ class MainWindow(QMainWindow):
                     elif aspect_mode == "正方形 (Square)" and 0.95 <= ratio <= 1.05:
                         temp_filtered.append(item)
             filtered = temp_filtered
+            
         # ==========================================
+        # 🌟 3. UI 顯示數量限制 (Limit Truncation)
+        # 這是實作「超額抓取 + 精準裁切」的最關鍵一步
+        # ==========================================
+        limit_text = self.inspector_panel.combo_limit_panel.currentText()
+        if limit_text != "All":
+            limit_val = int(limit_text)
+            filtered = filtered[:limit_val]
 
         if test_mode:
             return len(filtered) 
             
-        # 3. 丟給畫面更新
+        # 4. 丟給畫面更新
         self.model.set_search_results(filtered)
         
-        # 4. 順便套用目前的排序設定
+        # 5. 順便套用目前的排序設定
         self.apply_gallery_sort() 
 
         if getattr(self, 'pending_scroll_pos', None) is not None:
@@ -4578,7 +4598,7 @@ class MainWindow(QMainWindow):
             self.inspector_panel.combo_sort.blockSignals(False)
 
         limit = self.inspector_panel.combo_limit_panel.currentText()
-        k = 100000 if limit == "All" else int(limit)
+        fetch_k = 100000 if limit == "All" else 2000
         
         # ==========================================
         # 🌟 [完美修復] 執行緒收容與 C++ 幽靈物件防護
@@ -4606,7 +4626,7 @@ class MainWindow(QMainWindow):
             target_folder = self.current_folder_path
 
         weight_config = self.inspector_panel.get_weight_config()
-        self.worker = SearchWorker(self.engine, q, k, search_mode="text", 
+        self.worker = SearchWorker(self.engine, q, fetch_k, search_mode="text", 
                                    use_ocr=self.btn_ocr_toggle.isChecked(), 
                                    weight_config=weight_config,
                                    folder_path=target_folder)
@@ -4634,7 +4654,12 @@ class MainWindow(QMainWindow):
         self.inspector_panel.combo_sort.blockSignals(False)
         
         limit = self.inspector_panel.combo_limit_panel.currentText()
-        k = 100000 if limit == "All" else int(limit)
+        fetch_k = 100000 if limit == "All" else 2000
+
+        target_folder = None
+        is_local_mode = (self.inspector_panel.combo_search_scope.currentIndex() == 0)
+        if is_local_mode and self.current_folder_path != "ALL":
+            target_folder = self.current_folder_path
         
         # ==========================================
         # 🌟 [完美修復] 執行緒收容與 C++ 幽靈物件防護
@@ -4650,7 +4675,7 @@ class MainWindow(QMainWindow):
         except (RuntimeError, TypeError):
             pass
         
-        self.worker = SearchWorker(self.engine, image_path, k, search_mode="image")
+        self.worker = SearchWorker(self.engine, image_path, fetch_k, search_mode="image", folder_path=target_folder)
         self.worker.batch_ready.connect(self.set_base_results)
         self.worker.finished_search.connect(self.on_finished)
         self.worker.finished.connect(self.worker.deleteLater)
