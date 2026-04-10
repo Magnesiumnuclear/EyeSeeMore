@@ -1279,6 +1279,7 @@ class ImageSearchEngine:
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
+    # 🌟 [修改] 新增 folder_path 參數 (上一階段已加)，並導入「O(1) 快取命中」邏輯
     def search_image(self, image_path, top_k=50, folder_path=None):
         current_embeddings = self.stored_embeddings
         current_data = self.data_store
@@ -1288,19 +1289,39 @@ class ImageSearchEngine:
             return []
             
         try:
-            image = Image.open(image_path).convert('RGB')
-            processed_image = np.expand_dims(self.preprocess(image), axis=0)
-            
-            input_name = self.clip_image_session.get_inputs()[0].name
-            image_features = self.clip_image_session.run(None, {input_name: processed_image})[0]
-            image_features = image_features / np.linalg.norm(image_features, axis=-1, keepdims=True)
-            
-            query_vector = image_features.astype(np.float32)
+            query_vector = None
             
             # ==========================================
-            # 🌟 [關鍵修復 3] 發動 FAISS 以圖搜圖 (超額抓取與範圍過濾)
+            # 🌟 [效能封頂] 疑問 1 解決方案：記憶體特徵直接提取
             # ==========================================
-            # 為了確保「範圍過濾」後還有足夠的圖片，我們先跟 FAISS 要一大把 (至少 2000 張)
+            # 1. 嘗試在目前的資料庫快取中尋找這張圖片
+            target_idx = None
+            for i, item in enumerate(current_data):
+                if item["path"] == image_path:
+                    target_idx = i
+                    break
+                    
+            if target_idx is not None:
+                # 2. 如果找到了！直接從記憶體把算好的向量抽出來 (0 毫秒)
+                # 擴充維度以符合 FAISS 的 (1, 1024) 形狀要求
+                query_vector = np.expand_dims(current_embeddings[target_idx], axis=0)
+                #print(f"[Engine] 以圖搜圖：命中快取，免除 GPU 重算！")
+            else:
+                # 3. 如果找不到 (例如未來支援拖入外部圖片)，才啟動 ONNX 消耗算力
+                #print(f"[Engine] 以圖搜圖：外部圖片，啟動 GPU 推論...")
+                image = Image.open(image_path).convert('RGB')
+                processed_image = np.expand_dims(self.preprocess(image), axis=0)
+                
+                input_name = self.clip_image_session.get_inputs()[0].name
+                image_features = self.clip_image_session.run(None, {input_name: processed_image})[0]
+                image_features = image_features / np.linalg.norm(image_features, axis=-1, keepdims=True)
+                
+                query_vector = image_features.astype(np.float32)
+
+            # ==========================================
+            # 🌟 發動 FAISS 以圖搜圖 (超額抓取與範圍過濾)
+            # ==========================================
+            # 為了確保「範圍過濾」後還有足夠的圖片，我們先跟 FAISS 要一大把
             fetch_limit = min(max(2000, top_k), len(current_data))
             top_scores_matrix, top_indices_matrix = self.faiss_index.search(query_vector, fetch_limit)
             
@@ -1315,7 +1336,7 @@ class ImageSearchEngine:
                 idx = top_indices[i]
                 item = current_data[idx]
                 
-                # 🌟 如果有指定資料夾，且圖片不在該資料夾內，直接丟棄！
+                # 如果有指定資料夾，且圖片不在該資料夾內，直接丟棄！
                 if norm_target and not os.path.normpath(item["path"]).startswith(norm_target):
                     continue
                     
