@@ -2650,12 +2650,36 @@ class TextFeatureWidget(QWidget):
         self.edit = QLineEdit(self.feat_item.data)
         self.edit.setPlaceholderText("輸入文字特徵 (Enter確認)...") 
         self.edit.editingFinished.connect(self.on_edit_finished)
+
+        self.edit.returnPressed.connect(self.release_all_focus) 
         
-        # 🌟 新增：按下 Enter 時主動交出焦點，讓使用者能立刻使用全域快捷鍵
-        self.edit.returnPressed.connect(self.edit.clearFocus) 
+        # ==========================================
+        # 🌟 雙軌右鍵判定架構：攔截預設選單
+        # ==========================================
+        self.edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.edit.customContextMenuRequested.connect(self.on_custom_context_menu)
         
         self.layout.addWidget(self.edit, stretch=1)
         
+    def on_custom_context_menu(self, pos):
+        """根據目前的焦點狀態，決定要彈出哪個右鍵選單"""
+        if self.edit.hasFocus():
+            # 狀態 A：左鍵已點擊，正在編輯中 -> 呼叫 Qt 原生文字編輯選單 (提供複製、貼上)
+            menu = self.edit.createStandardContextMenu()
+            menu.exec(self.edit.mapToGlobal(pos))
+        else:
+            # 狀態 B：閒置狀態 -> 將右鍵事件的座標轉換，並轉發給外層桶子 (觸發刪除選單)
+            global_pos = self.edit.mapToGlobal(pos)
+            # 將絕對座標轉換回 list_widget 的相對座標
+            list_pos = self.parent_bucket.list_widget.mapFromGlobal(global_pos)
+            self.parent_bucket.show_context_menu(list_pos)
+
+    def release_all_focus(self):
+        """🌟 徹底解放焦點：連同外層的清單選取狀態一起清除"""
+        self.edit.clearFocus()
+        self.parent_bucket.list_widget.clearSelection() # 清除藍色選取底色
+        self.parent_bucket.list_widget.clearFocus()     # 清除虛線焦點框
+
     def on_edit_finished(self):
         new_text = self.edit.text().strip()
         if new_text:
@@ -4313,8 +4337,10 @@ class MainWindow(QMainWindow):
                         self.preview_overlay.set_ocr_visible(True)
                 return True 
 
-            # --- W/A/S/D 方向鍵邏輯 ---
-            if not self.input.hasFocus() and QApplication.activeWindow() == self:
+            focused_widget = QApplication.focusWidget()
+            is_typing = isinstance(focused_widget, QLineEdit)
+            
+            if not is_typing and QApplication.activeWindow() == self:
                 if key in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D):
                     # 判斷預覽視窗是否開啟
                     is_preview_active = self.preview_overlay.isVisible()
