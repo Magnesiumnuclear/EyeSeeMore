@@ -1084,6 +1084,7 @@ class ImageSearchEngine:
             
             temp_data_store = [] 
             temp_embeddings_list = []
+            temp_path_map = {}
             
             # 🌟 [效能封頂] 迴圈內不再做任何 json.loads()，啟動速度直接起飛！
             for path, blob, mtime, width, height, combined_text in rows:
@@ -1101,16 +1102,22 @@ class ImageSearchEngine:
                     "width": width if width else 0,
                     "height": height if height else 0
                 })
+                
+                # 🌟 [核心魔法] 將「正規化後的路徑」作為 Key，對應到陣列的 Index
+                norm_path = os.path.normpath(path)
+                temp_path_map[norm_path] = len(temp_data_store) - 1
             
             if temp_data_store and temp_embeddings_list:
                 temp_emb_matrix = np.stack(temp_embeddings_list)
                 self.stored_embeddings = temp_emb_matrix
                 self.data_store = temp_data_store
+                self.path_map = temp_path_map
                 self.build_faiss_index(temp_emb_matrix) 
                 print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
             else:
                 self.stored_embeddings = None
                 self.data_store = []
+                self.path_map = {}
                 
         except sqlite3.Error as e:
             print(f"[Error] Database query failed: {e}")
@@ -1143,6 +1150,15 @@ class ImageSearchEngine:
             for item in self.data_store:
                 if item["path"] == old_path:
                     item["path"] = new_path; item["filename"] = new_name; break
+                
+            # 🌟 [新增] 同步更新 Hash Map 字典，維持 O(1) 搜尋的正確性
+            if hasattr(self, 'path_map'):
+                norm_old = os.path.normpath(old_path)
+                norm_new = os.path.normpath(new_path)
+                if norm_old in self.path_map:
+                    idx = self.path_map.pop(norm_old) # 抽出舊的
+                    self.path_map[norm_new] = idx     # 塞入新的
+                    
             return True, new_path
         except Exception as e: return False, str(e)
 
@@ -1292,20 +1308,18 @@ class ImageSearchEngine:
             query_vector = None
             
             # ==========================================
-            # 🌟 [效能封頂] 疑問 1 解決方案：記憶體特徵直接提取
+            # 🌟 [效能封頂] 疑問 1 解決方案：記憶體 O(1) 特徵直接提取
             # ==========================================
-            # 1. 嘗試在目前的資料庫快取中尋找這張圖片
+            # 1. 嘗試在字典中瞬間尋找這張圖片
             target_idx = None
-            for i, item in enumerate(current_data):
-                if item["path"] == image_path:
-                    target_idx = i
-                    break
+            norm_target_path = os.path.normpath(image_path)
+            
+            if hasattr(self, 'path_map') and norm_target_path in self.path_map:
+                target_idx = self.path_map[norm_target_path]
                     
             if target_idx is not None:
                 # 2. 如果找到了！直接從記憶體把算好的向量抽出來 (0 毫秒)
-                # 擴充維度以符合 FAISS 的 (1, 1024) 形狀要求
                 query_vector = np.expand_dims(current_embeddings[target_idx], axis=0)
-                #print(f"[Engine] 以圖搜圖：命中快取，免除 GPU 重算！")
             else:
                 # 3. 如果找不到 (例如未來支援拖入外部圖片)，才啟動 ONNX 消耗算力
                 #print(f"[Engine] 以圖搜圖：外部圖片，啟動 GPU 推論...")
@@ -1393,14 +1407,13 @@ class ImageSearchEngine:
     def search_multi_vector(self, pos_paths, neg_paths, top_k=50, folder_path=None):
         if not self.is_ready or self.stored_embeddings is None: return []
 
-        # 🌟 1. 雙軌獲取機制 (Dual-Path Fetching) + 路徑正規化
         def get_vec(path):
             norm_target_path = os.path.normpath(path)
             
-            # 軌道 A：從記憶體極速撈取 ($O(1)$)
-            for i, item in enumerate(self.data_store):
-                if os.path.normpath(item["path"]) == norm_target_path:
-                    return self.stored_embeddings[i]
+            # 軌道 A：從字典極速撈取 ($O(1)$) - 不用再跑幾千次的迴圈了！
+            if hasattr(self, 'path_map') and norm_target_path in self.path_map:
+                idx = self.path_map[norm_target_path]
+                return self.stored_embeddings[idx]
             
             # 軌道 B：逃生路線 (記憶體沒找到，啟動 ONNX 即時補算！)
             try:
