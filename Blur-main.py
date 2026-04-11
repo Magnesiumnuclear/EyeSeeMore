@@ -2620,75 +2620,155 @@ class SidebarWidget(QFrame):
         self.folder_selected.emit(path)
 
 # ==========================================
-# 🌟 [新增] CLIP 專用向量拖曳方塊
+# 🌟 [升級] CLIP 專用特徵選取桶 (SolidWorks 風格)
 # ==========================================
-class VectorDropBox(QListWidget):
-    files_changed = pyqtSignal()
+class ThumbnailSignals(QObject):
+    finished = pyqtSignal(QListWidgetItem, QIcon)
 
-    def __init__(self, title, border_color):
+class ThumbnailWorker(QRunnable):
+    def __init__(self, item, path, size=QSize(64, 64)):
         super().__init__()
+        self.item = item
+        self.path = path
+        self.size = size
+        self.signals = ThumbnailSignals()
+
+    def run(self):
+        try:
+            reader = QImageReader(self.path)
+            reader.setAutoTransform(True)
+            if reader.size().isValid():
+                scaled_size = reader.size().scaled(self.size, Qt.AspectRatioMode.KeepAspectRatio)
+                reader.setScaledSize(scaled_size)
+                img = reader.read()
+                if not img.isNull():
+                    icon = QIcon(QPixmap.fromImage(img))
+                    self.signals.finished.emit(self.item, icon)
+        except Exception as e:
+            print(f"Thumbnail error for {self.path}: {e}")
+
+class FeatureBucketWidget(QFrame):
+    files_changed = pyqtSignal() # 🌟 與主程式 UI 聯動的訊號
+
+    def __init__(self, title, idle_color, active_color, parent=None):
+        super().__init__(parent)
+        self.idle_color = idle_color
+        self.active_color = active_color
         self.title = title
-        self.border_color = border_color
-        self.paths = []
         
         self.setAcceptDrops(True)
-        self.setViewMode(QListView.ViewMode.IconMode)
-        self.setIconSize(QSize(64, 64))
-        self.setSpacing(8)
-        self.setResizeMode(QListView.ResizeMode.Adjust)
-        self.setFixedHeight(130)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         
-        # 設定邊框與背景顏色
-        self.setStyleSheet(f"""
-            QListWidget {{
-                border: 2px dashed {self.border_color};
-                border-radius: 8px;
-                background-color: rgba(0, 0, 0, 0.2);
-                padding: 5px;
-            }}
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(2, 2, 2, 2)
+        
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.list_widget.setIconSize(QSize(56, 56))
+        self.list_widget.setSpacing(4)
+        self.list_widget.setStyleSheet("""
+            QListWidget { border: none; background: transparent; outline: 0; }
+            QListWidget::item { padding: 4px; border-radius: 4px; }
+            QListWidget::item:selected { background-color: rgba(96, 205, 255, 0.3); color: white; }
         """)
+        
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self.show_context_menu)
+        
+        self.placeholder = QLabel(f"拖曳圖片至此...\n({title})", self)
+        self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.placeholder.setStyleSheet("color: #888888; font-size: 13px;")
+        self.placeholder.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        
+        self.layout.addWidget(self.list_widget)
+        self.update_visual_state(is_hover=False)
+
+    def update_visual_state(self, is_hover=False):
+        has_items = self.list_widget.count() > 0
+        self.placeholder.setVisible(not has_items)
+        self.list_widget.setVisible(has_items)
+        
+        if is_hover:
+            border_style = f"2px solid {self.active_color}"
+            bg_color = "rgba(255, 255, 255, 0.05)"
+        else:
+            border_style = f"1px dashed {self.idle_color}"
+            bg_color = "rgba(0, 0, 0, 0.2)"
+            
+        self.setStyleSheet(f"FeatureBucketWidget {{ border: {border_style}; border-radius: 6px; background-color: {bg_color}; }}")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.placeholder.setGeometry(self.rect())
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            event.ignore()
+            event.acceptProposedAction()
+            self.update_visual_state(is_hover=True)
 
-    def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            event.ignore()
+    def dragLeaveEvent(self, event):
+        self.update_visual_state(is_hover=False)
 
     def dropEvent(self, event):
+        self.update_visual_state(is_hover=False)
         urls = event.mimeData().urls()
+        current_paths = self.get_paths()
+        added_new = False
+        
         for url in urls:
-            path = url.toLocalFile()
-            if path and path not in self.paths:
-                self.paths.append(path)
-                # 建立帶有縮圖的項目
-                item = QListWidgetItem()
-                item.setIcon(QIcon(path)) 
-                item.setToolTip(os.path.basename(path))
-                self.addItem(item)
-        self.files_changed.emit()
+            if url.isLocalFile():
+                path = os.path.normpath(url.toLocalFile())
+                if path not in current_paths:
+                    self.add_item(path)
+                    current_paths.append(path)
+                    added_new = True
+                    
+        if added_new: self.files_changed.emit()
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        # 如果裡面沒圖片，就畫上提示文字
-        if self.count() == 0:
-            painter = QPainter(self.viewport())
-            painter.setPen(QColor(self.border_color))
-            font = painter.font()
-            font.setPointSize(12)
-            font.setBold(True)
-            painter.setFont(font)
-            painter.drawText(self.viewport().rect(), Qt.AlignmentFlag.AlignCenter, f"{self.title}\\n(拖曳圖片至此)")
+    def add_item(self, path):
+        item = QListWidgetItem(os.path.basename(path))
+        item.setData(Qt.ItemDataRole.UserRole, path)
+        self.list_widget.addItem(item)
+        
+        worker = ThumbnailWorker(item, path)
+        worker.signals.finished.connect(self._on_thumbnail_ready)
+        QThreadPool.globalInstance().start(worker)
+        self.update_visual_state()
+
+    def _on_thumbnail_ready(self, item, icon):
+        if item.listWidget() is not None: item.setIcon(icon)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Delete: self.delete_selected()
+        elif event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_A: self.list_widget.selectAll()
+        else: super().keyPressEvent(event)
+
+    def show_context_menu(self, pos):
+        item = self.list_widget.itemAt(pos)
+        menu = QMenu(self)
+        if item:
+            action_delete = QAction("🗑️ 刪除 (Delete)", self)
+            action_delete.triggered.connect(self.delete_selected)
+            menu.addAction(action_delete)
+            menu.addSeparator()
+        action_clear = QAction("🚫 清除選擇 (Clear All)", self)
+        action_clear.triggered.connect(self.clear_all)
+        menu.addAction(action_clear)
+        menu.exec(self.list_widget.mapToGlobal(pos))
+
+    def delete_selected(self):
+        for item in self.list_widget.selectedItems():
+            self.list_widget.takeItem(self.list_widget.row(item))
+        self.update_visual_state()
+        self.files_changed.emit()
 
     def clear_all(self):
-        self.clear()
-        self.paths = []
+        self.list_widget.clear()
+        self.update_visual_state()
         self.files_changed.emit()
+
+    def get_paths(self):
+        return [self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list_widget.count())]
 
 class CollapsibleSection(QWidget):
     """自定義摺疊區塊，仿 VSCode 樣式 (解決文字跳動問題)"""
@@ -3226,20 +3306,15 @@ class InspectorPanel(QFrame):
         lbl_desc.setStyleSheet("color: #aaaaaa; font-size: 13px;")
         layout.addWidget(lbl_desc)
 
-        # 🌟 1. 建立正向與負向方塊
-        self.pos_box = VectorDropBox("正向特徵", "#60cdff") # 主題藍色
-        self.neg_box = VectorDropBox("負向排除", "#ff5252") # 警告紅色
+        # 🌟 1. 改用全新的 SolidWorks 風格特徵桶
+        self.pos_box = FeatureBucketWidget("➕ 正向特徵 (Positive)", "#60cdff", "#00aaff") 
+        self.pos_box.setFixedHeight(150) # 設定適當的高度
+        self.neg_box = FeatureBucketWidget("➖ 負向排除 (Negative)", "#ff5252", "#ff0000")
+        self.neg_box.setFixedHeight(150)
         layout.addWidget(self.pos_box)
         layout.addWidget(self.neg_box)
 
-        # 🌟 2. 清除按鈕
-        self.btn_clear_vectors = QPushButton("清空方塊")
-        self.btn_clear_vectors.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_clear_vectors.clicked.connect(self.pos_box.clear_all)
-        self.btn_clear_vectors.clicked.connect(self.neg_box.clear_all)
-        layout.addWidget(self.btn_clear_vectors)
-
-        # 🌟 3. 組合搜尋按鈕 (預設隱藏，只有拖入多張圖片時才出現)
+        # 🌟 2. 組合搜尋按鈕 (預設隱藏)
         self.btn_vector_search = QPushButton("組合搜尋")
         self.btn_vector_search.setProperty("cssClass", "ActionBtn")
         self.btn_vector_search.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -3247,18 +3322,42 @@ class InspectorPanel(QFrame):
         self.btn_vector_search.clicked.connect(self.trigger_multi_vector_search)
         layout.addWidget(self.btn_vector_search)
 
-        # 綁定拖曳改變事件
+        # 🌟 3. 綁定檔案改變事件
         self.pos_box.files_changed.connect(self.on_vector_box_changed)
         self.neg_box.files_changed.connect(self.on_vector_box_changed)
         
         layout.addStretch(1)
 
+    def on_vector_box_changed(self):
+        # 使用新的 get_paths() 方法取得資料
+        pos_paths = self.pos_box.get_paths()
+        neg_paths = self.neg_box.get_paths()
+        total = len(pos_paths) + len(neg_paths)
+
+        if total == 1 and len(pos_paths) == 1:
+            # 只有一張正向圖片 -> 瞬間自動觸發以圖搜圖！
+            self.btn_vector_search.hide()
+            self.main_window.start_image_search(pos_paths[0])
+        elif total > 0:
+            # 多張圖片 -> 顯示「組合搜尋」按鈕讓使用者手動確認
+            self.btn_vector_search.show()
+            self.btn_vector_search.setText(f"組合搜尋 (正:{len(pos_paths)} 負:{len(neg_paths)})")
+        else:
+            self.btn_vector_search.hide()
+
+    def trigger_multi_vector_search(self):
+        pos_paths = self.pos_box.get_paths()
+        neg_paths = self.neg_box.get_paths()
+        self.main_window.start_multi_vector_search(pos_paths, neg_paths)
+
+
     # ==========================================
-    # 🌟 實作「單張自動搜，多張手動算」邏輯
+    # 🌟 實作「單張自動搜，多張手動算」邏輯 (已修復路徑獲取方式)
     # ==========================================
     def on_vector_box_changed(self):
-        pos_paths = self.pos_box.paths
-        neg_paths = self.neg_box.paths
+        # 🌟 [關鍵修復] 改用 .get_paths() 函式來取得資料
+        pos_paths = self.pos_box.get_paths()
+        neg_paths = self.neg_box.get_paths()
         total = len(pos_paths) + len(neg_paths)
 
         if total == 1 and len(pos_paths) == 1:
@@ -3274,7 +3373,10 @@ class InspectorPanel(QFrame):
 
     def trigger_multi_vector_search(self):
         """按下按鈕後，呼叫 MainWindow 執行多向量搜尋"""
-        self.main_window.start_multi_vector_search(self.pos_box.paths, self.neg_box.paths)
+        # 🌟 [關鍵修復] 這裡按下搜尋按鈕時，也要用 .get_paths()
+        pos_paths = self.pos_box.get_paths()
+        neg_paths = self.neg_box.get_paths()
+        self.main_window.start_multi_vector_search(pos_paths, neg_paths)
 
     def _setup_ocr_tab(self):
         # 修正：原代碼誤寫為 self.tab_clip，現已改回 self.tab_ocr
