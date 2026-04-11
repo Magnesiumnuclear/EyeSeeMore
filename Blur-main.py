@@ -2650,35 +2650,41 @@ class TextFeatureWidget(QWidget):
         self.edit = QLineEdit(self.feat_item.data)
         self.edit.setPlaceholderText("輸入文字特徵 (Enter確認)...") 
         self.edit.editingFinished.connect(self.on_edit_finished)
-
         self.edit.returnPressed.connect(self.release_all_focus) 
         
-        # ==========================================
-        # 🌟 雙軌右鍵判定架構：攔截預設選單
-        # ==========================================
         self.edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.edit.customContextMenuRequested.connect(self.on_custom_context_menu)
         
+        # 🌟 新增：安裝事件過濾器來捕捉 ESC 鍵
+        self.edit.installEventFilter(self)
+        
         self.layout.addWidget(self.edit, stretch=1)
+
+    # 🌟 新增：專屬的事件過濾器
+    def eventFilter(self, obj, event):
+        if obj == self.edit and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape:
+                # 完美的 UX：按下 ESC 時，不但取消焦點，還要「還原」為原本的文字
+                # (如果是剛點出來的空標籤，還原後會是 ""，失去焦點時就會自動被銷毀！)
+                self.edit.setText(self.feat_item.data)
+                self.release_all_focus()
+                return True # 成功攔截事件
+        return super().eventFilter(obj, event)
+        
+    def release_all_focus(self):
+        """徹底解放焦點：連同外層的清單選取狀態一起清除"""
+        self.edit.clearFocus()
+        self.parent_bucket.list_widget.clearSelection() 
+        self.parent_bucket.list_widget.clearFocus()     
         
     def on_custom_context_menu(self, pos):
-        """根據目前的焦點狀態，決定要彈出哪個右鍵選單"""
         if self.edit.hasFocus():
-            # 狀態 A：左鍵已點擊，正在編輯中 -> 呼叫 Qt 原生文字編輯選單 (提供複製、貼上)
             menu = self.edit.createStandardContextMenu()
             menu.exec(self.edit.mapToGlobal(pos))
         else:
-            # 狀態 B：閒置狀態 -> 將右鍵事件的座標轉換，並轉發給外層桶子 (觸發刪除選單)
             global_pos = self.edit.mapToGlobal(pos)
-            # 將絕對座標轉換回 list_widget 的相對座標
             list_pos = self.parent_bucket.list_widget.mapFromGlobal(global_pos)
             self.parent_bucket.show_context_menu(list_pos)
-
-    def release_all_focus(self):
-        """🌟 徹底解放焦點：連同外層的清單選取狀態一起清除"""
-        self.edit.clearFocus()
-        self.parent_bucket.list_widget.clearSelection() # 清除藍色選取底色
-        self.parent_bucket.list_widget.clearFocus()     # 清除虛線焦點框
 
     def on_edit_finished(self):
         new_text = self.edit.text().strip()
@@ -2716,13 +2722,21 @@ class FeatureBucketWidget(QFrame):
         self.idle_color = idle_color; self.active_color = active_color; self.title = title
         self.is_positive = is_positive; self.main_window = main_window 
         
-        self.setAcceptDrops(True); self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAcceptDrops(True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus) # 🌟 拔除系統焦點，消滅外圍方形虛線
         self.layout = QVBoxLayout(self); self.layout.setContentsMargins(2, 2, 2, 2)
         
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list_widget.setIconSize(QSize(56, 56)); self.list_widget.setSpacing(4)
-        self.list_widget.setStyleSheet("QListWidget { border: none; background: transparent; outline: 0; } QListWidget::item { padding: 4px; border-radius: 4px; } QListWidget::item:selected { background-color: rgba(96, 205, 255, 0.3); color: white; }")
+        # 🌟 加上終極 outline: none 宣告，連 item 內部的虛線一起殺掉
+        self.list_widget.setStyleSheet("""
+            QListWidget { border: none; background: transparent; outline: none; }
+            QListWidget:focus { outline: none; }
+            QListWidget::item { padding: 4px; border-radius: 4px; border: none; outline: none; }
+            QListWidget::item:selected { background-color: rgba(96, 205, 255, 0.3); color: white; border: none; outline: none; }
+            QListWidget::item:focus { outline: none; border: none; }
+        """)
         
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self.show_context_menu)
@@ -4318,12 +4332,22 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):
         # 從設定檔讀取操作模式
         ui_state = self.config.get("ui_state", {})
-        ocr_mode = ui_state.get("ocr_shift_mode", "hold")      # 預設為長按
-        nav_mode = ui_state.get("preview_wasd_mode", "nav")    # 預設為單純移動
+        ocr_mode = ui_state.get("ocr_shift_mode", "hold")      
+        nav_mode = ui_state.get("preview_wasd_mode", "nav")    
 
         # 1. 處理鍵盤按下 (KeyPress)
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
+            
+            # ==========================================
+            # 🌟 [新增] ESC 鍵邏輯：全域強制釋放焦點
+            # ==========================================
+            if key == Qt.Key.Key_Escape:
+                if self.input.hasFocus():
+                    # 如果目前是在頂部搜尋框打字，取消它的焦點
+                    self.input.clearFocus()
+                    self.list_view.clearSelection() # 順便清空畫廊的藍色選取框
+                    return True
         
             # --- Shift 鍵邏輯：查看 OCR ---
             if key == Qt.Key.Key_Shift:
