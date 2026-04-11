@@ -1401,80 +1401,71 @@ class ImageSearchEngine:
             conn.close()
         return ocr_boxes
     
+    def get_text_vector(self, text):
+        """瞬間產生文字的 1024 維特徵 (約 0.05 秒)"""
+        if not self.is_ready or not hasattr(self, 'clip_text_session'): return None
+        inputs = self.tokenizer([text], padding="max_length", max_length=77, truncation=True, return_tensors="np")
+        text_tokens = inputs.input_ids.astype(np.int64)
+        input_name = self.clip_text_session.get_inputs()[0].name
+        text_features = self.clip_text_session.run(None, {input_name: text_tokens})[0]
+        return text_features[0] / np.linalg.norm(text_features[0], axis=-1, keepdims=True)
+
     # ==========================================
-    # 🌟 [修復版] 多圖向量組合搜尋 (Vector Arithmetic)
+    # 🌟 [修復版] 多模態特徵組合搜尋 (Vector Arithmetic)
     # ==========================================
-    def search_multi_vector(self, pos_paths, neg_paths, top_k=50, folder_path=None):
+    def search_multi_vector(self, pos_features, neg_features, top_k=50, folder_path=None):
         if not self.is_ready or self.stored_embeddings is None: return []
 
-        def get_vec(path):
-            norm_target_path = os.path.normpath(path)
-            
-            # 軌道 A：從字典極速撈取 ($O(1)$) - 不用再跑幾千次的迴圈了！
-            if hasattr(self, 'path_map') and norm_target_path in self.path_map:
-                idx = self.path_map[norm_target_path]
-                return self.stored_embeddings[idx]
-            
-            # 軌道 B：逃生路線 (記憶體沒找到，啟動 ONNX 即時補算！)
-            try:
-                print(f"[Engine] 路徑未命中資料庫，啟動 ONNX 即時推論: {path}")
-                image = Image.open(path).convert('RGB')
-                processed_image = np.expand_dims(self.preprocess(image), axis=0)
-                input_name = self.clip_image_session.get_inputs()[0].name
-                image_features = self.clip_image_session.run(None, {input_name: processed_image})[0]
-                image_features = image_features / np.linalg.norm(image_features, axis=-1, keepdims=True)
-                return image_features[0] # 回傳 1D 陣列
-            except Exception as e:
-                print(f"[Error] 即時推論失敗 {path}: {e}")
-                return None
+        def get_vec(feat):
+            if feat.vector is not None: return feat.vector # 命中預熱快取！(0毫秒)
+            if feat.type == 'image':
+                norm_target_path = os.path.normpath(feat.data)
+                if hasattr(self, 'path_map') and norm_target_path in self.path_map:
+                    feat.vector = self.stored_embeddings[self.path_map[norm_target_path]]
+                    return feat.vector
+                try:
+                    image = Image.open(feat.data).convert('RGB')
+                    processed = np.expand_dims(self.preprocess(image), axis=0)
+                    input_name = self.clip_image_session.get_inputs()[0].name
+                    vec = self.clip_image_session.run(None, {input_name: processed})[0]
+                    feat.vector = vec[0] / np.linalg.norm(vec[0], axis=-1, keepdims=True)
+                    return feat.vector
+                except: return None
+            elif feat.type == 'text':
+                feat.vector = self.get_text_vector(feat.data)
+                return feat.vector
 
-        # 2. 收集向量 (自動觸發雙軌機制)
-        pos_vecs = [v for p in pos_paths if (v := get_vec(p)) is not None]
-        neg_vecs = [v for p in neg_paths if (v := get_vec(p)) is not None]
+        pos_vecs = [v for f in pos_features if (v := get_vec(f)) is not None]
+        neg_vecs = [v for f in neg_features if (v := get_vec(f)) is not None]
         if not pos_vecs and not neg_vecs: return []
 
-        # 3. 數學運算：正向中心點減去負向中心點
         dim = self.stored_embeddings.shape[1]
         v_pos = np.mean(pos_vecs, axis=0) if pos_vecs else np.zeros(dim, dtype=np.float32)
         v_neg = np.mean(neg_vecs, axis=0) if neg_vecs else np.zeros(dim, dtype=np.float32)
 
-        # 魔法權重：負向向量殺傷力極大，乘以 0.6 進行柔化
         query_vector = v_pos - (0.6 * v_neg)
         if not pos_vecs and neg_vecs: query_vector = -v_neg 
-
-        # 4. 變換維度並歸一化
+        
         query_vector = np.expand_dims(query_vector, axis=0)
         query_vector = query_vector / np.linalg.norm(query_vector, axis=-1, keepdims=True)
         query_vector = query_vector.astype(np.float32)
 
-        # 5. 發動 FAISS 搜尋
         fetch_limit = min(max(2000, top_k), len(self.data_store))
-        top_scores_matrix, top_indices_matrix = self.faiss_index.search(query_vector, fetch_limit)
+        top_scores, top_indices = self.faiss_index.search(query_vector, fetch_limit)
         
-        # 6. 過濾與封裝結果
         norm_folder = os.path.normpath(folder_path) if (folder_path and folder_path != "ALL") else None
         results = []
-        
-        # 🌟 徹底移除門檻過濾 (actual_thresh)，只要 FAISS 有回傳就無條件加入清單！
         for i in range(fetch_limit):
-            idx = top_indices_matrix[0][i]
+            idx = top_indices[0][i]
             item = self.data_store[idx]
-            
-            # 資料夾過濾
-            if norm_folder and not os.path.normpath(item["path"]).startswith(norm_folder): 
-                continue
+            if norm_folder and not os.path.normpath(item["path"]).startswith(norm_folder): continue
                 
-            score = top_scores_matrix[0][i]
             results.append({
-                "score": float(score), "clip_score": float(score), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
+                "score": float(top_scores[0][i]), "clip_score": float(top_scores[0][i]), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
                 "path": item["path"], "filename": item["filename"], "mtime": item.get("mtime", 0),
                 "width": item.get("width", 0), "height": item.get("height", 0)
             })
-            
-            # 達到 UI 要求的顯示數量就停止
-            if len(results) >= top_k: 
-                break
-                
+            if len(results) >= top_k: break
         return results
 
 from indexer import IndexerService # 確保引入
@@ -2625,115 +2616,201 @@ class SidebarWidget(QFrame):
 class ThumbnailSignals(QObject):
     finished = pyqtSignal(QListWidgetItem, QIcon)
 
+# ==========================================
+# 🌟 [究極升級] 多模態特徵物件與互動式標籤 UI
+# ==========================================
+class FeatureItem:
+    """統一管理圖片與文字的特徵結構"""
+    def __init__(self, f_type, data):
+        self.type = f_type  # 'image' 或是 'text'
+        self.data = data    # 圖片路徑 或是 搜尋字串
+        self.vector = None  # 緩存的 1024 維向量 (預熱用)
+
+class TextFeatureWidget(QWidget):
+    """直接可在清單內編輯的文字標籤"""
+    def __init__(self, feat_item, is_positive, parent_bucket, list_item):
+        super().__init__()
+        self.feat_item = feat_item
+        self.parent_bucket = parent_bucket
+        self.list_item = list_item
+        
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(8, 2, 8, 2)
+        
+        border_color = "#60cdff" if is_positive else "#ff5252"
+        self.setStyleSheet(f"""
+            QWidget {{ background-color: #333333; border: 1px solid {border_color}; border-radius: 4px; }}
+            QLineEdit {{ border: none; background: transparent; color: white; font-size: 14px; outline: none; }}
+        """)
+        
+        self.lbl_icon = QLabel("[T]")
+        self.lbl_icon.setStyleSheet("color: #aaaaaa; border: none; font-weight: bold; font-size: 12px;")
+        self.layout.addWidget(self.lbl_icon)
+        
+        self.edit = QLineEdit(self.feat_item.data)
+        self.edit.setPlaceholderText("輸入文字特徵 (Enter確認)...") 
+        self.edit.editingFinished.connect(self.on_edit_finished)
+        
+        # 🌟 新增：按下 Enter 時主動交出焦點，讓使用者能立刻使用全域快捷鍵
+        self.edit.returnPressed.connect(self.edit.clearFocus) 
+        
+        self.layout.addWidget(self.edit, stretch=1)
+        
+    def on_edit_finished(self):
+        new_text = self.edit.text().strip()
+        if new_text:
+            if self.feat_item.data != new_text: 
+                self.feat_item.data = new_text
+                self.feat_item.vector = None 
+                self.parent_bucket.preheat_text_vector(self.feat_item)
+                self.parent_bucket.files_changed.emit()
+        else:
+            self.parent_bucket.delete_item_by_widget(self.list_item)
+
+class ThumbnailSignals(QObject):
+    finished = pyqtSignal(QListWidgetItem, QIcon)
+
 class ThumbnailWorker(QRunnable):
     def __init__(self, item, path, size=QSize(64, 64)):
-        super().__init__()
-        self.item = item
-        self.path = path
-        self.size = size
-        self.signals = ThumbnailSignals()
-
+        super().__init__(); self.item = item; self.path = path; self.size = size; self.signals = ThumbnailSignals()
     def run(self):
         try:
             reader = QImageReader(self.path)
             reader.setAutoTransform(True)
             if reader.size().isValid():
-                scaled_size = reader.size().scaled(self.size, Qt.AspectRatioMode.KeepAspectRatio)
-                reader.setScaledSize(scaled_size)
+                reader.setScaledSize(reader.size().scaled(self.size, Qt.AspectRatioMode.KeepAspectRatio))
                 img = reader.read()
-                if not img.isNull():
-                    icon = QIcon(QPixmap.fromImage(img))
-                    self.signals.finished.emit(self.item, icon)
-        except Exception as e:
-            print(f"Thumbnail error for {self.path}: {e}")
+                if not img.isNull(): self.signals.finished.emit(self.item, QIcon(QPixmap.fromImage(img)))
+        except: pass
 
 class FeatureBucketWidget(QFrame):
-    files_changed = pyqtSignal() # 🌟 與主程式 UI 聯動的訊號
+    files_changed = pyqtSignal() 
+    text_dropped = pyqtSignal(str) 
 
-    def __init__(self, title, idle_color, active_color, parent=None):
+    def __init__(self, title, idle_color, active_color, is_positive, main_window, parent=None):
         super().__init__(parent)
-        self.idle_color = idle_color
-        self.active_color = active_color
-        self.title = title
+        self.idle_color = idle_color; self.active_color = active_color; self.title = title
+        self.is_positive = is_positive; self.main_window = main_window 
         
-        self.setAcceptDrops(True)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(2, 2, 2, 2)
+        self.setAcceptDrops(True); self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.layout = QVBoxLayout(self); self.layout.setContentsMargins(2, 2, 2, 2)
         
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.list_widget.setIconSize(QSize(56, 56))
-        self.list_widget.setSpacing(4)
-        self.list_widget.setStyleSheet("""
-            QListWidget { border: none; background: transparent; outline: 0; }
-            QListWidget::item { padding: 4px; border-radius: 4px; }
-            QListWidget::item:selected { background-color: rgba(96, 205, 255, 0.3); color: white; }
-        """)
+        self.list_widget.setIconSize(QSize(56, 56)); self.list_widget.setSpacing(4)
+        self.list_widget.setStyleSheet("QListWidget { border: none; background: transparent; outline: 0; } QListWidget::item { padding: 4px; border-radius: 4px; } QListWidget::item:selected { background-color: rgba(96, 205, 255, 0.3); color: white; }")
         
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self.show_context_menu)
         
-        self.placeholder = QLabel(f"拖曳圖片至此...\n({title})", self)
+        # 綁定事件攔截器
+        self.list_widget.viewport().installEventFilter(self)
+        
+        self.placeholder = QLabel(f"拖曳圖片、文字或「點擊此處」輸入...\n({title})", self)
         self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.placeholder.setStyleSheet("color: #888888; font-size: 13px;")
         self.placeholder.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         
         self.layout.addWidget(self.list_widget)
-        self.update_visual_state(is_hover=False)
+        self.update_visual_state(False)
+
+    def eventFilter(self, source, event):
+        if source == self.list_widget.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                item = self.list_widget.itemAt(event.pos())
+                if not item: 
+                    self.spawn_inline_editor()
+                    return True # 🌟 攔截事件，防止失焦
+        return super().eventFilter(source, event)
+
+    def mousePressEvent(self, event):
+        """🌟 終極防呆：就算點擊在清單邊緣 2px 的縫隙，一樣能觸發輸入"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.spawn_inline_editor()
+        super().mousePressEvent(event)
+
+    def spawn_inline_editor(self):
+        feat = FeatureItem('text', "")
+        item = QListWidgetItem()
+        item.setSizeHint(QSize(0, 60))
+        item.setData(Qt.ItemDataRole.UserRole, feat)
+        self.list_widget.addItem(item)
+        
+        widget = TextFeatureWidget(feat, self.is_positive, self, item)
+        self.list_widget.setItemWidget(item, widget)
+        self.update_visual_state()
+        
+        # 🌟 延遲 10 毫秒奪取焦點，確保 Qt 渲染完成後游標能順利閃爍
+        QTimer.singleShot(10, widget.edit.setFocus)
 
     def update_visual_state(self, is_hover=False):
         has_items = self.list_widget.count() > 0
         self.placeholder.setVisible(not has_items)
-        self.list_widget.setVisible(has_items)
         
-        if is_hover:
-            border_style = f"2px solid {self.active_color}"
-            bg_color = "rgba(255, 255, 255, 0.05)"
-        else:
-            border_style = f"1px dashed {self.idle_color}"
-            bg_color = "rgba(0, 0, 0, 0.2)"
-            
+        # 🌟 關鍵修復：絕對不可以隱藏 list_widget！
+        # 即使它是空的也要保持 True，這樣才能捕捉到您的滑鼠點擊
+        self.list_widget.setVisible(True) 
+        
+        border_style = f"2px solid {self.active_color}" if is_hover else f"1px dashed {self.idle_color}"
+        bg_color = "rgba(255, 255, 255, 0.05)" if is_hover else "rgba(0, 0, 0, 0.2)"
         self.setStyleSheet(f"FeatureBucketWidget {{ border: {border_style}; border-radius: 6px; background-color: {bg_color}; }}")
 
     def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.placeholder.setGeometry(self.rect())
+        super().resizeEvent(event); self.placeholder.setGeometry(self.rect())
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-            self.update_visual_state(is_hover=True)
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction(); self.update_visual_state(True)
 
-    def dragLeaveEvent(self, event):
-        self.update_visual_state(is_hover=False)
+    def dragLeaveEvent(self, event): self.update_visual_state(False)
 
     def dropEvent(self, event):
-        self.update_visual_state(is_hover=False)
-        urls = event.mimeData().urls()
-        current_paths = self.get_paths()
+        self.update_visual_state(False)
         added_new = False
-        
-        for url in urls:
-            if url.isLocalFile():
-                path = os.path.normpath(url.toLocalFile())
-                if path not in current_paths:
-                    self.add_item(path)
-                    current_paths.append(path)
-                    added_new = True
-                    
+        if event.mimeData().hasUrls():
+            current_paths = [f.data for f in self.get_features() if f.type == 'image']
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    path = os.path.normpath(url.toLocalFile())
+                    if path not in current_paths:
+                        self.add_image_item(path); added_new = True
+        elif event.mimeData().hasText():
+            text = event.mimeData().text().strip()
+            if text:
+                self.add_text_item(text)
+                self.text_dropped.emit(text) 
+                added_new = True
         if added_new: self.files_changed.emit()
 
-    def add_item(self, path):
+    def add_image_item(self, path):
+        feat = FeatureItem('image', path)
         item = QListWidgetItem(os.path.basename(path))
-        item.setData(Qt.ItemDataRole.UserRole, path)
+        item.setData(Qt.ItemDataRole.UserRole, feat)
         self.list_widget.addItem(item)
-        
         worker = ThumbnailWorker(item, path)
         worker.signals.finished.connect(self._on_thumbnail_ready)
         QThreadPool.globalInstance().start(worker)
         self.update_visual_state()
+
+    def add_text_item(self, text):
+        feat = FeatureItem('text', text)
+        item = QListWidgetItem()
+        item.setSizeHint(QSize(0, 36))
+        item.setData(Qt.ItemDataRole.UserRole, feat)
+        self.list_widget.addItem(item)
+        widget = TextFeatureWidget(feat, self.is_positive, self, item)
+        self.list_widget.setItemWidget(item, widget)
+        self.preheat_text_vector(feat) 
+        self.update_visual_state()
+
+    def preheat_text_vector(self, feat):
+        if not hasattr(self, 'main_window') or not self.main_window.engine: return
+        engine = self.main_window.engine
+        class VectorWorker(QRunnable):
+            def run(self):
+                try: feat.vector = engine.get_text_vector(feat.data)
+                except: pass
+        QThreadPool.globalInstance().start(VectorWorker())
 
     def _on_thumbnail_ready(self, item, icon):
         if item.listWidget() is not None: item.setIcon(icon)
@@ -2749,26 +2826,52 @@ class FeatureBucketWidget(QFrame):
         if item:
             action_delete = QAction("🗑️ 刪除 (Delete)", self)
             action_delete.triggered.connect(self.delete_selected)
-            menu.addAction(action_delete)
-            menu.addSeparator()
+            menu.addAction(action_delete); menu.addSeparator()
         action_clear = QAction("🚫 清除選擇 (Clear All)", self)
         action_clear.triggered.connect(self.clear_all)
-        menu.addAction(action_clear)
-        menu.exec(self.list_widget.mapToGlobal(pos))
-
-    def delete_selected(self):
-        for item in self.list_widget.selectedItems():
-            self.list_widget.takeItem(self.list_widget.row(item))
-        self.update_visual_state()
-        self.files_changed.emit()
+        menu.addAction(action_clear); menu.exec(self.list_widget.mapToGlobal(pos))
 
     def clear_all(self):
-        self.list_widget.clear()
+        self.list_widget.clear(); self.update_visual_state(); self.files_changed.emit()
+
+    def get_features(self):
+        return [self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list_widget.count())]
+    
+    # ==========================================
+    # 🌟 徹底銷毀 UI 元件的刪除邏輯
+    # ==========================================
+    def delete_item_by_widget(self, list_item):
+        """清除沒有輸入文字的幽靈框框，或清空現有文字的標籤"""
+        row = self.list_widget.row(list_item)
+        if row >= 0:
+            # 🌟 關鍵修復：必須在 takeItem 「之前」先把 Widget 抓出來！
+            # 否則脫離清單後，系統就再也認不得這個 UI 了
+            widget = self.list_widget.itemWidget(list_item)
+            
+            # 將資料從清單中拔除
+            self.list_widget.takeItem(row)
+            
+            # 強制從記憶體中把剛剛抓到的 UI 銷毀！
+            if widget:
+                widget.deleteLater()
+                
+            self.update_visual_state()
+            self.files_changed.emit()
+
+    def delete_selected(self):
+        """使用者按 Delete 鍵或右鍵刪除時的邏輯"""
+        for item in self.list_widget.selectedItems():
+            # 🌟 同樣的防呆：先抓 UI，再拔資料，最後銷毀
+            widget = self.list_widget.itemWidget(item)
+            row = self.list_widget.row(item)
+            
+            self.list_widget.takeItem(row)
+            
+            if widget:
+                widget.deleteLater()
+                
         self.update_visual_state()
         self.files_changed.emit()
-
-    def get_paths(self):
-        return [self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list_widget.count())]
 
 class CollapsibleSection(QWidget):
     """自定義摺疊區塊，仿 VSCode 樣式 (解決文字跳動問題)"""
@@ -3296,38 +3399,6 @@ class InspectorPanel(QFrame):
         # 🗑️ [刪除] 下面這整段 btn.setStyleSheet("""...""") 全部刪除！
         return btn
 
-    def _setup_clip_tab(self):
-        layout = QVBoxLayout(self.tab_clip)
-        layout.setSpacing(15)
-        layout.setContentsMargins(15, 20, 15, 20)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        lbl_desc = QLabel("從左側畫廊拖曳圖片到下方方塊，\n進行向量特徵的組合或排除。")
-        lbl_desc.setStyleSheet("color: #aaaaaa; font-size: 13px;")
-        layout.addWidget(lbl_desc)
-
-        # 🌟 1. 改用全新的 SolidWorks 風格特徵桶
-        self.pos_box = FeatureBucketWidget("➕ 正向特徵 (Positive)", "#60cdff", "#00aaff") 
-        self.pos_box.setFixedHeight(150) # 設定適當的高度
-        self.neg_box = FeatureBucketWidget("➖ 負向排除 (Negative)", "#ff5252", "#ff0000")
-        self.neg_box.setFixedHeight(150)
-        layout.addWidget(self.pos_box)
-        layout.addWidget(self.neg_box)
-
-        # 🌟 2. 組合搜尋按鈕 (預設隱藏)
-        self.btn_vector_search = QPushButton("組合搜尋")
-        self.btn_vector_search.setProperty("cssClass", "ActionBtn")
-        self.btn_vector_search.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_vector_search.hide()
-        self.btn_vector_search.clicked.connect(self.trigger_multi_vector_search)
-        layout.addWidget(self.btn_vector_search)
-
-        # 🌟 3. 綁定檔案改變事件
-        self.pos_box.files_changed.connect(self.on_vector_box_changed)
-        self.neg_box.files_changed.connect(self.on_vector_box_changed)
-        
-        layout.addStretch(1)
-
     def on_vector_box_changed(self):
         # 使用新的 get_paths() 方法取得資料
         pos_paths = self.pos_box.get_paths()
@@ -3345,38 +3416,54 @@ class InspectorPanel(QFrame):
         else:
             self.btn_vector_search.hide()
 
-    def trigger_multi_vector_search(self):
-        pos_paths = self.pos_box.get_paths()
-        neg_paths = self.neg_box.get_paths()
-        self.main_window.start_multi_vector_search(pos_paths, neg_paths)
+    def _setup_clip_tab(self):
+        layout = QVBoxLayout(self.tab_clip)
+        layout.setSpacing(15); layout.setContentsMargins(15, 20, 15, 20); layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        lbl_desc = QLabel("拖曳圖片或文字到下方方塊，\n進行多模態語義特徵的組合或排除。")
+        lbl_desc.setStyleSheet("color: #aaaaaa; font-size: 13px;")
+        layout.addWidget(lbl_desc)
 
+        # 🌟 賦予 is_positive 與 main_window 參數
+        self.pos_box = FeatureBucketWidget("➕ 正向特徵 (Positive)", "#60cdff", "#00aaff", is_positive=True, main_window=self.main_window) 
+        self.pos_box.setFixedHeight(150)
+        self.neg_box = FeatureBucketWidget("➖ 負向排除 (Negative)", "#ff5252", "#ff0000", is_positive=False, main_window=self.main_window)
+        self.neg_box.setFixedHeight(150)
+        layout.addWidget(self.pos_box); layout.addWidget(self.neg_box)
 
-    # ==========================================
-    # 🌟 實作「單張自動搜，多張手動算」邏輯 (已修復路徑獲取方式)
-    # ==========================================
+        self.btn_vector_search = QPushButton("🚀 組合搜尋")
+        self.btn_vector_search.setProperty("cssClass", "ActionBtn")
+        self.btn_vector_search.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_vector_search.hide()
+        self.btn_vector_search.clicked.connect(self.trigger_multi_vector_search)
+        layout.addWidget(self.btn_vector_search)
+
+        # 🌟 文字拖拽時自動清空主搜尋框
+        self.pos_box.text_dropped.connect(self.main_window.input.clear)
+        self.neg_box.text_dropped.connect(self.main_window.input.clear)
+
+        self.pos_box.files_changed.connect(self.on_vector_box_changed)
+        self.neg_box.files_changed.connect(self.on_vector_box_changed)
+        layout.addStretch(1)
+
     def on_vector_box_changed(self):
-        # 🌟 [關鍵修復] 改用 .get_paths() 函式來取得資料
-        pos_paths = self.pos_box.get_paths()
-        neg_paths = self.neg_box.get_paths()
-        total = len(pos_paths) + len(neg_paths)
+        pos_features = self.pos_box.get_features()
+        neg_features = self.neg_box.get_features()
+        total = len(pos_features) + len(neg_features)
 
-        if total == 1 and len(pos_paths) == 1:
-            # 只有一張正向圖片 -> 瞬間自動觸發以圖搜圖！
+        # 只有一張圖片時才自動搜，文字則保留手動確認
+        if total == 1 and len(pos_features) == 1 and pos_features[0].type == 'image':
             self.btn_vector_search.hide()
-            self.main_window.start_image_search(pos_paths[0])
+            self.main_window.start_image_search(pos_features[0].data)
         elif total > 0:
-            # 多張圖片，或是有負向圖片 -> 顯示「組合搜尋」按鈕讓使用者手動確認
             self.btn_vector_search.show()
-            self.btn_vector_search.setText(f"組合搜尋 (正:{len(pos_paths)} 負:{len(neg_paths)})")
+            self.btn_vector_search.setText(f"🚀 組合搜尋 (正:{len(pos_features)} 負:{len(neg_features)})")
         else:
             self.btn_vector_search.hide()
 
     def trigger_multi_vector_search(self):
-        """按下按鈕後，呼叫 MainWindow 執行多向量搜尋"""
-        # 🌟 [關鍵修復] 這裡按下搜尋按鈕時，也要用 .get_paths()
-        pos_paths = self.pos_box.get_paths()
-        neg_paths = self.neg_box.get_paths()
-        self.main_window.start_multi_vector_search(pos_paths, neg_paths)
+        pos_features = self.pos_box.get_features()
+        neg_features = self.neg_box.get_features()
+        self.main_window.start_multi_vector_search(pos_features, neg_features)
 
     def _setup_ocr_tab(self):
         # 修正：原代碼誤寫為 self.tab_clip，現已改回 self.tab_ocr
@@ -4898,6 +4985,10 @@ class MainWindow(QMainWindow):
             self.start_search(triggered_by_slider=True)
 
     def start_search(self, *args, triggered_by_slider=False):
+        # 🌟 新增：如果是使用者手動按 Enter 搜尋，立刻交出焦點釋放 WASD 快捷鍵
+        if not triggered_by_slider:
+            self.input.clearFocus()
+            
         q = self.input.text().strip()
         if not q or not self.engine: return
         
@@ -5009,7 +5100,7 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
 
-    def start_multi_vector_search(self, pos_paths, neg_paths):
+    def start_multi_vector_search(self, pos_features, neg_features): # 🌟 改為 features
         if not self.engine: return
         if not self.is_navigating: self.push_current_state()
 
@@ -5017,7 +5108,8 @@ class MainWindow(QMainWindow):
         self.progress.show()
         self.progress.setRange(0, 0)
         self.status.setText("Calculating Vector Math...")
-        self.input.setText(f"[Multi-Vector] Pos:{len(pos_paths)} Neg:{len(neg_paths)}")
+        
+        self.input.setText(f"[Multi-Vector] Pos:{len(pos_features)} Neg:{len(neg_features)}")
         self.breadcrumb_lbl.setText("Vector Arithmetic Results")
         
         self.inspector_panel.combo_sort.blockSignals(True)
@@ -5042,8 +5134,7 @@ class MainWindow(QMainWindow):
                     self.worker.finished.connect(lambda w=self.worker: self._retained_workers.remove(w) if w in self._retained_workers else None)
         except (RuntimeError, TypeError): pass
         
-        # 🌟 將正負路徑打包成 dict 當作 query 傳給 Worker
-        self.worker = SearchWorker(self.engine, {'pos': pos_paths, 'neg': neg_paths}, fetch_k, search_mode="multi_vector", folder_path=target_folder)
+        self.worker = SearchWorker(self.engine, {'pos': pos_features, 'neg': neg_features}, fetch_k, search_mode="multi_vector", folder_path=target_folder)
         self.worker.batch_ready.connect(self.set_base_results)
         self.worker.finished_search.connect(self.on_finished)
         self.worker.finished.connect(self.worker.deleteLater)
