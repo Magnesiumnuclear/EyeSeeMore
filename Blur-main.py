@@ -1386,6 +1386,83 @@ class ImageSearchEngine:
         finally:
             conn.close()
         return ocr_boxes
+    
+    # ==========================================
+    # 🌟 [修復版] 多圖向量組合搜尋 (Vector Arithmetic)
+    # ==========================================
+    def search_multi_vector(self, pos_paths, neg_paths, top_k=50, folder_path=None):
+        if not self.is_ready or self.stored_embeddings is None: return []
+
+        # 🌟 1. 雙軌獲取機制 (Dual-Path Fetching) + 路徑正規化
+        def get_vec(path):
+            norm_target_path = os.path.normpath(path)
+            
+            # 軌道 A：從記憶體極速撈取 ($O(1)$)
+            for i, item in enumerate(self.data_store):
+                if os.path.normpath(item["path"]) == norm_target_path:
+                    return self.stored_embeddings[i]
+            
+            # 軌道 B：逃生路線 (記憶體沒找到，啟動 ONNX 即時補算！)
+            try:
+                print(f"[Engine] 路徑未命中資料庫，啟動 ONNX 即時推論: {path}")
+                image = Image.open(path).convert('RGB')
+                processed_image = np.expand_dims(self.preprocess(image), axis=0)
+                input_name = self.clip_image_session.get_inputs()[0].name
+                image_features = self.clip_image_session.run(None, {input_name: processed_image})[0]
+                image_features = image_features / np.linalg.norm(image_features, axis=-1, keepdims=True)
+                return image_features[0] # 回傳 1D 陣列
+            except Exception as e:
+                print(f"[Error] 即時推論失敗 {path}: {e}")
+                return None
+
+        # 2. 收集向量 (自動觸發雙軌機制)
+        pos_vecs = [v for p in pos_paths if (v := get_vec(p)) is not None]
+        neg_vecs = [v for p in neg_paths if (v := get_vec(p)) is not None]
+        if not pos_vecs and not neg_vecs: return []
+
+        # 3. 數學運算：正向中心點減去負向中心點
+        dim = self.stored_embeddings.shape[1]
+        v_pos = np.mean(pos_vecs, axis=0) if pos_vecs else np.zeros(dim, dtype=np.float32)
+        v_neg = np.mean(neg_vecs, axis=0) if neg_vecs else np.zeros(dim, dtype=np.float32)
+
+        # 魔法權重：負向向量殺傷力極大，乘以 0.6 進行柔化
+        query_vector = v_pos - (0.6 * v_neg)
+        if not pos_vecs and neg_vecs: query_vector = -v_neg 
+
+        # 4. 變換維度並歸一化
+        query_vector = np.expand_dims(query_vector, axis=0)
+        query_vector = query_vector / np.linalg.norm(query_vector, axis=-1, keepdims=True)
+        query_vector = query_vector.astype(np.float32)
+
+        # 5. 發動 FAISS 搜尋
+        fetch_limit = min(max(2000, top_k), len(self.data_store))
+        top_scores_matrix, top_indices_matrix = self.faiss_index.search(query_vector, fetch_limit)
+        
+        # 6. 過濾與封裝結果
+        norm_folder = os.path.normpath(folder_path) if (folder_path and folder_path != "ALL") else None
+        results = []
+        
+        # 🌟 徹底移除門檻過濾 (actual_thresh)，只要 FAISS 有回傳就無條件加入清單！
+        for i in range(fetch_limit):
+            idx = top_indices_matrix[0][i]
+            item = self.data_store[idx]
+            
+            # 資料夾過濾
+            if norm_folder and not os.path.normpath(item["path"]).startswith(norm_folder): 
+                continue
+                
+            score = top_scores_matrix[0][i]
+            results.append({
+                "score": float(score), "clip_score": float(score), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
+                "path": item["path"], "filename": item["filename"], "mtime": item.get("mtime", 0),
+                "width": item.get("width", 0), "height": item.get("height", 0)
+            })
+            
+            # 達到 UI 要求的顯示數量就停止
+            if len(results) >= top_k: 
+                break
+                
+        return results
 
 from indexer import IndexerService # 確保引入
 
@@ -1515,16 +1592,15 @@ class SearchWorker(QThread):
     def run(self):
         start_time = time.time()
         if self.search_mode == "image":
-            # 🌟 [修改] 圖片相似搜尋現在也支援範圍過濾了！
             raw_results = self.engine.search_image(self.query, self.top_k, folder_path=self.folder_path)
+        elif self.search_mode == "multi_vector":
+            # 🌟 [新增] 多向量運算分支
+            raw_results = self.engine.search_multi_vector(
+                self.query['pos'], self.query['neg'], self.top_k, folder_path=self.folder_path
+            )
         else:
-            # 🌟 [修改] 將參數傳遞給底層
             raw_results = self.engine.search_hybrid(
-                self.query, 
-                self.top_k, 
-                self.use_ocr, 
-                self.weight_config, 
-                folder_path=self.folder_path
+                self.query, self.top_k, self.use_ocr, self.weight_config, folder_path=self.folder_path
             )
             
         self.batch_ready.emit(raw_results)
@@ -2530,7 +2606,76 @@ class SidebarWidget(QFrame):
     def on_sub_folder_clicked(self, path):
         self.folder_selected.emit(path)
 
-    
+# ==========================================
+# 🌟 [新增] CLIP 專用向量拖曳方塊
+# ==========================================
+class VectorDropBox(QListWidget):
+    files_changed = pyqtSignal()
+
+    def __init__(self, title, border_color):
+        super().__init__()
+        self.title = title
+        self.border_color = border_color
+        self.paths = []
+        
+        self.setAcceptDrops(True)
+        self.setViewMode(QListView.ViewMode.IconMode)
+        self.setIconSize(QSize(64, 64))
+        self.setSpacing(8)
+        self.setResizeMode(QListView.ResizeMode.Adjust)
+        self.setFixedHeight(130)
+        
+        # 設定邊框與背景顏色
+        self.setStyleSheet(f"""
+            QListWidget {{
+                border: 2px dashed {self.border_color};
+                border-radius: 8px;
+                background-color: rgba(0, 0, 0, 0.2);
+                padding: 5px;
+            }}
+        """)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        for url in urls:
+            path = url.toLocalFile()
+            if path and path not in self.paths:
+                self.paths.append(path)
+                # 建立帶有縮圖的項目
+                item = QListWidgetItem()
+                item.setIcon(QIcon(path)) 
+                item.setToolTip(os.path.basename(path))
+                self.addItem(item)
+        self.files_changed.emit()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        # 如果裡面沒圖片，就畫上提示文字
+        if self.count() == 0:
+            painter = QPainter(self.viewport())
+            painter.setPen(QColor(self.border_color))
+            font = painter.font()
+            font.setPointSize(12)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(self.viewport().rect(), Qt.AlignmentFlag.AlignCenter, f"{self.title}\\n(拖曳圖片至此)")
+
+    def clear_all(self):
+        self.clear()
+        self.paths = []
+        self.files_changed.emit()
 
 class CollapsibleSection(QWidget):
     """自定義摺疊區塊，仿 VSCode 樣式 (解決文字跳動問題)"""
@@ -3059,17 +3204,64 @@ class InspectorPanel(QFrame):
         return btn
 
     def _setup_clip_tab(self):
-        # 修正：確保 layout 綁定在正確的 tab 上
         layout = QVBoxLayout(self.tab_clip)
         layout.setSpacing(15)
-        layout.setContentsMargins(20, 25, 20, 20)
+        layout.setContentsMargins(15, 20, 15, 20)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # 使用統一的樣式產生按鈕
-        self.btn_test_clip = self._create_construction_button("🚧 施工中：進階 CLIP 向量過濾")
-        layout.addWidget(self.btn_test_clip)
+        lbl_desc = QLabel("從左側畫廊拖曳圖片到下方方塊，\n進行向量特徵的組合或排除。")
+        lbl_desc.setStyleSheet("color: #aaaaaa; font-size: 13px;")
+        layout.addWidget(lbl_desc)
 
+        # 🌟 1. 建立正向與負向方塊
+        self.pos_box = VectorDropBox("正向特徵", "#60cdff") # 主題藍色
+        self.neg_box = VectorDropBox("負向排除", "#ff5252") # 警告紅色
+        layout.addWidget(self.pos_box)
+        layout.addWidget(self.neg_box)
+
+        # 🌟 2. 清除按鈕
+        self.btn_clear_vectors = QPushButton("清空方塊")
+        self.btn_clear_vectors.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_vectors.clicked.connect(self.pos_box.clear_all)
+        self.btn_clear_vectors.clicked.connect(self.neg_box.clear_all)
+        layout.addWidget(self.btn_clear_vectors)
+
+        # 🌟 3. 組合搜尋按鈕 (預設隱藏，只有拖入多張圖片時才出現)
+        self.btn_vector_search = QPushButton("組合搜尋")
+        self.btn_vector_search.setProperty("cssClass", "ActionBtn")
+        self.btn_vector_search.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_vector_search.hide()
+        self.btn_vector_search.clicked.connect(self.trigger_multi_vector_search)
+        layout.addWidget(self.btn_vector_search)
+
+        # 綁定拖曳改變事件
+        self.pos_box.files_changed.connect(self.on_vector_box_changed)
+        self.neg_box.files_changed.connect(self.on_vector_box_changed)
+        
         layout.addStretch(1)
+
+    # ==========================================
+    # 🌟 實作「單張自動搜，多張手動算」邏輯
+    # ==========================================
+    def on_vector_box_changed(self):
+        pos_paths = self.pos_box.paths
+        neg_paths = self.neg_box.paths
+        total = len(pos_paths) + len(neg_paths)
+
+        if total == 1 and len(pos_paths) == 1:
+            # 只有一張正向圖片 -> 瞬間自動觸發以圖搜圖！
+            self.btn_vector_search.hide()
+            self.main_window.start_image_search(pos_paths[0])
+        elif total > 0:
+            # 多張圖片，或是有負向圖片 -> 顯示「組合搜尋」按鈕讓使用者手動確認
+            self.btn_vector_search.show()
+            self.btn_vector_search.setText(f"組合搜尋 (正:{len(pos_paths)} 負:{len(neg_paths)})")
+        else:
+            self.btn_vector_search.hide()
+
+    def trigger_multi_vector_search(self):
+        """按下按鈕後，呼叫 MainWindow 執行多向量搜尋"""
+        self.main_window.start_multi_vector_search(self.pos_box.paths, self.neg_box.paths)
 
     def _setup_ocr_tab(self):
         # 修正：原代碼誤寫為 self.tab_clip，現已改回 self.tab_ocr
@@ -4697,6 +4889,46 @@ class MainWindow(QMainWindow):
             pass
         
         self.worker = SearchWorker(self.engine, image_path, fetch_k, search_mode="image", folder_path=target_folder)
+        self.worker.batch_ready.connect(self.set_base_results)
+        self.worker.finished_search.connect(self.on_finished)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.worker.start()
+
+    def start_multi_vector_search(self, pos_paths, neg_paths):
+        if not self.engine: return
+        if not self.is_navigating: self.push_current_state()
+
+        self.history_list.hide()
+        self.progress.show()
+        self.progress.setRange(0, 0)
+        self.status.setText("Calculating Vector Math...")
+        self.input.setText(f"[Multi-Vector] Pos:{len(pos_paths)} Neg:{len(neg_paths)}")
+        self.breadcrumb_lbl.setText("Vector Arithmetic Results")
+        
+        self.inspector_panel.combo_sort.blockSignals(True)
+        self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
+        self.inspector_panel.btn_sort_order.setText("↓")
+        self.inspector_panel.combo_sort.blockSignals(False)
+        
+        limit = self.inspector_panel.combo_limit_panel.currentText()
+        fetch_k = 100000 if limit == "All" else 2000
+
+        target_folder = None
+        if self.inspector_panel.combo_search_scope.currentIndex() == 0 and self.current_folder_path != "ALL":
+            target_folder = self.current_folder_path
+        
+        try:
+            if getattr(self, 'worker', None):
+                self.worker.batch_ready.disconnect()
+                self.worker.finished_search.disconnect()
+                if self.worker.isRunning():
+                    if not hasattr(self, '_retained_workers'): self._retained_workers = []
+                    self._retained_workers.append(self.worker)
+                    self.worker.finished.connect(lambda w=self.worker: self._retained_workers.remove(w) if w in self._retained_workers else None)
+        except (RuntimeError, TypeError): pass
+        
+        # 🌟 將正負路徑打包成 dict 當作 query 傳給 Worker
+        self.worker = SearchWorker(self.engine, {'pos': pos_paths, 'neg': neg_paths}, fetch_k, search_mode="multi_vector", folder_path=target_folder)
         self.worker.batch_ready.connect(self.set_base_results)
         self.worker.finished_search.connect(self.on_finished)
         self.worker.finished.connect(self.worker.deleteLater)
