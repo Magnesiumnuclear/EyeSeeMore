@@ -3205,7 +3205,7 @@ class InspectorPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_window = parent# [新增] 儲存父視窗以便讀寫設定
-        self.setFixedWidth(320)
+        self.setFixedWidth(360)
 
         self.setObjectName("InspectorPanel")
         
