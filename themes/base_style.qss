@@ -65,12 +65,11 @@ QPushButton#SidebarRow1[expanded="true"] { text-align: left; padding-left: 18px;
 QPushButton#SidebarRow1[expanded="false"] { text-align: center; padding-left: 0px; font-size: 22px;}
 
 
-/* --- 2. 右側面板 InspectorPanel --- */
-QFrame#InspectorPanel { background-color: @bg_app; border-left: 1px solid @border_main; }
-QTabWidget#InspectorTabs::pane { border: none; border-top: 1px solid @border_main; background: @bg_app; }
-QTabWidget#InspectorTabs QTabBar::tab { background: @bg_panel; color: @text_muted; padding: 10px 15px; border: none; font-weight: bold; font-size: 13px; }
-QTabWidget#InspectorTabs QTabBar::tab:selected { color: @primary; border-bottom: 2px solid @primary; background: @bg_app; }
-QTabWidget#InspectorTabs QTabBar::tab:hover:!selected { color: @text_main; background: @bg_input; }
+/* --- 修復：AI 引擎與自動任務設定分頁 (AITabs & AutoTabs) --- */
+QTabWidget#AITabs::pane, QTabWidget#AutoTabs::pane { border: 1px solid @border_main; border-radius: 4px; top: -1px; background-color: @bg_card; }
+QTabWidget#AITabs QTabBar::tab, QTabWidget#AutoTabs QTabBar::tab { background: @bg_panel; color: @text_muted; border: 1px solid @border_main; padding: 10px 20px; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; font-size: 14px; font-weight: bold; }
+QTabWidget#AITabs QTabBar::tab:selected, QTabWidget#AutoTabs QTabBar::tab:selected { background: @bg_card; color: @primary; border-bottom-color: @bg_card; }
+QTabWidget#AITabs QTabBar::tab:hover:!selected, QTabWidget#AutoTabs QTabBar::tab:hover:!selected { background: @bg_hover; color: @text_main; }
 
 
 /* --- 3. 設定視窗 SettingsDialog --- */
@@ -724,4 +723,30 @@ QFrame#FeatureBucket[polarity="negative"][drag_hover="false"] {
 QFrame#FeatureBucket[polarity="negative"][drag_hover="true"] {
     border: 2px solid @danger;
     background-color: @bg_bucket_hover; /* 🌟 改用變數 */
+}
+
+/* --- 8. 自動任務頁面 (Auto Tasks) --- */
+QScrollArea#OcrTaskScrollArea { background: transparent; border: none; }
+QWidget#OcrTaskContainer { background: transparent; }
+
+/* 任務列的懸停效果 */
+QWidget#OcrTaskRow {
+    background-color: transparent;
+    border-radius: 8px;
+}
+QWidget#OcrTaskRow:hover {
+    background-color: @bg_hover;
+}
+
+/* 任務列內的文字 */
+QLabel#OcrTaskTitle {
+    font-size: 15px;
+    font-weight: bold;
+    color: @text_main;
+    background: transparent;
+}
+QLabel#OcrTaskPath {
+    font-size: 12px;
+    color: @text_muted;
+    background: transparent;
 }

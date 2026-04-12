@@ -6207,11 +6207,11 @@ class SettingsDialog(QDialog):
         #  加入 QScrollArea 容器 (解決排版被撐破的核心)
         self.ocr_scroll = QScrollArea()
         self.ocr_scroll.setWidgetResizable(True)
-        self.ocr_scroll.setFrameShape(QFrame.Shape.NoFrame) # 隱藏邊框
-        self.ocr_scroll.setStyleSheet("background: transparent;")
+        self.ocr_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.ocr_scroll.setObjectName("OcrTaskScrollArea") # 🌟 核發身分證
         
         self.ocr_tasks_container = QWidget()
-        self.ocr_tasks_container.setStyleSheet("background: transparent;") 
+        self.ocr_tasks_container.setObjectName("OcrTaskContainer") # 🌟 核發身分證
         self.ocr_tasks_list_layout = QVBoxLayout(self.ocr_tasks_container)
         self.ocr_tasks_list_layout.setContentsMargins(0, 5, 0, 0)
         self.ocr_tasks_list_layout.setSpacing(5)
@@ -6293,26 +6293,31 @@ class SettingsDialog(QDialog):
             enabled_langs = f.get("enabled_langs", [])
             
             row_widget = QWidget()
-            row_widget.setObjectName("OcrTaskRow")
+            row_widget.setObjectName("OcrTaskRow") # 🌟 樣式全交給 QSS
             row_widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-            
-            bg_hover = self.main_window.theme_manager.current_colors.get("bg_hover", "#383838")
-            row_widget.setStyleSheet(f"""
-                QWidget#OcrTaskRow {{ background-color: transparent; border-radius: 8px; }}
-                QWidget#OcrTaskRow:hover {{ background-color: {bg_hover}; }}
-            """)
-            
             row_widget.setCursor(Qt.CursorShape.PointingHandCursor)
+            
             row = QHBoxLayout(row_widget)
             row.setContentsMargins(10, 8, 10, 8) 
             
             folder_name = os.path.basename(path)
-            muted_color = self.main_window.theme_manager.current_colors.get("text_muted", "#888888")
-            lbl_name = QLabel(f"<span style='font-size:15px; font-weight:bold;'>{icon}  {folder_name}</span><br><span style='color:{muted_color}; font-size:12px;'>{path}</span>")
-            lbl_name.setFixedWidth(260)
-            lbl_name.setTextFormat(Qt.TextFormat.RichText)
-            # 讓標籤忽略滑鼠事件，確保點擊能精準傳遞給底層的 row_widget
-            lbl_name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            
+            # 🌟 核心重構：放棄 HTML 字串，改用真實的 Layout 堆疊標籤
+            text_container = QWidget()
+            text_container.setFixedWidth(260)
+            text_container.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            text_layout = QVBoxLayout(text_container)
+            text_layout.setContentsMargins(0, 0, 0, 0)
+            text_layout.setSpacing(2)
+            
+            lbl_title = QLabel(f"{icon}  {folder_name}")
+            lbl_title.setObjectName("OcrTaskTitle") # 身分證：標題
+            
+            lbl_path = QLabel(path)
+            lbl_path.setObjectName("OcrTaskPath") # 身分證：路徑
+            
+            text_layout.addWidget(lbl_title)
+            text_layout.addWidget(lbl_path)
             
             tags_layout = QHBoxLayout()
             tags_layout.setSpacing(5)
@@ -6333,7 +6338,7 @@ class SettingsDialog(QDialog):
             #  核心修改：直接把點擊事件綁定到這整列，並取得滑鼠游標目前的絕對座標
             row_widget.mouseReleaseEvent = lambda event, p=path: self.show_ocr_task_menu(p, event.globalPosition().toPoint())
             
-            row.addWidget(lbl_name)
+            row.addWidget(text_container) # 🌟 改為放入容器
             row.addLayout(tags_layout, stretch=1)
             # (移除 btn_action 相關程式碼)
             
