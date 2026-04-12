@@ -697,7 +697,7 @@ class ImageDelegate(QStyledItemDelegate):
         text_color = QColor(colors.get("text_main", "#ffffff"))
         
         #  核心視覺優化：避免在畫廊大面積使用純白 (255, 255, 255)
-        # 如果主題文字是純白，我們將它柔化為 #e0e0e0 (淡淡的灰白)，減輕刺眼感
+        # 如果主題文字是純白，我們將它柔化為  (淡淡的灰白)，減輕刺眼感
         if text_color.name().lower() == "#ffffff":
             text_color = QColor("#e0e0e0")
 
@@ -830,7 +830,7 @@ class ImageDelegate(QStyledItemDelegate):
             painter.drawRoundedRect(tag_rect, 3, 3)
             
             painter.setFont(self.font_tag)
-            #  這裡刻意保留純白色 "#ffffff"。
+            #  這裡刻意保留純白色 。
             # 因為無論在深色還是淺色模式，標籤底色都是綠色，白字在綠底上的對比度與閱讀性永遠是最好的。
             painter.setPen(QColor("#ffffff"))
             painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter, tag_text)
@@ -3032,19 +3032,23 @@ class RangeCalendarWidget(QWidget):
         main_layout.addLayout(header_layout)
 
         # 2. 星期標籤
-        week_layout = QHBoxLayout()
-        for wd in ["日", "一", "二", "三", "四", "五", "六"]:
+        # ==========================================
+        # 🌟 重構：統一網格化 (星期標籤 + 日期按鈕)
+        # ==========================================
+        self.grid_layout = QGridLayout()
+        self.grid_layout.setSpacing(2)
+
+        # 1. 寫入星期標籤 (放在第 0 列)
+        weekdays = ["日", "一", "二", "三", "四", "五", "六"]
+        for col, wd in enumerate(weekdays):
             lbl = QLabel(wd)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setObjectName("CalendarWeekday")
-            week_layout.addWidget(lbl)
-        main_layout.addLayout(week_layout)
+            self.grid_layout.addWidget(lbl, 0, col)
 
-        # 3. 日期網格
-        self.grid_layout = QGridLayout()
-        self.grid_layout.setSpacing(2)
+        # 2. 寫入日期按鈕 (放在第 1~6 列)
         self.day_buttons = []
-        for row in range(6):
+        for row in range(1, 7): 
             for col in range(7):
                 btn = QPushButton()
                 btn.setFixedSize(28, 28)
@@ -3052,6 +3056,7 @@ class RangeCalendarWidget(QWidget):
                 btn.clicked.connect(self.on_day_clicked)
                 self.grid_layout.addWidget(btn, row, col)
                 self.day_buttons.append(btn)
+                
         main_layout.addLayout(self.grid_layout)
 
         # 4. 狀態訊息提示區

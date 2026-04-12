@@ -314,7 +314,7 @@ QLabel#CalendarStatus[state="success"] { color: @success; font-weight: bold; }
 
 /* 日曆非本月日期的按鈕顏色退化 */
 QPushButton[is_other_month="true"] {
-    color: @text_muted;
+    color: @border_main; /* 🌟 關鍵修復：從原本的 @text_muted 改為 @border_main。借用邊框的超暗色系，讓它產生完美的隱藏感！ */
     background: transparent;
 }
 
