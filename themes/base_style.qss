@@ -701,3 +701,27 @@ QLabel#ClipTabDesc {
     color: @text_muted;
     font-size: 13px;
 }
+
+/* 狀態 A1：正向桶 - 閒置中 */
+QFrame#FeatureBucket[polarity="positive"][drag_hover="false"] {
+    border: 1px dashed @primary;
+    background-color: @bg_bucket_idle; /* 🌟 改用變數 */
+}
+
+/* 狀態 A2：正向桶 - 拖曳懸停中 (變亮、變粗) */
+QFrame#FeatureBucket[polarity="positive"][drag_hover="true"] {
+    border: 2px solid @primary_hover;
+    background-color: @bg_bucket_hover; /* 🌟 改用變數 */
+}
+
+/* 狀態 B1：負向桶 - 閒置中 */
+QFrame#FeatureBucket[polarity="negative"][drag_hover="false"] {
+    border: 1px dashed @danger;
+    background-color: @bg_bucket_idle; /* 🌟 改用變數 */
+}
+
+/* 狀態 B2：負向桶 - 拖曳懸停中 (變亮、變粗) */
+QFrame#FeatureBucket[polarity="negative"][drag_hover="true"] {
+    border: 2px solid @danger;
+    background-color: @bg_bucket_hover; /* 🌟 改用變數 */
+}

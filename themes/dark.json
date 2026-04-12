@@ -26,6 +26,8 @@
         "bg_floating": "#f0232323",
         "ocr_box_normal": "#c8ff0000",
         "ocr_box_hover": "#60cdff",
-        "ocr_highlight": "#64ffff00"
+        "ocr_highlight": "#64ffff00",
+        "bg_bucket_idle": "#33000000",  
+        "bg_bucket_hover": "#0dffffff"
     }
 }
