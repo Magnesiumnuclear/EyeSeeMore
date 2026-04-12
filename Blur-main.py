@@ -2715,10 +2715,12 @@ class FeatureBucketWidget(QFrame):
     files_changed = pyqtSignal() 
     text_dropped = pyqtSignal(str) 
 
-    def __init__(self, title, idle_color, active_color, is_positive, main_window, parent=None):
+    # 🌟 拔除 idle_color 與 active_color 參數
+    def __init__(self, title, is_positive, main_window, parent=None):
         super().__init__(parent)
-        self.idle_color = idle_color; self.active_color = active_color; self.title = title
-        self.is_positive = is_positive; self.main_window = main_window 
+        self.title = title
+        self.is_positive = is_positive
+        self.main_window = main_window
         
         self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus) #  拔除系統焦點，消滅外圍方形虛線
@@ -3454,14 +3456,17 @@ class InspectorPanel(QFrame):
         layout = QVBoxLayout(self.tab_clip)
         layout.setSpacing(15); layout.setContentsMargins(15, 20, 15, 20); layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         lbl_desc = QLabel("拖曳圖片或文字到下方方塊，\n進行多模態語義特徵的組合或排除。")
-        lbl_desc.setStyleSheet("color: #aaaaaa; font-size: 13px;")
+        
+        # 🌟 重構魔法：核發身分證，樣式交給 QSS
+        lbl_desc.setObjectName("ClipTabDesc") 
         layout.addWidget(lbl_desc)
 
-        #  賦予 is_positive 與 main_window 參數
-        self.pos_box = FeatureBucketWidget("➕ 正向特徵 (Positive)", "#60cdff", "#00aaff", is_positive=True, main_window=self.main_window) 
+        # 🌟 徹底拔除！不再傳入寫死的色碼，因為 QSS 已經會看 polarity 自動變色了
+        self.pos_box = FeatureBucketWidget("➕ 正向特徵 (Positive)", is_positive=True, main_window=self.main_window) 
         self.pos_box.setFixedHeight(150)
-        self.neg_box = FeatureBucketWidget("➖ 負向排除 (Negative)", "#ff5252", "#ff0000", is_positive=False, main_window=self.main_window)
+        self.neg_box = FeatureBucketWidget("➖ 負向排除 (Negative)", is_positive=False, main_window=self.main_window)
         self.neg_box.setFixedHeight(150)
+        
         layout.addWidget(self.pos_box); layout.addWidget(self.neg_box)
 
         self.btn_vector_search = QPushButton("🚀 組合搜尋")

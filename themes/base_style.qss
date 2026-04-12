@@ -695,3 +695,9 @@ QListWidget#BucketListWidget::item:focus {
     outline: none; 
     border: none; 
 }
+
+/* --- 5. 右側面板 (Inspector Panel) --- */
+QLabel#ClipTabDesc {
+    color: @text_muted;
+    font-size: 13px;
+}
