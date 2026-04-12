@@ -2637,14 +2637,12 @@ class TextFeatureWidget(QWidget):
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(8, 2, 8, 2)
         
-        border_color = "#60cdff" if is_positive else "#ff5252"
-        self.setStyleSheet(f"""
-            QWidget {{ background-color: #333333; border: 1px solid {border_color}; border-radius: 4px; }}
-            QLineEdit {{ border: none; background: transparent; color: white; font-size: 14px; outline: none; }}
-        """)
+        # 🌟 重構魔法：核發身分證與極性，視覺全交給 QSS 接管！
+        self.setObjectName("TextFeature")
+        self.setProperty("polarity", "positive" if is_positive else "negative")
         
         self.lbl_icon = QLabel("[T]")
-        self.lbl_icon.setStyleSheet("color: #aaaaaa; border: none; font-weight: bold; font-size: 12px;")
+        # 這裡的 styleSheet 也被我們在 QSS 用 QWidget#TextFeature QLabel 統一處理掉了！
         self.layout.addWidget(self.lbl_icon)
         
         self.edit = QLineEdit(self.feat_item.data)
@@ -2744,9 +2742,13 @@ class FeatureBucketWidget(QFrame):
         # 綁定事件攔截器
         self.list_widget.viewport().installEventFilter(self)
         
+        # 🌟 重構魔法：核發身分證與預設極性
+        self.setObjectName("FeatureBucket")
+        self.setProperty("polarity", "positive" if is_positive else "negative")
+        
         self.placeholder = QLabel(f"拖曳圖片、文字或「點擊此處」輸入...\n({title})", self)
         self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.placeholder.setStyleSheet("color: #888888; font-size: 13px;")
+        self.placeholder.setObjectName("BucketPlaceholder") # 發放專屬身分證
         self.placeholder.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         
         self.layout.addWidget(self.list_widget)
@@ -2784,14 +2786,14 @@ class FeatureBucketWidget(QFrame):
     def update_visual_state(self, is_hover=False):
         has_items = self.list_widget.count() > 0
         self.placeholder.setVisible(not has_items)
-        
-        # 🌟 關鍵修復：絕對不可以隱藏 list_widget！
-        # 即使它是空的也要保持 True，這樣才能捕捉到您的滑鼠點擊
         self.list_widget.setVisible(True) 
         
-        border_style = f"2px solid {self.active_color}" if is_hover else f"1px dashed {self.idle_color}"
-        bg_color = "rgba(255, 255, 255, 0.05)" if is_hover else "rgba(0, 0, 0, 0.2)"
-        self.setStyleSheet(f"FeatureBucketWidget {{ border: {border_style}; border-radius: 6px; background-color: {bg_color}; }}")
+        # 🌟 重構魔法：只改變狀態屬性，讓 Qt 自動去 QSS 找對應的衣服穿！
+        self.setProperty("drag_hover", "true" if is_hover else "false")
+        
+        # 強制 Qt 重新整理這件元件的樣式
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def resizeEvent(self, event):
         super().resizeEvent(event); self.placeholder.setGeometry(self.rect())

@@ -547,3 +547,73 @@ QRubberBand {
     background-color: rgba(96, 205, 255, 0.3); /* 這裡使用你的主題色 #60cdff，透明度 30% */
     border: 1px solid #60cdff;
 }
+
+/* ==========================================
+   第七波除垢：多模態特徵桶與標籤 (Feature Bucket & Tags)
+========================================== */
+
+/* --- 1. 特徵文字標籤 (TextFeatureWidget) --- */
+QWidget#TextFeature {
+    background-color: @bg_input;
+    border-radius: 4px;
+}
+
+/* 狀態 A：正向標籤 (藍框) */
+QWidget#TextFeature[polarity="positive"] {
+    border: 1px solid @primary;
+}
+
+/* 狀態 B：負向標籤 (紅框) */
+QWidget#TextFeature[polarity="negative"] {
+    border: 1px solid @danger;
+}
+
+/* 標籤內部的輸入框與圖示 */
+QWidget#TextFeature QLineEdit {
+    border: none;
+    background: transparent;
+    color: @text_main;
+    font-size: 14px;
+    outline: none;
+}
+QWidget#TextFeature QLabel {
+    color: @text_muted;
+    border: none;
+    font-weight: bold;
+    font-size: 12px;
+}
+
+/* --- 2. 拖曳特徵桶 (FeatureBucketWidget) --- */
+QFrame#FeatureBucket {
+    border-radius: 6px;
+}
+
+/* 狀態 A1：正向桶 - 閒置中 */
+QFrame#FeatureBucket[polarity="positive"][drag_hover="false"] {
+    border: 1px dashed @primary;
+    background-color: rgba(0, 0, 0, 0.2);
+}
+
+/* 狀態 A2：正向桶 - 拖曳懸停中 (變亮、變粗) */
+QFrame#FeatureBucket[polarity="positive"][drag_hover="true"] {
+    border: 2px solid @primary_hover;
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* 狀態 B1：負向桶 - 閒置中 */
+QFrame#FeatureBucket[polarity="negative"][drag_hover="false"] {
+    border: 1px dashed @danger;
+    background-color: rgba(0, 0, 0, 0.2);
+}
+
+/* 狀態 B2：負向桶 - 拖曳懸停中 (變亮、變粗) */
+QFrame#FeatureBucket[polarity="negative"][drag_hover="true"] {
+    border: 2px solid @danger;
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* 桶子內部的提示文字 */
+QLabel#BucketPlaceholder {
+    color: @text_muted;
+    font-size: 13px;
+}
