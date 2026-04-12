@@ -30,7 +30,7 @@ import faiss
 
 # [New] 引入設定管理器
 from config_manager import ConfigManager
-from theme_manager import ThemeManager # 🌟 [新增] 引入主題引擎
+from theme_manager import ThemeManager # [新增] 引入主題引擎
 
 # [修正] 確保所有 PyQt6 模組都已引入
 from PyQt6.QtGui import QActionGroup
@@ -232,7 +232,7 @@ class WorkerSignals(QObject):
     result = pyqtSignal(str, QPixmap, bool) #加入一個布林值 is_final，讓系統知道這是不是最終的高清圖
 
 class PreviewSignals(QObject):
-    # 🌟 關鍵修復：將跨執行緒的傳遞物件從 QPixmap 換成絕對安全的 QImage
+    #  關鍵修復：將跨執行緒的傳遞物件從 QPixmap 換成絕對安全的 QImage
     result = pyqtSignal(str, QImage, list, int, int, str, bool)
 
 class PreviewLoader(QRunnable):
@@ -241,7 +241,7 @@ class PreviewLoader(QRunnable):
         super().__init__()
         self.file_path = file_path
         self.target_size = target_size
-        self.engine = engine  # 🌟 拿到引擎準備去撈資料
+        self.engine = engine  #  拿到引擎準備去撈資料
         self.query = query
         self.is_precise = is_precise
         self.orig_w = orig_w
@@ -266,7 +266,7 @@ class PreviewLoader(QRunnable):
         if self.is_cancelled: return
         
         # ==========================================
-        # 🌟 任務 A-0：背景向 SQLite 請求 JSON 解析 (秒速且不卡 UI)
+        #  任務 A-0：背景向 SQLite 請求 JSON 解析 (秒速且不卡 UI)
         # ==========================================
         raw_ocr_data = []
         if self.engine:
@@ -275,7 +275,7 @@ class PreviewLoader(QRunnable):
         if self.is_cancelled: return
         
         # ==========================================
-        # 🌟 任務 A：背景執行 Shapely 群組合併
+        #  任務 A：背景執行 Shapely 群組合併
         # ==========================================
         merged_data = []
         try:
@@ -284,7 +284,7 @@ class PreviewLoader(QRunnable):
             ShapelyPolygon = None
 
         if not ShapelyPolygon:
-            # 🌟 這裡原本用 self.raw_ocr_data，現在改用剛剛撈出來的 raw_ocr_data
+            #  這裡原本用 self.raw_ocr_data，現在改用剛剛撈出來的 raw_ocr_data
             for item in raw_ocr_data:
                 merged_data.append({
                     "box": item.get("box", []),
@@ -339,7 +339,7 @@ class PreviewLoader(QRunnable):
         if self.is_cancelled: return
 
         # ==========================================
-        # 🌟 任務 B：背景讀取高清圖片 (改用 QImage)
+        #  任務 B：背景讀取高清圖片 (改用 QImage)
         # ==========================================
         final_img = QImage() # 建立一個空的 QImage 作為預設值
         try:
@@ -391,11 +391,11 @@ class ThumbnailLoader(QRunnable):
             if not image.isNull():
                 has_l2 = True
 
-        # 🌟 判定：目標尺寸如果大於 256 (例如 XL 模式)，代表 L2 尺寸不夠，需要升級！
+        #  判定：目標尺寸如果大於 256 (例如 XL 模式)，代表 L2 尺寸不夠，需要升級！
         needs_upgrade = (self.target_size.width() > 256 or self.target_size.height() > 256)
 
         # ==========================================
-        # 🌟 階段一：光速發射 L2 佔位圖 (毫秒級)
+        #  階段一：光速發射 L2 佔位圖 (毫秒級)
         # ==========================================
         if has_l2:
             if self.is_cancelled:
@@ -413,7 +413,7 @@ class ThumbnailLoader(QRunnable):
                 return # M/L 模式在這裡就結束了，極度省電！
 
         # ==========================================
-        # 🌟 階段二：背景替換高清大圖 (重炮火力)
+        #  階段二：背景替換高清大圖 (重炮火力)
         # ==========================================
         if self.is_cancelled:
             self.signals.result.emit(self.file_path, QPixmap(), True)
@@ -439,7 +439,7 @@ class ThumbnailLoader(QRunnable):
 
                 if not high_res_image.isNull():
                     final_pixmap = QPixmap.fromImage(high_res_image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied))
-                    # 🌟 第二發射：高清原圖覆蓋上去！(is_final = True)
+                    #  第二發射：高清原圖覆蓋上去！(is_final = True)
                     self.signals.result.emit(self.file_path, final_pixmap, True)
                 else:
                     self.signals.result.emit(self.file_path, QPixmap(), True)
@@ -452,7 +452,7 @@ class SearchResultsModel(QAbstractListModel):
     """核心 Model：管理搜尋結果列表與圖片快取 (完全原生虛擬化)"""
     def __init__(self, item_size):
         super().__init__()
-        # 🌟 瘦身 1：只保留唯一的 all_items 陣列
+        #  瘦身 1：只保留唯一的 all_items 陣列
         self.all_items = []  
         self._pending_batch_requests = OrderedDict() # 收集同一幀內的所有讀圖請求
         self._batch_timer_active = False # 確保單幀只啟動一次計時器
@@ -478,7 +478,7 @@ class SearchResultsModel(QAbstractListModel):
     def update_target_size(self, new_size):
         self.item_size = new_size
         
-        # 🌟 智慧記憶體管理：防止 XL 的高清大圖塞爆記憶體
+        #  智慧記憶體管理：防止 XL 的高清大圖塞爆記憶體
         # 如果卡片寬度大於 256px (代表是 XL 模式)，快取數量縮小到 250 張
         # 其餘模式維持 1000 張
         if new_size.width() > 256:
@@ -527,14 +527,14 @@ class SearchResultsModel(QAbstractListModel):
         self.endResetModel()
 
     def rowCount(self, parent=QModelIndex()):
-        # 🌟 瘦身 4：解放限制，直接回傳真實總數量
+        #  瘦身 4：解放限制，直接回傳真實總數量
         return len(self.all_items)
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid() or not (0 <= index.row() < len(self.all_items)):
             return None
 
-        # 🌟 瘦身 5：資料來源改為 all_items
+        #  瘦身 5：資料來源改為 all_items
         item = self.all_items[index.row()]
 
         if role == Qt.ItemDataRole.DisplayRole:
@@ -546,7 +546,7 @@ class SearchResultsModel(QAbstractListModel):
                 self._thumbnail_cache.move_to_end(item.path)
                 return self._thumbnail_cache[item.path]
             
-            # 🌟 單幀批量攔截：不直接發送任務，而是先丟進「購物車」
+            #  單幀批量攔截：不直接發送任務，而是先丟進「購物車」
             if item.path not in self._loading_set:
                 self._pending_batch_requests[item.path] = None
                 
@@ -568,7 +568,7 @@ class SearchResultsModel(QAbstractListModel):
         paths_to_load = list(self._pending_batch_requests.keys())
         self._pending_batch_requests.clear()
         
-        # 🌟 核心過濾魔法：判斷是「精確導航」還是「快速拖拽」
+        #  核心過濾魔法：判斷是「精確導航」還是「快速拖拽」
         # XL 模式一頁約 15 張，M 模式約 50 張。我們取一個合理的閥值 (例如 40)
         if len(paths_to_load) > 40:
             # 請求數量異常龐大 -> 狂刷中！只取「最後面」的 40 張 (目前顯示在畫面上的)
@@ -591,7 +591,7 @@ class SearchResultsModel(QAbstractListModel):
         self.thread_pool.start(loader)
 
     def on_thumbnail_loaded(self, file_path, pixmap, is_final):
-        # 🌟 只有收到「最終訊號」，才把任務從活躍佇列中移除
+        #  只有收到「最終訊號」，才把任務從活躍佇列中移除
         if is_final:
             if file_path in self._active_workers:
                 del self._active_workers[file_path]
@@ -625,7 +625,7 @@ class SearchResultsModel(QAbstractListModel):
         default_flags = super().flags(index) 
         
         if index.isValid():
-            # 🌟 關鍵：必須告訴 Qt 這個項目「允許被拖拽」
+            #  關鍵：必須告訴 Qt 這個項目「允許被拖拽」
             return default_flags | Qt.ItemFlag.ItemIsDragEnabled
             
         return default_flags
@@ -686,7 +686,7 @@ class ImageDelegate(QStyledItemDelegate):
         border_color = QColor("#3b3b3b")
         border_width = 1
 
-        # --- 🌟 動態取得主題顏色 ---
+        # ---  動態取得主題顏色 ---
         if hasattr(self.main_window, 'theme_manager'):
             colors = self.main_window.theme_manager.current_colors
         else:
@@ -696,7 +696,7 @@ class ImageDelegate(QStyledItemDelegate):
         border_color = QColor(colors.get("border_main", "#3e3e3e"))
         text_color = QColor(colors.get("text_main", "#ffffff"))
         
-        # 🌟 核心視覺優化：避免在畫廊大面積使用純白 (255, 255, 255)
+        #  核心視覺優化：避免在畫廊大面積使用純白 (255, 255, 255)
         # 如果主題文字是純白，我們將它柔化為 #e0e0e0 (淡淡的灰白)，減輕刺眼感
         if text_color.name().lower() == "#ffffff":
             text_color = QColor("#e0e0e0")
@@ -753,7 +753,7 @@ class ImageDelegate(QStyledItemDelegate):
         painter.setClipPath(path) 
         
         if pixmap and not pixmap.isNull():
-            # 🌟 [Opt 1] 移除高耗能的 pixmap.scaled(...)
+            #  [Opt 1] 移除高耗能的 pixmap.scaled(...)
             # 因為 ThumbnailLoader 已經在背景幫我們縮放到完美尺寸了
             # 我們只要做簡單的置中數學運算，然後直接畫上去！
             x_off = (img_rect.width() - pixmap.width()) / 2
@@ -766,7 +766,7 @@ class ImageDelegate(QStyledItemDelegate):
             )
         else:
             # ==========================================
-            # 🌟 [回歸原生] 使用 QIcon.paint() 讓 Qt 底層接管排版與 DPI 縮放
+            #  [回歸原生] 使用 QIcon.paint() 讓 Qt 底層接管排版與 DPI 縮放
             # ==========================================
             # 1. 取得最短邊，決定圖示比例 (這裡設為 60% 視覺上最剛好)
             min_dim = min(img_rect.width(), img_rect.height())
@@ -781,7 +781,7 @@ class ImageDelegate(QStyledItemDelegate):
             # 4. 設定透明度並繪製
             painter.setOpacity(0.2)
             
-            # 🌟 核心魔法：把模具交給 QIcon，它會自動偵測螢幕 DPI 並完美填滿且置中！
+            #  核心魔法：把模具交給 QIcon，它會自動偵測螢幕 DPI 並完美填滿且置中！
             self.placeholder_icon.paint(painter, icon_rect)
             
             painter.setOpacity(1.0)
@@ -799,13 +799,13 @@ class ImageDelegate(QStyledItemDelegate):
         # 4. 繪製分數
         painter.setFont(self.font_score)
         
-        # 🌟 [Opt 6] 直接使用預先處理好的 float 數值與 string 字串
+        #  [Opt 6] 直接使用預先處理好的 float 數值與 string 字串
         if item.score_val > 0.0001:
             if item.score_val > 0.3:
-                # 🌟 高分：使用主題的 primary 顏色 (深/淺模式會自動適應)
+                #  高分：使用主題的 primary 顏色 (深/淺模式會自動適應)
                 score_color = colors.get("primary", "#60cdff")
             else:
-                # 🌟 低分：使用主題的 muted 顏色 (柔和的灰色)
+                #  低分：使用主題的 muted 顏色 (柔和的灰色)
                 score_color = colors.get("text_muted", "#999999")
                 
             painter.setPen(QColor(score_color))
@@ -823,14 +823,14 @@ class ImageDelegate(QStyledItemDelegate):
                 score_rect.top() + 2,
                 tag_width, 16
             )
-            # 🌟 標籤背景：使用我們在 JSON 裡新增的 text_success (綠色)
+            #  標籤背景：使用我們在 JSON 裡新增的 text_success (綠色)
             tag_bg = colors.get("text_success", "#4caf50")
             painter.setBrush(QBrush(QColor(tag_bg)))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(tag_rect, 3, 3)
             
             painter.setFont(self.font_tag)
-            # 💡 這裡刻意保留純白色 "#ffffff"。
+            #  這裡刻意保留純白色 "#ffffff"。
             # 因為無論在深色還是淺色模式，標籤底色都是綠色，白字在綠底上的對比度與閱讀性永遠是最好的。
             painter.setPen(QColor("#ffffff"))
             painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter, tag_text)
@@ -844,12 +844,12 @@ from PyQt6.QtWidgets import QListView, QAbstractItemView
 class GalleryListView(QListView):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # 🌟 啟動進階多選與框選模式
+        #  啟動進階多選與框選模式
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSelectionRectVisible(True) # 啟用半透明框選遮罩
         self.setDragEnabled(True)          # 啟用拖拽
         self.setAcceptDrops(False)         # 畫廊本身不接收外部檔案丟入
-        # 🌟 [新增] 明確宣告這裡「只允許拖出，不允許拖入」
+        #  [新增] 明確宣告這裡「只允許拖出，不允許拖入」
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
 
     def startDrag(self, supportedActions):
@@ -960,7 +960,7 @@ class ImageSearchEngine:
 
         dimension = embeddings_matrix.shape[1]
     
-        # 🌟 由於您的 CLIP 向量在 indexer.py 中已經做過 L2 歸一化，
+        #  由於您的 CLIP 向量在 indexer.py 中已經做過 L2 歸一化，
         # 這裡直接使用 IP (Inner Product 內積)，它在數學上等同於 Cosine Similarity！
     
         # 方案 A：暴力極速版 (適合 10 萬張以下，無損精度)
@@ -974,7 +974,7 @@ class ImageSearchEngine:
         print(f"[FAISS] 成功建立 {self.faiss_index.ntotal} 筆向量索引！")
 
     # ==========================================
-    # 🌟 [新增] 統一的 WAL 資料庫連線產生器
+    #  [新增] 統一的 WAL 資料庫連線產生器
     # ==========================================
     def get_db_conn(self):
         """建立具備 WAL 模式與高容忍度的資料庫連線"""
@@ -1008,7 +1008,7 @@ class ImageSearchEngine:
                 self.tokenizer = AutoTokenizer.from_pretrained(tok_path, local_files_only=True)
                 
                 # ==========================================
-                # 🌟 [關鍵修復] 手動補上 pad_token，解決離線載入報錯
+                #  [關鍵修復] 手動補上 pad_token，解決離線載入報錯
                 # ==========================================
                 if self.tokenizer.pad_token is None:
                     # 如果沒有 pad_token，就借用 eos_token 來當作填充符號
@@ -1041,7 +1041,7 @@ class ImageSearchEngine:
         [高效能] 取得資料庫中所有圖片，並依時間 (新->舊) 排序。
         用於冷啟動時的瀑布流顯示。
         """
-        # 🌟 [終極防呆：取得當下的指標快照，防止被雙緩衝覆蓋]
+        #  [終極防呆：取得當下的指標快照，防止被雙緩衝覆蓋]
         current_data = getattr(self, 'data_store', [])
         if not current_data:
             return []
@@ -1070,7 +1070,7 @@ class ImageSearchEngine:
         try:
             current_model = self.config.get("model_name")
             
-            # 🌟 [效能封頂] 拔除了肥大的 JSON 組合，只保留純文字 ocr_text 用於搜尋
+            #  [效能封頂] 拔除了肥大的 JSON 組合，只保留純文字 ocr_text 用於搜尋
             cursor.execute("""
                 SELECT f.file_path, e.embedding, f.mtime, f.width, f.height, 
                        GROUP_CONCAT(o.ocr_text, ' ')
@@ -1086,7 +1086,7 @@ class ImageSearchEngine:
             temp_embeddings_list = []
             temp_path_map = {}
             
-            # 🌟 [效能封頂] 迴圈內不再做任何 json.loads()，啟動速度直接起飛！
+            #  [效能封頂] 迴圈內不再做任何 json.loads()，啟動速度直接起飛！
             for path, blob, mtime, width, height, combined_text in rows:
                 if not os.path.exists(path): continue 
                 
@@ -1103,7 +1103,7 @@ class ImageSearchEngine:
                     "height": height if height else 0
                 })
                 
-                # 🌟 [核心魔法] 將「正規化後的路徑」作為 Key，對應到陣列的 Index
+                #  [核心魔法] 將「正規化後的路徑」作為 Key，對應到陣列的 Index
                 norm_path = os.path.normpath(path)
                 temp_path_map[norm_path] = len(temp_data_store) - 1
             
@@ -1151,7 +1151,7 @@ class ImageSearchEngine:
                 if item["path"] == old_path:
                     item["path"] = new_path; item["filename"] = new_name; break
                 
-            # 🌟 [新增] 同步更新 Hash Map 字典，維持 O(1) 搜尋的正確性
+            #  [新增] 同步更新 Hash Map 字典，維持 O(1) 搜尋的正確性
             if hasattr(self, 'path_map'):
                 norm_old = os.path.normpath(old_path)
                 norm_new = os.path.normpath(new_path)
@@ -1162,12 +1162,12 @@ class ImageSearchEngine:
             return True, new_path
         except Exception as e: return False, str(e)
 
-    # 🌟 [新增] folder_path 參數
+    #  [新增] folder_path 參數
     def search_hybrid(self, query, top_k=50, use_ocr=True, weight_config=None, folder_path=None):
         current_embeddings = self.stored_embeddings
         current_data = self.data_store
 
-        # 🌟 防呆檢查：確保 FAISS 引擎已經啟動
+        #  防呆檢查：確保 FAISS 引擎已經啟動
         if not self.is_ready or current_embeddings is None or not hasattr(self, 'faiss_index'): 
             return [] 
             
@@ -1200,7 +1200,7 @@ class ImageSearchEngine:
                 query_vector = np.expand_dims(query_vector, axis=0)
 
             # ==========================================
-            # 🌟 [關鍵修復 2] 動態發動 FAISS (支援「完全展開」)
+            #  [關鍵修復 2] 動態發動 FAISS (支援「完全展開」)
             # 確保最少抓 1000 張當作文字緩衝，但如果 UI 選擇 All (top_k=100000)，就水門全開！
             # ==========================================
             k_results = min(max(1000, top_k), len(current_data))
@@ -1217,7 +1217,7 @@ class ImageSearchEngine:
             top_indices = []
 
         # ==========================================
-        # 🌟 混合候選名單篩選 (Hybrid Selection)
+        #  混合候選名單篩選 (Hybrid Selection)
         # ==========================================
         candidate_set = set(top_indices)
 
@@ -1234,7 +1234,7 @@ class ImageSearchEngine:
             candidate_set = candidate_set.intersection(set(valid_indices))
 
         # ==========================================
-        # 🌟 執行計分迴圈 (只針對幾千張的候選名單，不跑十萬張！)
+        #  執行計分迴圈 (只針對幾千張的候選名單，不跑十萬張！)
         # ==========================================
         if weight_config is None:
             weight_config = {"mode": "multiply", "clip_w": 1.0, "ocr_w": 1.0, "name_w": 0.4, "thresh_mode": "auto", "thresh_val": 0.15}
@@ -1261,7 +1261,7 @@ class ImageSearchEngine:
             ocr_bonus = 0.0
             name_bonus = 0.0
             
-            # 🌟 修復: 只要有文字命中，或者視覺分數及格，就給予加分！
+            #  修復: 只要有文字命中，或者視覺分數及格，就給予加分！
             if clip_score >= 0.08 or has_ocr or has_name:
                 if mode == "add":
                     ocr_bonus = (ocr_w / 2.0) if has_ocr else 0.0 
@@ -1295,7 +1295,7 @@ class ImageSearchEngine:
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
-    # 🌟 [修改] 新增 folder_path 參數 (上一階段已加)，並導入「O(1) 快取命中」邏輯
+    #  [修改] 新增 folder_path 參數 (上一階段已加)，並導入「O(1) 快取命中」邏輯
     def search_image(self, image_path, top_k=50, folder_path=None):
         current_embeddings = self.stored_embeddings
         current_data = self.data_store
@@ -1308,7 +1308,7 @@ class ImageSearchEngine:
             query_vector = None
             
             # ==========================================
-            # 🌟 [效能封頂] 疑問 1 解決方案：記憶體 O(1) 特徵直接提取
+            #  [效能封頂] 疑問 1 解決方案：記憶體 O(1) 特徵直接提取
             # ==========================================
             # 1. 嘗試在字典中瞬間尋找這張圖片
             target_idx = None
@@ -1333,7 +1333,7 @@ class ImageSearchEngine:
                 query_vector = image_features.astype(np.float32)
 
             # ==========================================
-            # 🌟 發動 FAISS 以圖搜圖 (超額抓取與範圍過濾)
+            #  發動 FAISS 以圖搜圖 (超額抓取與範圍過濾)
             # ==========================================
             # 為了確保「範圍過濾」後還有足夠的圖片，我們先跟 FAISS 要一大把
             fetch_limit = min(max(2000, top_k), len(current_data))
@@ -1372,7 +1372,7 @@ class ImageSearchEngine:
             print(f"[Error] Image search failed: {e}"); return []
         
     def get_ocr_data_by_path(self, file_path):
-        """🌟 [新增] 懶加載通道：只有在預覽時，才去資料庫把這張圖片的座標 JSON 撈出來"""
+        """ [新增] 懶加載通道：只有在預覽時，才去資料庫把這張圖片的座標 JSON 撈出來"""
         conn = self.get_db_conn()
         cursor = conn.cursor()
         ocr_boxes = []
@@ -1411,7 +1411,7 @@ class ImageSearchEngine:
         return text_features[0] / np.linalg.norm(text_features[0], axis=-1, keepdims=True)
 
     # ==========================================
-    # 🌟 [修復版] 多模態特徵組合搜尋 (Vector Arithmetic)
+    #  [修復版] 多模態特徵組合搜尋 (Vector Arithmetic)
     # ==========================================
     def search_multi_vector(self, pos_features, neg_features, top_k=50, folder_path=None):
         if not self.is_ready or self.stored_embeddings is None: return []
@@ -1562,7 +1562,7 @@ class IndexerWorker(QThread):
             self.status_update.emit(final_msg)
 
         try:
-            # 🌟 [關鍵修復] 以前這裡是 .engine.model (因為改版變成 None 了)
+            #  [關鍵修復] 以前這裡是 .engine.model (因為改版變成 None 了)
             # 現在明確指定借用主程式的 clip_image_session！
             shared_model = self.main_window.engine.clip_image_session
             shared_preprocess = self.main_window.engine.preprocess
@@ -1598,7 +1598,7 @@ class SearchWorker(QThread):
         if self.search_mode == "image":
             raw_results = self.engine.search_image(self.query, self.top_k, folder_path=self.folder_path)
         elif self.search_mode == "multi_vector":
-            # 🌟 [新增] 多向量運算分支
+            #  [新增] 多向量運算分支
             raw_results = self.engine.search_multi_vector(
                 self.query['pos'], self.query['neg'], self.top_k, folder_path=self.folder_path
             )
@@ -1795,7 +1795,7 @@ class FloatingWidget(QWidget):
             text_str = r.get("text", "")
             conf_str = f" {r.get('conf', 0.0):.2f}"
 
-            # 🌟 取得主題顏色
+            #  取得主題顏色
             colors = self.window().theme_manager.current_colors
             
             # 1. 畫語言標籤 (主題主色)
@@ -2013,7 +2013,7 @@ class OCRLabel(QLabel):
                         ny = pt[1] * scale_y + offset_y
                         poly_points.append(QPoint(int(nx), int(ny)))
                 
-                    # 🌟 從頂層視窗取得 ThemeManager
+                    #  從頂層視窗取得 ThemeManager
                     colors = self.window().theme_manager.current_colors
                     highlight_color = QColor(colors.get("ocr_highlight", "#64ffff00"))
                     
@@ -2027,7 +2027,7 @@ class OCRLabel(QLabel):
                     ny = pt[1] * scale_y + offset_y
                     full_poly_points.append(QPoint(int(nx), int(ny)))
                     
-                # 🌟 從主題取得基礎色與懸停色
+                #  從主題取得基礎色與懸停色
                 colors = self.window().theme_manager.current_colors
                 hover_bg = QColor(colors.get("primary", "#60cdff"))
                 hover_bg.setAlpha(60) # 加上透明度
@@ -2135,7 +2135,7 @@ class PreviewOverlay(QWidget):
         
         self.image_label.set_precomputed_ocr_data([], orig_w, orig_h)
 
-        # 🌟 將 engine 傳入，讓它在背景自己去撈資料！
+        #  將 engine 傳入，讓它在背景自己去撈資料！
         self.current_preview_worker = PreviewLoader(
             path, target_size, self.parent().engine, current_query, is_precise_mode, orig_w, orig_h
         )
@@ -2152,12 +2152,12 @@ class PreviewOverlay(QWidget):
         # 確保是目前正在看這張圖
         if path == self.current_preview_path:
             
-            # 1. 🌟 確保在 UI 執行緒內才把 QImage 轉換為 QPixmap，絕對安全！
+            # 1.  確保在 UI 執行緒內才把 QImage 轉換為 QPixmap，絕對安全！
             if not img.isNull():
                 pixmap = QPixmap.fromImage(img)
                 self.image_label.setPixmap(pixmap)
                 
-            # 2. 🌟 就算圖片因為極端原因載入失敗，我們也強制把算好的 OCR 資料塞給畫布
+            # 2.  就算圖片因為極端原因載入失敗，我們也強制把算好的 OCR 資料塞給畫布
             # 這樣按 Shift 就絕對能看得到紅框！
             self.image_label.set_precomputed_ocr_data(merged_data, orig_w, orig_h, query, is_precise)
             self.image_label.update()
@@ -2192,7 +2192,7 @@ class HistoryItemWidget(QWidget):
         self.label = QLabel(text); self.label.setStyleSheet("background: transparent;"); self.label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor)); self.label.mousePressEvent = self.on_label_clicked
         layout.addWidget(self.label, stretch=1)
         self.del_btn = QPushButton("x")
-        self.del_btn.setObjectName("HistoryDelBtn") # 🌟 換成專屬身分證
+        self.del_btn.setObjectName("HistoryDelBtn") #  換成專屬身分證
         self.del_btn.setFixedSize(28, 28)
         self.del_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.del_btn.clicked.connect(self.on_delete_clicked); layout.addWidget(self.del_btn)
@@ -2206,7 +2206,7 @@ class StatsMenuWidget(QFrame):
         self.hide()
         self.setFixedWidth(420)
         self.setFixedHeight(500)
-        # 🌟 1. 主體面板發放身分證
+        #  1. 主體面板發放身分證
         self.setObjectName("StatsPanel")
         
         self.main_layout = QVBoxLayout(self)
@@ -2214,7 +2214,7 @@ class StatsMenuWidget(QFrame):
         self.main_layout.setSpacing(0)
         
         title_container = QWidget()
-        # 🌟 2. 標題區塊發放身分證
+        #  2. 標題區塊發放身分證
         title_container.setObjectName("StatsHeader")
         title_layout = QHBoxLayout(title_container)
         title_layout.setContentsMargins(15, 10, 15, 10)
@@ -2238,7 +2238,7 @@ class StatsMenuWidget(QFrame):
         self.main_layout.addWidget(self.scroll_area)
         
         footer_container = QWidget()
-        # 🌟 3. 底部區塊發放身分證
+        #  3. 底部區塊發放身分證
         footer_container.setObjectName("StatsFooter")
         footer_layout = QHBoxLayout(footer_container)
         footer_layout.setContentsMargins(15, 8, 15, 8)
@@ -2283,7 +2283,7 @@ class StatsMenuWidget(QFrame):
             row_layout.addWidget(lbl_name, stretch=1)
             row_layout.addWidget(lbl_count)
             
-            # 🌟 4. 資料行發放身分證
+            #  4. 資料行發放身分證
             row.setObjectName("StatsRow")
             
             self.content_layout.addWidget(row)
@@ -2328,7 +2328,7 @@ class FolderHoverMenu(QWidget):
 
         
 
-    # 🌟 [新增] 覆寫滑鼠進出事件，通知上層 Sidebar
+    #  [新增] 覆寫滑鼠進出事件，通知上層 Sidebar
     def enterEvent(self, event):
         self.mouse_entered.emit()
         super().enterEvent(event)
@@ -2541,7 +2541,7 @@ class SidebarWidget(QFrame):
             self.btn_all_images.setText("")
             self.btn_settings.setText("")
         
-        # 🌟 終極重構：用屬性 (Property) 驅動 QSS，消滅硬寫的 StyleSheet
+        #  終極重構：用屬性 (Property) 驅動 QSS，消滅硬寫的 StyleSheet
         # 通知這兩顆按鈕目前的狀態，QSS 檔裡的 [expanded="true"] 就會自動生效！
         for btn in [self.btn_all_images, self.btn_settings]:
             btn.setProperty("expanded", self.is_expanded)
@@ -2563,7 +2563,7 @@ class SidebarWidget(QFrame):
     def on_sub_folder_clicked(self, path):
         self.folder_selected.emit(path)
 
-    # 🌟 [新增] 事件過濾器：攔截主按鈕的進出
+    #  [新增] 事件過濾器：攔截主按鈕的進出
     def eventFilter(self, obj, event):
         if obj == self.btn_all_images:
             if event.type() == QEvent.Type.Enter:
@@ -2573,7 +2573,7 @@ class SidebarWidget(QFrame):
                 self.hover_timer.start(150)
         return super().eventFilter(obj, event)
     
-    # 🌟 [新增] 顯示、隱藏與檢查邏輯
+    #  [新增] 顯示、隱藏與檢查邏輯
     def show_hover_menu(self):
         sidebar_global_pos = self.mapToGlobal(QPoint(0, 0))
         row1_y = self.btn_toggle.height()
@@ -2587,7 +2587,7 @@ class SidebarWidget(QFrame):
         self.hover_menu.close()
 
     def check_and_hide_menu(self):
-        """🌟 150ms 倒數結束後的絕對座標防呆檢查"""
+        """ 150ms 倒數結束後的絕對座標防呆檢查"""
         cursor_pos = QCursor.pos()
         
         # 1. 如果滑鼠還在選單上
@@ -2602,7 +2602,7 @@ class SidebarWidget(QFrame):
         # 3. 確定滑鼠離開了戰區，收起選單
         self.hide_hover_menu()
 
-    # 🌟 [修改] 純粹派發訊號，關閉交由 Hover 邏輯處理
+    #  [修改] 純粹派發訊號，關閉交由 Hover 邏輯處理
     def on_row1_clicked(self):
         self.folder_selected.emit("ALL")
         self.hide_hover_menu()
@@ -2611,13 +2611,13 @@ class SidebarWidget(QFrame):
         self.folder_selected.emit(path)
 
 # ==========================================
-# 🌟 [升級] CLIP 專用特徵選取桶 (SolidWorks 風格)
+#  [升級] CLIP 專用特徵選取桶 (SolidWorks 風格)
 # ==========================================
 class ThumbnailSignals(QObject):
     finished = pyqtSignal(QListWidgetItem, QIcon)
 
 # ==========================================
-# 🌟 [究極升級] 多模態特徵物件與互動式標籤 UI
+#  [究極升級] 多模態特徵物件與互動式標籤 UI
 # ==========================================
 class FeatureItem:
     """統一管理圖片與文字的特徵結構"""
@@ -2637,7 +2637,7 @@ class TextFeatureWidget(QWidget):
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(8, 2, 8, 2)
         
-        # 🌟 重構魔法：核發身分證與極性，視覺全交給 QSS 接管！
+        #  重構魔法：核發身分證與極性，視覺全交給 QSS 接管！
         self.setObjectName("TextFeature")
         self.setProperty("polarity", "positive" if is_positive else "negative")
         
@@ -2653,12 +2653,12 @@ class TextFeatureWidget(QWidget):
         self.edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.edit.customContextMenuRequested.connect(self.on_custom_context_menu)
         
-        # 🌟 新增：安裝事件過濾器來捕捉 ESC 鍵
+        #  新增：安裝事件過濾器來捕捉 ESC 鍵
         self.edit.installEventFilter(self)
         
         self.layout.addWidget(self.edit, stretch=1)
 
-    # 🌟 新增：專屬的事件過濾器
+    #  新增：專屬的事件過濾器
     def eventFilter(self, obj, event):
         if obj == self.edit and event.type() == QEvent.Type.KeyPress:
             if event.key() == Qt.Key.Key_Escape:
@@ -2721,20 +2721,14 @@ class FeatureBucketWidget(QFrame):
         self.is_positive = is_positive; self.main_window = main_window 
         
         self.setAcceptDrops(True)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus) # 🌟 拔除系統焦點，消滅外圍方形虛線
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus) #  拔除系統焦點，消滅外圍方形虛線
         self.layout = QVBoxLayout(self); self.layout.setContentsMargins(2, 2, 2, 2)
         
         self.list_widget = QListWidget()
+        self.list_widget.setObjectName("BucketListWidget")
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list_widget.setIconSize(QSize(56, 56)); self.list_widget.setSpacing(4)
-        # 🌟 加上終極 outline: none 宣告，連 item 內部的虛線一起殺掉
-        self.list_widget.setStyleSheet("""
-            QListWidget { border: none; background: transparent; outline: none; }
-            QListWidget:focus { outline: none; }
-            QListWidget::item { padding: 4px; border-radius: 4px; border: none; outline: none; }
-            QListWidget::item:selected { background-color: rgba(96, 205, 255, 0.3); color: white; border: none; outline: none; }
-            QListWidget::item:focus { outline: none; border: none; }
-        """)
+        #  加上終極 outline: none 宣告，連 item 內部的虛線一起殺掉
         
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self.show_context_menu)
@@ -2742,7 +2736,7 @@ class FeatureBucketWidget(QFrame):
         # 綁定事件攔截器
         self.list_widget.viewport().installEventFilter(self)
         
-        # 🌟 重構魔法：核發身分證與預設極性
+        #  重構魔法：核發身分證與預設極性
         self.setObjectName("FeatureBucket")
         self.setProperty("polarity", "positive" if is_positive else "negative")
         
@@ -2760,11 +2754,11 @@ class FeatureBucketWidget(QFrame):
                 item = self.list_widget.itemAt(event.pos())
                 if not item: 
                     self.spawn_inline_editor()
-                    return True # 🌟 攔截事件，防止失焦
+                    return True #  攔截事件，防止失焦
         return super().eventFilter(source, event)
 
     def mousePressEvent(self, event):
-        """🌟 終極防呆：就算點擊在清單邊緣 2px 的縫隙，一樣能觸發輸入"""
+        """ 終極防呆：就算點擊在清單邊緣 2px 的縫隙，一樣能觸發輸入"""
         if event.button() == Qt.MouseButton.LeftButton:
             self.spawn_inline_editor()
         super().mousePressEvent(event)
@@ -2780,7 +2774,7 @@ class FeatureBucketWidget(QFrame):
         self.list_widget.setItemWidget(item, widget)
         self.update_visual_state()
         
-        # 🌟 延遲 10 毫秒奪取焦點，確保 Qt 渲染完成後游標能順利閃爍
+        #  延遲 10 毫秒奪取焦點，確保 Qt 渲染完成後游標能順利閃爍
         QTimer.singleShot(10, widget.edit.setFocus)
 
     def update_visual_state(self, is_hover=False):
@@ -2788,7 +2782,7 @@ class FeatureBucketWidget(QFrame):
         self.placeholder.setVisible(not has_items)
         self.list_widget.setVisible(True) 
         
-        # 🌟 重構魔法：只改變狀態屬性，讓 Qt 自動去 QSS 找對應的衣服穿！
+        #  重構魔法：只改變狀態屬性，讓 Qt 自動去 QSS 找對應的衣服穿！
         self.setProperty("drag_hover", "true" if is_hover else "false")
         
         # 強制 Qt 重新整理這件元件的樣式
@@ -2878,13 +2872,13 @@ class FeatureBucketWidget(QFrame):
         return [self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list_widget.count())]
     
     # ==========================================
-    # 🌟 徹底銷毀 UI 元件的刪除邏輯
+    #  徹底銷毀 UI 元件的刪除邏輯
     # ==========================================
     def delete_item_by_widget(self, list_item):
         """清除沒有輸入文字的幽靈框框，或清空現有文字的標籤"""
         row = self.list_widget.row(list_item)
         if row >= 0:
-            # 🌟 關鍵修復：必須在 takeItem 「之前」先把 Widget 抓出來！
+            #  關鍵修復：必須在 takeItem 「之前」先把 Widget 抓出來！
             # 否則脫離清單後，系統就再也認不得這個 UI 了
             widget = self.list_widget.itemWidget(list_item)
             
@@ -2901,7 +2895,7 @@ class FeatureBucketWidget(QFrame):
     def delete_selected(self):
         """使用者按 Delete 鍵或右鍵刪除時的邏輯"""
         for item in self.list_widget.selectedItems():
-            # 🌟 同樣的防呆：先抓 UI，再拔資料，最後銷毀
+            #  同樣的防呆：先抓 UI，再拔資料，最後銷毀
             widget = self.list_widget.itemWidget(item)
             row = self.list_widget.row(item)
             
@@ -3098,7 +3092,7 @@ class RangeCalendarWidget(QWidget):
     def set_status(self, text, state="normal"):
         """供外部控制訊息區的文字與顏色"""
         self.lbl_status.setText(text)
-        self.lbl_status.setProperty("state", state) # 🌟 狀態交給 QSS 判定
+        self.lbl_status.setProperty("state", state) #  狀態交給 QSS 判定
         self.lbl_status.style().unpolish(self.lbl_status)
         self.lbl_status.style().polish(self.lbl_status)
 
@@ -3156,7 +3150,7 @@ class RangeCalendarWidget(QWidget):
         else:
             # 狀態 2：選取第二下 (完成範圍)
             if clicked_date < self.start_date:
-                # 🌟 【關鍵修正】如果第二下點得比第一下早，自動反轉起訖日！
+                #  【關鍵修正】如果第二下點得比第一下早，自動反轉起訖日！
                 self.end_date = self.start_date
                 self.start_date = clicked_date
             else:
@@ -3435,7 +3429,7 @@ class InspectorPanel(QFrame):
     def _create_construction_button(self, text):
         btn = QPushButton(text)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setObjectName("WipButton") # 🌟 套用修復的 QSS
+        btn.setObjectName("WipButton") #  套用修復的 QSS
         # 🗑️ [刪除] 下面這整段 btn.setStyleSheet("""...""") 全部刪除！
         return btn
 
@@ -3463,7 +3457,7 @@ class InspectorPanel(QFrame):
         lbl_desc.setStyleSheet("color: #aaaaaa; font-size: 13px;")
         layout.addWidget(lbl_desc)
 
-        # 🌟 賦予 is_positive 與 main_window 參數
+        #  賦予 is_positive 與 main_window 參數
         self.pos_box = FeatureBucketWidget("➕ 正向特徵 (Positive)", "#60cdff", "#00aaff", is_positive=True, main_window=self.main_window) 
         self.pos_box.setFixedHeight(150)
         self.neg_box = FeatureBucketWidget("➖ 負向排除 (Negative)", "#ff5252", "#ff0000", is_positive=False, main_window=self.main_window)
@@ -3477,7 +3471,7 @@ class InspectorPanel(QFrame):
         self.btn_vector_search.clicked.connect(self.trigger_multi_vector_search)
         layout.addWidget(self.btn_vector_search)
 
-        # 🌟 文字拖拽時自動清空主搜尋框
+        #  文字拖拽時自動清空主搜尋框
         self.pos_box.text_dropped.connect(self.main_window.input.clear)
         self.neg_box.text_dropped.connect(self.main_window.input.clear)
 
@@ -3541,7 +3535,7 @@ class InspectorPanel(QFrame):
         self.btn_open_folder.setProperty("cssClass", "ActionBtn")
         layout.addWidget(self.btn_open_folder)
 
-        # 🌟 [修正 1] 新增一個變數來記住現在點到哪張圖，並只在初始化時綁定一次訊號！
+        #  [修正 1] 新增一個變數來記住現在點到哪張圖，並只在初始化時綁定一次訊號！
         self.current_info_path = ""
         self.btn_open_folder.clicked.connect(self._on_open_folder_clicked)
 
@@ -3584,7 +3578,7 @@ class InspectorPanel(QFrame):
                 self.preview_lbl.setPixmap(QPixmap.fromImage(img))
                 self.preview_lbl.setStyleSheet("background-color: transparent; border: none;")
 
-        # 🌟 [修正 2] 拔掉原本的 disconnect() 和 lambda，改為單純更新路徑變數
+        #  [修正 2] 拔掉原本的 disconnect() 和 lambda，改為單純更新路徑變數
         self.current_info_path = item.path
         
         
@@ -3600,7 +3594,7 @@ class InspectorPanel(QFrame):
             self.fields["AI 相關度"].setText(f"{item.score:.4f}" if item.score > 0 else "N/A")
         except: pass
     
-    # 🌟 [新增] 專門處理按鈕點擊的函式
+    #  [新增] 專門處理按鈕點擊的函式
     def _on_open_folder_clicked(self):
         if self.current_info_path:
             self.open_in_explorer(self.current_info_path)
@@ -3632,7 +3626,7 @@ class InspectorPanel(QFrame):
 
     def on_calendar_cleared(self):
         """使用者按下清除日期"""
-        self._has_time_filter = False  # 🌟 [修復] 使用獨立狀態變數
+        self._has_time_filter = False  #  [修復] 使用獨立狀態變數
         self.btn_time_range.setText("📅 全部時間 (All Time)")
         self.time_filter_cleared.emit()
 
@@ -3640,7 +3634,7 @@ class InspectorPanel(QFrame):
 
     def on_calendar_apply(self, start_date, end_date):
         """點擊 [套用結果]：轉換為 Timestamp 並發送訊號"""
-        self._has_time_filter = True   # 🌟 [修復] 標記時間過濾已啟用
+        self._has_time_filter = True   #  [修復] 標記時間過濾已啟用
         date_str = f"📅 {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
         self.btn_time_range.setText(date_str)
         
@@ -3655,7 +3649,7 @@ class InspectorPanel(QFrame):
 
     def on_calendar_search(self, start_date, end_date):
         """點擊 [直接搜尋]：轉換為 Timestamp 並發送訊號 (狀態交由 MainWindow 判定)"""
-        self._has_time_filter = True   # 🌟 [修復] 標記時間過濾已啟用
+        self._has_time_filter = True   #  [修復] 標記時間過濾已啟用
         date_str = f"📅 {start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
         self.btn_time_range.setText(date_str)
         
@@ -3669,7 +3663,7 @@ class InspectorPanel(QFrame):
         self.check_filters_active()
 
     # ==========================================
-    # 🌟 神經中樞：過濾狀態檢查與清除
+    #  神經中樞：過濾狀態檢查與清除
     # ==========================================
     def on_aspect_changed(self):
         """長寬比改變時，觸發狀態檢查，並通知 MainWindow 洗牌"""
@@ -3679,11 +3673,11 @@ class InspectorPanel(QFrame):
     def check_filters_active(self):
         """檢查是否有任何過濾器正在運作，並更新 UI 狀態 (包含分頁計數徽章)"""
         
-        # 🌟 [終極修復] 完全拔除中文字串依賴，改用隱藏屬性與 Index 判斷！
+        #  [終極修復] 完全拔除中文字串依賴，改用隱藏屬性與 Index 判斷！
         is_time_filtered = getattr(self, '_has_time_filter', False)
         is_aspect_filtered = (self.combo_aspect.currentIndex() != 0) # 只要不是 0 (不限比例)，就是啟動過濾
         
-        # 🌟 計算啟用的過濾條件數量
+        #  計算啟用的過濾條件數量
         active_count = 0
         if is_time_filtered: active_count += 1
         if is_aspect_filtered: active_count += 1
@@ -3706,7 +3700,7 @@ class InspectorPanel(QFrame):
         # 2. 層級二：檢索過濾區塊底線
         self.sec_filter.set_status_active(any_active)
 
-        # 🌟 3. 層級一：分頁標籤數字計數徽章 (Badge Count)
+        #  3. 層級一：分頁標籤數字計數徽章 (Badge Count)
         if active_count > 0:
             self.tabs.setTabText(0, f"🔎 搜尋 ({active_count})")
         else:
@@ -3719,11 +3713,11 @@ class InspectorPanel(QFrame):
         """一鍵清除所有過濾狀態"""
         # 1. 靜默重置長寬比 (不觸發訊號)
         self.combo_aspect.blockSignals(True)
-        self.combo_aspect.setCurrentIndex(0) # 🌟 [修復] 不再依賴文字 "不限比例"，直接歸零 Index
+        self.combo_aspect.setCurrentIndex(0) #  [修復] 不再依賴文字 "不限比例"，直接歸零 Index
         self.combo_aspect.blockSignals(False)
         
         # 2. 重置日曆與時間狀態
-        self._has_time_filter = False        # 🌟 [修復] 同步歸零隱藏狀態
+        self._has_time_filter = False        #  [修復] 同步歸零隱藏狀態
         self.btn_time_range.setText("📅 全部時間 (All Time)")
         self.calendar_widget.clear_selection()
         
@@ -3734,7 +3728,7 @@ class InspectorPanel(QFrame):
         self.check_filters_active()
 
     # ==========================================
-    # 🌟 相關度權重控制邏輯 (放在 InspectorPanel 底部)
+    #  相關度權重控制邏輯 (放在 InspectorPanel 底部)
     # ==========================================
     def load_weight_settings(self):
         ui_state = self.main_window.config.get("ui_state", {})
@@ -3795,7 +3789,7 @@ class InspectorPanel(QFrame):
         else:
             self.slider_clip.setEnabled(True)
             
-        # 🌟 把公式文字的更新移交給 update_weight_labels 統一處理
+        #  把公式文字的更新移交給 update_weight_labels 統一處理
         self.update_weight_labels()
         if save: self.on_weight_slider_released()
 
@@ -3913,8 +3907,8 @@ class MainWindow(QMainWindow):
         # 啟動背景載入 (這裡才會去建立 ImageSearchEngine)
         threading.Thread(target=self.load_engine, daemon=True).start()
 
-        # 🌟 讀取設定，決定是否要在啟動時自動掃描
-        # 🌟 原生視窗記憶：精準還原大小、座標與最大化狀態
+        #  讀取設定，決定是否要在啟動時自動掃描
+        #  原生視窗記憶：精準還原大小、座標與最大化狀態
         from PyQt6.QtCore import QByteArray
         ui_state = self.config.get("ui_state", {})
         
@@ -3981,14 +3975,14 @@ class MainWindow(QMainWindow):
         header_layout.setSpacing(15)
 
         self.btn_back = QPushButton("←")
-        self.btn_back.setObjectName("NavBtn")   # 🌟 新增這行發放身分證
+        self.btn_back.setObjectName("NavBtn")   #  新增這行發放身分證
         self.btn_back.setFixedSize(32, 32)
         self.btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_back.clicked.connect(self.navigate_back)
         self.btn_back.setEnabled(False) # 預設停用
 
         self.btn_forward = QPushButton("→")
-        self.btn_forward.setObjectName("NavBtn") # 🌟 新增這行發放身分證
+        self.btn_forward.setObjectName("NavBtn") #  新增這行發放身分證
         self.btn_forward.setFixedSize(32, 32)
         self.btn_forward.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_forward.clicked.connect(self.navigate_forward)
@@ -4153,7 +4147,7 @@ class MainWindow(QMainWindow):
     def on_weights_changed(self, weight_config):
         q = self.input.text().strip()
         if q:
-            # 🌟 [新增] 如果目前是「以圖搜圖」狀態，切換 Limit 時就重跑以圖搜圖
+            #  [新增] 如果目前是「以圖搜圖」狀態，切換 Limit 時就重跑以圖搜圖
             if q.startswith("[Image]") and getattr(self, "current_image_search_path", None):
                 self.start_image_search(self.current_image_search_path)
             else:
@@ -4274,7 +4268,7 @@ class MainWindow(QMainWindow):
 
         self.current_folder_path = path
         
-        # 🌟 [修改] 根據側邊欄自動切換下拉選單預設值
+        #  [修改] 根據側邊欄自動切換下拉選單預設值
         self.inspector_panel.combo_search_scope.blockSignals(True)
         if path == "ALL":
             self.inspector_panel.combo_search_scope.setCurrentIndex(1) # 側邊欄點ALL，右邊自動切到「全域」
@@ -4320,8 +4314,8 @@ class MainWindow(QMainWindow):
                     "path": item["path"],
                     "filename": item["filename"],
                     "mtime": item.get("mtime", 0),
-                    "width": item.get("width", 0),   # 🌟 補上
-                    "height": item.get("height", 0)  # 🌟 補上
+                    "width": item.get("width", 0),   #  補上
+                    "height": item.get("height", 0)  #  補上
                 })
             
             # 按時間排序
@@ -4342,7 +4336,7 @@ class MainWindow(QMainWindow):
             key = event.key()
             
             # ==========================================
-            # 🌟 [新增] ESC 鍵邏輯：全域強制釋放焦點
+            #  [新增] ESC 鍵邏輯：全域強制釋放焦點
             # ==========================================
             if key == Qt.Key.Key_Escape:
                 if self.input.hasFocus():
@@ -4389,7 +4383,7 @@ class MainWindow(QMainWindow):
                     return True
                 
             # ==========================================
-            # 🌟 [新增] Ctrl+C 智慧複製 (全面統一為檔案路徑複製)
+            #  [新增] Ctrl+C 智慧複製 (全面統一為檔案路徑複製)
             # ==========================================
             if key == Qt.Key.Key_C and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
                 # 確保焦點不在搜尋框內，且目前視窗是活躍狀態
@@ -4406,7 +4400,7 @@ class MainWindow(QMainWindow):
                     
                     self._is_toast_active = True # 標記進入提示狀態
                         
-                    # 🌟 【統一邏輯】無論單選或多選，一律打包成實體檔案路徑 (Urls)
+                    #  【統一邏輯】無論單選或多選，一律打包成實體檔案路徑 (Urls)
                     # 解決單張圖片無法在檔案總管 Ctrl+V 貼上的 Bug
                     from PyQt6.QtCore import QMimeData, QUrl
                     mime_data = QMimeData()
@@ -4432,7 +4426,7 @@ class MainWindow(QMainWindow):
                         
                     QTimer.singleShot(1500, restore_status)
                         
-                    return True # 🌟 成功攔截並處理，不再往下傳遞
+                    return True #  成功攔截並處理，不再往下傳遞
     
         # 2. 處理鍵盤放開 (KeyRelease) -> 關閉紅框 (僅限 Hold 模式)
         if event.type() == QEvent.Type.KeyRelease:
@@ -4486,10 +4480,10 @@ class MainWindow(QMainWindow):
                     current_query = self.input.text().strip()
                     is_precise = self.config.get("ui_state", {}).get("precise_ocr_highlight", False)
                     
-                    # 🌟 從 Model 取出 L1 快取小圖
+                    #  從 Model 取出 L1 快取小圖
                     l1_pixmap = self.model._thumbnail_cache.get(item.path)
                     
-                    # 🌟 傳遞給顯示層
+                    #  傳遞給顯示層
                     self.preview_overlay.show_image(item, current_query, is_precise, l1_pixmap)
                     self.preview_overlay.set_ocr_visible(False)
 
@@ -4522,13 +4516,13 @@ class MainWindow(QMainWindow):
                     current_query = self.input.text().strip()
                     is_precise = self.config.get("ui_state", {}).get("precise_ocr_highlight", False)
                     
-                    # 🌟 核心修改 1：從 Model 取出 L1 快取小圖
+                    #  核心修改 1：從 Model 取出 L1 快取小圖
                     l1_pixmap = self.model._thumbnail_cache.get(item.path)
                     
-                    # 🌟 核心修改 2：完整傳遞給顯示層，實現光速預覽！
+                    #  核心修改 2：完整傳遞給顯示層，實現光速預覽！
                     self.preview_overlay.show_image(item, current_query, is_precise, l1_pixmap)
                     
-                    # 🌟 [加碼優化] 保持 OCR 鎖定狀態
+                    #  [加碼優化] 保持 OCR 鎖定狀態
                     self.preview_overlay.set_ocr_visible(self.is_ocr_locked)
 
     
@@ -4539,7 +4533,7 @@ class MainWindow(QMainWindow):
     def apply_gallery_sort(self):
         """對目前的 Gallery 圖片進行洗牌排序"""
         # 如果目前畫面上沒圖片，就不需要排
-        # 🌟 [修正] 將 self.model.items 改為 self.model.all_items
+        #  [修正] 將 self.model.items 改為 self.model.all_items
         if not hasattr(self, 'model') or not self.model.all_items:
             return
 
@@ -4551,7 +4545,7 @@ class MainWindow(QMainWindow):
 
         # 2. 根據不同的條件，定義 Python list sort 的 key 函數
         if sort_by == "搜尋相關度":
-            # 🌟 複合鍵排序：第一優先比 is_ocr_match (True=1, False=0)，第二優先比 AI 分數
+            #  複合鍵排序：第一優先比 is_ocr_match (True=1, False=0)，第二優先比 AI 分數
             key_func = lambda item: (item.is_ocr_match, item.score)
         elif sort_by == "日期":
             key_func = lambda item: item.mtime
@@ -4574,7 +4568,7 @@ class MainWindow(QMainWindow):
         # 3. 呼叫 Model 的排序方法
         self.model.sort_items(key_func, reverse=is_descending)
         
-        # 🌟 4. 防禦：只有在「沒有」等待還原的歷史滾輪位置時，才自動滾回最上方
+        #  4. 防禦：只有在「沒有」等待還原的歷史滾輪位置時，才自動滾回最上方
         if getattr(self, 'pending_scroll_pos', None) is None:
             self.list_view.scrollToTop()
 
@@ -4612,7 +4606,7 @@ class MainWindow(QMainWindow):
             filtered = temp_filtered
             
         # ==========================================
-        # 🌟 3. UI 顯示數量限制 (Limit Truncation)
+        #  3. UI 顯示數量限制 (Limit Truncation)
         # 這是實作「超額抓取 + 精準裁切」的最關鍵一步
         # ==========================================
         limit_text = self.inspector_panel.combo_limit_panel.currentText()
@@ -4660,7 +4654,7 @@ class MainWindow(QMainWindow):
         """點擊 [清除]：移除過濾器並還原畫廊"""
         self.active_time_range = None
         self.apply_current_filters_and_show()
-        # 🌟 [修正] 將 len(self.model.items) 改為 len(self.model.all_items)
+        #  [修正] 將 len(self.model.items) 改為 len(self.model.all_items)
         self.status.setText(f"Time filter cleared. Showing {len(self.model.all_items)} images")
 
     def search_by_time_range(self, start_ts, end_ts):
@@ -4728,7 +4722,7 @@ class MainWindow(QMainWindow):
     def on_scan_finished(self, added, deleted):
         if added > 0 or deleted > 0:
             print(f"[Indexer] Scan found {added} new, {deleted} deleted.")
-            # 🌟 [防呆修復] 移除原本這裡同步呼叫 load_data_from_db 的動作
+            #  [防呆修復] 移除原本這裡同步呼叫 load_data_from_db 的動作
             # 避免在開始索引前卡死畫面，統一交給 on_indexing_finished 處理！
         else:
             print("[Indexer] No changes detected.")
@@ -4740,10 +4734,10 @@ class MainWindow(QMainWindow):
         self.taskbar_ctrl.set_state(TBPF_NOPROGRESS)
         
         self.status.setText("Index Updated.")
-        self.trigger_background_db_reload() # 🌟 觸發雙緩衝背景載入
+        self.trigger_background_db_reload() #  觸發雙緩衝背景載入
 
     def trigger_background_db_reload(self):
-        """🌟 [方案 B：雙緩衝核心] 在背景執行緒讀取資料庫，確保 UI 與搜尋功能不中斷"""
+        """ [方案 B：雙緩衝核心] 在背景執行緒讀取資料庫，確保 UI 與搜尋功能不中斷"""
         if not self.engine: return
         self.status.setText("Synchronizing database in background...")
         
@@ -4751,7 +4745,7 @@ class MainWindow(QMainWindow):
             print("[Engine] Reloading engine data in background (Double Buffering)...")
             self.engine.load_data_from_db() # 此處內部已實作 Atomic Swap
             
-            # 🌟 [關鍵修復] 改為發送空訊號，讓主執行緒自己去撈，徹底杜絕跨執行緒崩潰
+            #  [關鍵修復] 改為發送空訊號，讓主執行緒自己去撈，徹底杜絕跨執行緒崩潰
             self.db_reloaded.emit()
             
         threading.Thread(target=bg_reload, daemon=True).start()
@@ -4760,7 +4754,7 @@ class MainWindow(QMainWindow):
         """背景載入完畢，安全跳回主執行緒更新畫面"""
         if not self.engine: return
         
-        # 🌟 [修正] 不要強制切回 ALL，而是維持目前所在的資料夾並重新整理！
+        #  [修正] 不要強制切回 ALL，而是維持目前所在的資料夾並重新整理！
         self.on_folder_filter(self.current_folder_path)
         self.refresh_sidebar()
 
@@ -4877,7 +4871,7 @@ class MainWindow(QMainWindow):
         # 關鍵差異：這裡把 Top (第二個參數) 也設為 space，不再鎖死 20
         self.list_view.setContentsMargins(space, space, space, space)
 
-        # 🌟 [新增終極鎖定] 直接告訴 ListView 每個網格的絕對大小
+        #  [新增終極鎖定] 直接告訴 ListView 每個網格的絕對大小
         # 網格大小 = 卡片本身大小 + 右邊和下方的間距
         grid_w = self.current_card_size.width() + space
         grid_h = self.current_card_size.height() + space
@@ -4902,7 +4896,7 @@ class MainWindow(QMainWindow):
                 QApplication.clipboard().setImage(img)
                 
                 # ==========================================
-                # 🌟 [新增] 複製成功的 3 秒 Toast 視覺回饋
+                #  [新增] 複製成功的 3 秒 Toast 視覺回饋
                 # ==========================================
                 # copy_image_to_clipboard 內的修改範例：
                 current_status = self.status.text()
@@ -5037,7 +5031,7 @@ class MainWindow(QMainWindow):
             self.start_search(triggered_by_slider=True)
 
     def start_search(self, *args, triggered_by_slider=False):
-        # 🌟 新增：如果是使用者手動按 Enter 搜尋，立刻交出焦點釋放 WASD 快捷鍵
+        #  新增：如果是使用者手動按 Enter 搜尋，立刻交出焦點釋放 WASD 快捷鍵
         if not triggered_by_slider:
             self.input.clearFocus()
             
@@ -5072,7 +5066,7 @@ class MainWindow(QMainWindow):
         fetch_k = 100000 if limit == "All" else 2000
         
         # ==========================================
-        # 🌟 [完美修復] 執行緒收容與 C++ 幽靈物件防護
+        #  [完美修復] 執行緒收容與 C++ 幽靈物件防護
         # ==========================================
         try:
             if getattr(self, 'worker', None):
@@ -5133,7 +5127,7 @@ class MainWindow(QMainWindow):
             target_folder = self.current_folder_path
         
         # ==========================================
-        # 🌟 [完美修復] 執行緒收容與 C++ 幽靈物件防護
+        #  [完美修復] 執行緒收容與 C++ 幽靈物件防護
         # ==========================================
         try:
             if getattr(self, 'worker', None):
@@ -5152,7 +5146,7 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
 
-    def start_multi_vector_search(self, pos_features, neg_features): # 🌟 改為 features
+    def start_multi_vector_search(self, pos_features, neg_features): #  改為 features
         if not self.engine: return
         if not self.is_navigating: self.push_current_state()
 
@@ -5222,7 +5216,7 @@ class MainWindow(QMainWindow):
         else:
             w, h = self.width(), self.height()
             
-        # 🌟 原生視窗記憶：將幾何資訊與狀態轉為字串儲存
+        #  原生視窗記憶：將幾何資訊與狀態轉為字串儲存
         ui_state = self.config.get("ui_state", {})
         
         # 使用 PyQt 原生方法取得精確資訊，並轉換為 JSON 相容的 ASCII 字串
@@ -5254,12 +5248,13 @@ class MainWindow(QMainWindow):
 
 class OnboardingDialog(QDialog):
     """首次開啟的引導與自動硬體設定面板"""
-    def __init__(self, config, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.config = config 
-        self.setWindowTitle("歡迎使用 EyeSeeMore")
-        self.setFixedSize(550, 420)
-        self.setStyleSheet("background-color: #1e1e1e;")
+        self.setWindowTitle("EyeSeeMore - Welcome")
+        self.setFixedSize(600, 450)
+        
+        #  重構魔法：核發身分證，背景顏色交給 QSS
+        self.setObjectName("OnboardingDialog")
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 40, 40, 40)
@@ -5392,8 +5387,8 @@ class SettingsDialog(QDialog):
         self.init_page_ai()
         self.init_page_appearance()
         self.init_page_hotkeys()
-        self.init_page_performance() # 🌟 加入呼叫
-        self.init_page_auto_tasks()  # 🌟 加入呼叫
+        self.init_page_performance() #  加入呼叫
+        self.init_page_auto_tasks()  #  加入呼叫
         self.init_page_language() # 語言設定頁面
         self.init_page_about()
         self.nav_list.setCurrentRow(0)
@@ -5421,10 +5416,10 @@ class SettingsDialog(QDialog):
         return btn
 
     def init_page_folders(self):
-        # 🌟 套用翻譯
+        #  套用翻譯
         page, layout = self._create_page_container(self.trans.t("folders", "page_title", "📁 資料夾管理 (Folders)"))
         
-        # 🌟 套用翻譯
+        #  套用翻譯
         lbl_hint = QLabel(self.trans.t("folders", "hint", "提示：拖曳列表項目可改變排序。在項目上「點擊右鍵」可設定語系標記與圖示。"))
         lbl_hint.setObjectName("SettingsHint")
         layout.addWidget(lbl_hint)
@@ -5440,7 +5435,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.folder_list)
         
         btn_layout = QHBoxLayout()
-        # 🌟 套用翻譯
+        #  套用翻譯
         self.btn_add = QPushButton(self.trans.t("folders", "btn_add", "+ 新增資料夾"))
         self.btn_del = QPushButton(self.trans.t("folders", "btn_remove", "- 移除選取"))
         
@@ -5592,7 +5587,7 @@ class SettingsDialog(QDialog):
                     self.ai_tabs.setCurrentIndex(1)
                 return 
 
-        # 🌟 3. 核心修改：執行陣列的新增或移除 (支援多選)
+        #  3. 核心修改：執行陣列的新增或移除 (支援多選)
         if is_adding:
             current_langs.append(lang_code)
         else:
@@ -5600,13 +5595,13 @@ class SettingsDialog(QDialog):
             
         target_folder["enabled_langs"] = current_langs
         
-        # 🌟 4. 強制寫回設定檔 (這會觸發 config.json 的實際儲存)
+        #  4. 強制寫回設定檔 (這會觸發 config.json 的實際儲存)
         self.main_window.config.set("source_folders", config_folders)
         
         # 5. 更新所有會受到影響的畫面
         self.refresh_folder_list()    # 雖然沒標籤了，但確保資料同步
         self.refresh_ocr_status()     # 更新 AI 引擎頁面的狀態
-        self.refresh_ocr_task_list()  # 🌟 重新繪製自動任務清單，讓多個標籤並排顯示！
+        self.refresh_ocr_task_list()  #  重新繪製自動任務清單，讓多個標籤並排顯示！
 
         # 6. 引導重新掃描防呆
         if is_adding:
@@ -5655,7 +5650,7 @@ class SettingsDialog(QDialog):
                     conn.commit()
                     conn.close()
                     
-                    # 🌟 改為觸發背景雙緩衝載入
+                    #  改為觸發背景雙緩衝載入
                     self.main_window.trigger_background_db_reload()
                 except Exception as e:
                     print(f"Delete DB error: {e}")
@@ -5676,7 +5671,7 @@ class SettingsDialog(QDialog):
             self.main_window.refresh_sidebar()
 
     def init_page_ai(self):
-        # 🌟 套用翻譯：主標題
+        #  套用翻譯：主標題
         page, layout = self._create_page_container(self.trans.t("ai_engine", "page_title", "🧠 AI 引擎設定 (AI Engine)"))
         
         line = layout.itemAt(1).widget()
@@ -5711,13 +5706,13 @@ class SettingsDialog(QDialog):
         clip_layout.setContentsMargins(20, 20, 20, 20)
         clip_layout.setSpacing(15)
         
-        # 🌟 套用翻譯：CLIP 群組標題
+        #  套用翻譯：CLIP 群組標題
         group_clip = QGroupBox(self.trans.t("ai_engine", "grp_clip_title", "語意搜尋模型 (Semantic Models)"))
         clip_list_layout = QVBoxLayout(group_clip)
         clip_list_layout.setSpacing(10)
         
         current_model = self.main_window.config.get("model_name")
-        # 🌟 套用翻譯：CLIP 模型清單與描述
+        #  套用翻譯：CLIP 模型清單與描述
         mock_clips = [
             {"name": self.trans.t("ai_engine", "model_std_name", "🟢 標準模式 (ViT-B-32)"), "id": "ViT-B-32", "pre": "laion2b_s34b_b79k", "desc": self.trans.t("ai_engine", "model_std_desc", "速度極快，佔用極低")},
             {"name": self.trans.t("ai_engine", "model_acc_name", "🔵 精準模式 (ViT-H-14)"), "id": "ViT-H-14", "pre": "laion2b_s32b_b79k", "desc": self.trans.t("ai_engine", "model_acc_desc", "準確度高，細節辨識佳")},
@@ -5727,7 +5722,7 @@ class SettingsDialog(QDialog):
         for item in mock_clips:
             row = QHBoxLayout()
             
-            # 🌟 1. 動態取得主題顏色注入 HTML
+            #  1. 動態取得主題顏色注入 HTML
             muted_color = self.main_window.theme_manager.current_colors.get("text_muted", "#888888")
             lbl_name = QLabel(f"{item['name']}<br><span style='color:{muted_color}; font-size:12px;'>{item['desc']}</span>")
             lbl_name.setFixedWidth(240)
@@ -5736,18 +5731,18 @@ class SettingsDialog(QDialog):
             is_active = (item['id'] == current_model)
             if is_active:
                 status_text = self.trans.t("ai_engine", "status_running", "✅ 運行中")
-                state_val = "running"  # 🌟 改用狀態標記
+                state_val = "running"  #  改用狀態標記
                 btn_text = self.trans.t("ai_engine", "btn_in_use", "目前使用中")
                 btn_enabled = False
             else:
                 status_text = self.trans.t("ai_engine", "status_installed", "💾 已安裝")
-                state_val = "installed" # 🌟 改用狀態標記
+                state_val = "installed" #  改用狀態標記
                 btn_text = self.trans.t("ai_engine", "btn_switch", "切換並重啟")
                 btn_enabled = True
                 
             lbl_status = QLabel(status_text)
-            lbl_status.setObjectName("ModelStatusLabel") # 🌟 發放身分證
-            lbl_status.setProperty("state", state_val)   # 🌟 設定狀態
+            lbl_status.setObjectName("ModelStatusLabel") #  發放身分證
+            lbl_status.setProperty("state", state_val)   #  設定狀態
             
             btn_action = QPushButton(btn_text)
             btn_action.setFixedWidth(100)
@@ -5769,7 +5764,7 @@ class SettingsDialog(QDialog):
             
         clip_layout.addWidget(group_clip)
         clip_layout.addStretch(1)
-        # 🌟 套用翻譯：CLIP 分頁標籤
+        #  套用翻譯：CLIP 分頁標籤
         self.ai_tabs.addTab(tab_clip, self.trans.t("ai_engine", "tab_clip", "👁️ CLIP 語意模型"))
         
         tab_ocr = QWidget()
@@ -5777,14 +5772,14 @@ class SettingsDialog(QDialog):
         ocr_layout.setContentsMargins(20, 20, 20, 20)
         ocr_layout.setSpacing(15)
         
-        # 🌟 套用翻譯：OCR 群組標題
+        #  套用翻譯：OCR 群組標題
         group_lang = QGroupBox(self.trans.t("ai_engine", "grp_ocr_title", "語系擴充包 (Language Packs)"))
         self.lang_layout = QVBoxLayout(group_lang)
         self.lang_layout.setSpacing(10)
         
         ocr_layout.addWidget(group_lang)
         ocr_layout.addStretch(1)
-        # 🌟 套用翻譯：OCR 分頁標籤
+        #  套用翻譯：OCR 分頁標籤
         self.ai_tabs.addTab(tab_ocr, self.trans.t("ai_engine", "tab_ocr", "📝 OCR 文字辨識"))
         
         layout.addWidget(self.ai_tabs, stretch=1)
@@ -5815,7 +5810,7 @@ class SettingsDialog(QDialog):
         for f in self.main_window.config.get("source_folders", []):
             active_langs.update(f.get("enabled_langs", []))
             
-        # 🌟 套用翻譯
+        #  套用翻譯
         langs = [
             ("ch", self.trans.t("ai_engine", "lang_ch", "🇨🇳 中文 (通用)")),
             ("jp", self.trans.t("ai_engine", "lang_jp", "🇯🇵 日文 (日本語)")),
@@ -5831,7 +5826,7 @@ class SettingsDialog(QDialog):
             is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
             is_running = lang_code in active_langs
             
-            # 🌟 換成狀態指派，拔除寫死的 color
+            #  換成狀態指派，拔除寫死的 color
             if is_running and is_installed:
                 status = self.trans.t("ai_engine", "status_running", "✅ 運行中")
                 state_val = "running"
@@ -5857,8 +5852,8 @@ class SettingsDialog(QDialog):
             lbl_name.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
             
             lbl_status = QLabel(status)
-            lbl_status.setObjectName("ModelStatusLabel") # 🌟 發放身分證
-            lbl_status.setProperty("state", state_val)   # 🌟 設定狀態
+            lbl_status.setObjectName("ModelStatusLabel") #  發放身分證
+            lbl_status.setProperty("state", state_val)   #  設定狀態
             
             btn_action = QPushButton(btn_text)
             btn_action.setFixedWidth(90)
@@ -5960,14 +5955,14 @@ class SettingsDialog(QDialog):
 # 請將這段程式碼覆蓋回 SettingsDialog 的 init_page_appearance 方法
 
     def init_page_appearance(self):
-        # 🌟 套用翻譯
+        #  套用翻譯
         page, layout = self._create_page_container(self.trans.t("appearance", "page_title", "🖥️ 介面與顯示 (Appearance)"))
         ui_state = self.main_window.config.get("ui_state", {}) 
 
         
 
         # ==========================================
-        # 🌟 [新增] 軟體主題切換
+        #  [新增] 軟體主題切換
         # ==========================================
         layout.addWidget(QLabel("軟體主題配色 (Theme):"))
         self.combo_theme = QComboBox()
@@ -5997,14 +5992,14 @@ class SettingsDialog(QDialog):
         for f in source_folders:
             path = f["path"]
             
-            # 🌟 修復：嚴格檢查圖示，如果是空字串就給預設的資料夾符號
+            #  修復：嚴格檢查圖示，如果是空字串就給預設的資料夾符號
             icon = f.get("icon", "")
             if not icon:
                 icon = "📁"
                 
             folder_name = os.path.basename(path)
             
-            # 🌟 拿掉醜醜的括號，直接顯示圖示與名稱，多加一個空格讓排版更透氣
+            #  拿掉醜醜的括號，直接顯示圖示與名稱，多加一個空格讓排版更透氣
             self.combo_startup.addItem(f"{icon}  {folder_name}", path)
 
         # 3. 讀取並套用目前的設定值
@@ -6017,13 +6012,13 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.combo_startup)
         layout.addSpacing(10)
 
-        # 🌟 套用翻譯
+        #  套用翻譯
         layout.addWidget(QLabel(self.trans.t("appearance", "lbl_size", "預設圖片顯示大小：")))
         self.combo_size = QComboBox()
         self.combo_size.setFixedHeight(38)
         
         
-        # 🌟 套用翻譯到下拉選項
+        #  套用翻譯到下拉選項
         self.combo_size.addItems([
             self.trans.t("appearance", "size_xl", "超大圖示 (Extra Large)"), 
             self.trans.t("appearance", "size_l", "大圖示 (Large)"), 
@@ -6036,14 +6031,14 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.combo_size)
         
         layout.addSpacing(10)
-        # 🌟 套用翻譯
+        #  套用翻譯
         layout.addWidget(QLabel(self.trans.t("appearance", "lbl_tag_mode", "OCR 懸浮標籤顯示方式：")))
         
         self.combo_tag_mode = QComboBox()
         self.combo_tag_mode.setFixedHeight(38) 
         
         
-        # 🌟 套用翻譯到下拉選項
+        #  套用翻譯到下拉選項
         self.combo_tag_mode.addItems([
             self.trans.t("appearance", "tag_anchored", "選項 A：固定在 OCR 框邊緣 (Anchored) - 推薦"), 
             self.trans.t("appearance", "tag_follow", "選項 B：跟隨滑鼠游標 (Follow Mouse)")
@@ -6078,13 +6073,13 @@ class SettingsDialog(QDialog):
         self.main_window.config.set("ui_state", ui_state)
 
     def init_page_hotkeys(self):
-        # 🌟 套用翻譯
+        #  套用翻譯
         page, layout = self._create_page_container(self.trans.t("hotkeys", "page_title", "⌨️ 操作與快捷鍵 (Hotkeys)"))
         ui_state = self.main_window.config.get("ui_state", {})
 
         
 
-        # 🌟 套用翻譯
+        #  套用翻譯
         group_nav = QGroupBox(self.trans.t("hotkeys", "grp_nav_title", "預覽導覽行為"))
         layout_nav = QVBoxLayout(group_nav)
         layout_nav.setSpacing(10)
@@ -6106,7 +6101,7 @@ class SettingsDialog(QDialog):
         layout_nav.addWidget(self.combo_wasd)
         layout.addWidget(group_nav)
 
-        # 🌟 套用翻譯
+        #  套用翻譯
         group_ocr = QGroupBox(self.trans.t("hotkeys", "grp_ocr_title", "OCR 檢視方式"))
         layout_ocr = QVBoxLayout(group_ocr)
         layout_ocr.setSpacing(10)
@@ -6127,7 +6122,7 @@ class SettingsDialog(QDialog):
         layout_ocr.addWidget(self.combo_ocr)
         layout.addWidget(group_ocr)
 
-        # 🌟 套用翻譯
+        #  套用翻譯
         group_visual = QGroupBox(self.trans.t("hotkeys", "grp_visual_title", "進階視覺效果 (Advanced Visuals)"))
         layout_visual = QVBoxLayout(group_visual)
         layout_visual.setSpacing(12)
@@ -6167,7 +6162,7 @@ class SettingsDialog(QDialog):
     def init_page_performance(self):
         page, layout = self._create_page_container(self.trans.t("performance", "page_title", "⚡ 效能調整 (Performance)"))
         
-        # 🌟 呼叫公用函式，自動套用 QSS 樣式
+        #  呼叫公用函式，自動套用 QSS 樣式
         btn_wip = self._create_construction_button(self.trans.t("performance", "wip_text", "🚧 施工中：動畫效果與系統資源控制"))
         layout.addWidget(btn_wip)
         layout.addStretch(1)
@@ -6204,7 +6199,7 @@ class SettingsDialog(QDialog):
         lbl_desc.setObjectName("SettingsHint")
         group_ocr_layout.addWidget(lbl_desc)
         
-        # 🌟 加入 QScrollArea 容器 (解決排版被撐破的核心)
+        #  加入 QScrollArea 容器 (解決排版被撐破的核心)
         self.ocr_scroll = QScrollArea()
         self.ocr_scroll.setWidgetResizable(True)
         self.ocr_scroll.setFrameShape(QFrame.Shape.NoFrame) # 隱藏邊框
@@ -6215,7 +6210,7 @@ class SettingsDialog(QDialog):
         self.ocr_tasks_list_layout = QVBoxLayout(self.ocr_tasks_container)
         self.ocr_tasks_list_layout.setContentsMargins(0, 5, 0, 0)
         self.ocr_tasks_list_layout.setSpacing(5)
-        # 🌟 讓項目自動往上靠齊，避免資料夾很少時被垂直均分拉開
+        #  讓項目自動往上靠齊，避免資料夾很少時被垂直均分拉開
         self.ocr_tasks_list_layout.setAlignment(Qt.AlignmentFlag.AlignTop) 
         
         self.ocr_scroll.setWidget(self.ocr_tasks_container)
@@ -6330,7 +6325,7 @@ class SettingsDialog(QDialog):
                 
             tags_layout.addStretch(1)
             
-            # 🌟 核心修改：直接把點擊事件綁定到這整列，並取得滑鼠游標目前的絕對座標
+            #  核心修改：直接把點擊事件綁定到這整列，並取得滑鼠游標目前的絕對座標
             row_widget.mouseReleaseEvent = lambda event, p=path: self.show_ocr_task_menu(p, event.globalPosition().toPoint())
             
             row.addWidget(lbl_name)
@@ -6399,17 +6394,17 @@ class SettingsDialog(QDialog):
         self.main_window.change_view_mode(selected_mode)
 
     def init_page_language(self):
-        # 🌟 套用翻譯：主標題
+        #  套用翻譯：主標題
         page, layout = self._create_page_container(self.trans.t("language_page", "page_title", "🌍 語言與翻譯 (Language)"))
         ui_state = self.main_window.config.get("ui_state", {})
         current_lang = ui_state.get("language", "zh_TW") 
 
-        # 🌟 套用翻譯：群組標題
+        #  套用翻譯：群組標題
         group_lang = QGroupBox(self.trans.t("language_page", "grp_lang_title", "顯示語言 (Display Language)"))
         layout_lang = QVBoxLayout(group_lang)
         layout_lang.setSpacing(10)
 
-        # 🌟 套用翻譯：說明文字
+        #  套用翻譯：說明文字
         lbl_desc = QLabel(self.trans.t("language_page", "lbl_desc", "請選擇軟體的顯示語言。系統將會從 languages/ 資料夾讀取對應的翻譯檔。\n(變更語言後，將於下次啟動程式時生效)"))
         lbl_desc.setObjectName("SettingsHint")
         layout_lang.addWidget(lbl_desc)
@@ -6450,7 +6445,7 @@ class SettingsDialog(QDialog):
         self.combo_lang.currentIndexChanged.connect(self.on_language_changed)
         layout_lang.addWidget(self.combo_lang)
 
-        # 🌟 套用翻譯：重啟提示
+        #  套用翻譯：重啟提示
         self.lbl_lang_restart_hint = QLabel(self.trans.t("language_page", "restart_hint", "⚠️ 語言已變更！請手動重新啟動程式以套用新語言。"))
         self.lbl_lang_restart_hint.setObjectName("SettingsWarning")
         self.lbl_lang_restart_hint.hide() 
@@ -6473,17 +6468,17 @@ class SettingsDialog(QDialog):
         self.lbl_lang_restart_hint.show()
 
     def init_page_about(self):
-        # 🌟 套用翻譯：主標題
+        #  套用翻譯：主標題
         page, layout = self._create_page_container(self.trans.t("about_page", "page_title", "ℹ️ 關於與說明 (Help & About)"))
 
         title_label = QLabel("<h2>EyeSeeMore</h2>")
         layout.addWidget(title_label)
 
-        # 🌟 套用翻譯：版本號
+        #  套用翻譯：版本號
         version_info = QLabel(self.trans.t("about_page", "version_lbl", "<b>版本號：</b> V0.5.0-alpha<br><b>建置日期：</b> 2026-03-18"))
         layout.addWidget(version_info)
 
-        # 🌟 套用翻譯：HTML 核心技術區塊 (透過字串拼接)
+        #  套用翻譯：HTML 核心技術區塊 (透過字串拼接)
         tech_text = (
             self.trans.t("about_page", "tech_title", "<h3>技術致敬 (Core Technologies)</h3><p>本軟體由以下優秀的開源生態系驅動：</p>") +
             "<ul>" +
@@ -6498,7 +6493,7 @@ class SettingsDialog(QDialog):
         tech_label = QLabel(tech_text)
         layout.addWidget(tech_label)
 
-        # 🌟 套用翻譯：連結與版權
+        #  套用翻譯：連結與版權
         link_color = self.main_window.theme_manager.current_colors.get("text_link", "#00aaff")
         link_html = f'<a href="https://github.com/Magnesiumnuclear/EyeSeeMore" style="color: {link_color}; text-decoration: none;">🌐 專案 GitHub 主頁 (回報問題與建議)</a>'
         link_label = QLabel(self.trans.t("about_page", "github_link", link_html))
@@ -6522,7 +6517,7 @@ if __name__ == "__main__":
         
     app = QApplication(sys.argv)
     
-    # 🌟 [修改] 棄用寫死的 WIN11_STYLESHEET，改用 ThemeManager
+    #  [修改] 棄用寫死的 WIN11_STYLESHEET，改用 ThemeManager
     theme_manager = ThemeManager(app_config)
     theme_manager.apply_theme(app, theme_manager.current_theme_id)
 

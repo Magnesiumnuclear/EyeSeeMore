@@ -16,6 +16,7 @@
         "text_sec": "#333333",
         "text_muted": "#666666",
         "primary": "#005fb8",
+        "primary_transparent": "#4d005fb8",
         "primary_hover": "#0078d4",
         "primary_active": "#004a99",
         "danger": "#d32f2f",

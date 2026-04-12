@@ -617,3 +617,81 @@ QLabel#BucketPlaceholder {
     color: @text_muted;
     font-size: 13px;
 }
+
+/* --- 3. 歡迎對話框 (OnboardingDialog) --- */
+QDialog#OnboardingDialog {
+    background-color: @bg_app;
+}
+
+/* 標題與內文 */
+QLabel#OnboardingTitle {
+    font-size: 28px;
+    font-weight: bold;
+    color: @primary;
+    margin-bottom: 10px;
+}
+
+QLabel#OnboardingContent {
+    font-size: 15px;
+    color: @text_sec;
+    line-height: 1.5;
+}
+
+/* 主行動按鈕 (例如：開始使用) */
+QPushButton#OnboardingActionBtn {
+    background-color: @primary;
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 24px;
+    font-size: 16px;
+    font-weight: bold;
+}
+
+QPushButton#OnboardingActionBtn:hover {
+    background-color: @primary_hover;
+}
+
+QPushButton#OnboardingActionBtn:pressed {
+    background-color: @primary_active;
+}
+
+/* 底部導覽點點 (分頁指示器) */
+QWidget#PageIndicator {
+    background-color: @border_main;
+    border-radius: 4px;
+}
+QWidget#PageIndicator[active="true"] {
+    background-color: @primary;
+}
+
+/* --- 4. 特徵桶內部清單 (BucketListWidget) --- */
+QListWidget#BucketListWidget { 
+    border: none; 
+    background: transparent; 
+    outline: none; 
+}
+
+QListWidget#BucketListWidget:focus { 
+    outline: none; 
+}
+
+QListWidget#BucketListWidget::item { 
+    padding: 4px; 
+    border-radius: 4px; 
+    border: none; 
+    outline: none; 
+}
+
+/* 🌟 選取狀態：使用 JSON 定義的半透明主題色 */
+QListWidget#BucketListWidget::item:selected { 
+    background-color: @primary_transparent; 
+    color: @text_main; 
+    border: none; 
+    outline: none; 
+}
+
+QListWidget#BucketListWidget::item:focus { 
+    outline: none; 
+    border: none; 
+}
