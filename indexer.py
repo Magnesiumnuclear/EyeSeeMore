@@ -212,8 +212,24 @@ class IndexerService:
         # 3. 建立統計表
         cursor.execute('''CREATE TABLE IF NOT EXISTS model_stats (model_name TEXT, folder_path TEXT, image_count INTEGER, last_scanned TEXT, PRIMARY KEY (model_name, folder_path))''')
         
-        # 4. 建立多語系 OCR 子表
-        cursor.execute('''CREATE TABLE IF NOT EXISTS ocr_results (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER, lang TEXT, ocr_text TEXT, ocr_data TEXT, confidence REAL, FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE)''')
+        # ==========================================
+        # 🌟 階段一實作：建立虛擬資料夾 (Collections) 系統
+        # ==========================================
+        # 5. 虛擬資料夾本身 (支援自訂名稱)
+        cursor.execute('''CREATE TABLE IF NOT EXISTS collections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            name TEXT UNIQUE, 
+            created_at REAL
+        )''')
+        
+        # 6. 虛擬資料夾與圖片的對應關係表 
+        # (我們刻意使用 file_path 關聯，這樣就算實體圖片被暫時移出索引，標籤關聯也不會斷掉)
+        cursor.execute('''CREATE TABLE IF NOT EXISTS collection_items (
+            collection_id INTEGER, 
+            file_path TEXT, 
+            PRIMARY KEY (collection_id, file_path), 
+            FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+        )''')
         
         conn.commit()
         return conn

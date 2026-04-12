@@ -1467,6 +1467,89 @@ class ImageSearchEngine:
             })
             if len(results) >= top_k: break
         return results
+    
+    # ==========================================
+    #  [NEW] 虛擬資料夾 (Collections) 管理 API
+    # ==========================================
+    def create_virtual_folder(self, name):
+        """建立新的虛擬資料夾"""
+        conn = self.get_db_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO collections (name, created_at) VALUES (?, ?)", (name, time.time()))
+            conn.commit()
+            return True, cursor.lastrowid
+        except sqlite3.IntegrityError:
+            return False, "該名稱已存在！"
+        except Exception as e:
+            return False, str(e)
+        finally:
+            conn.close()
+
+    def get_virtual_folders(self):
+        """取得所有虛擬資料夾與其包含的圖片數量"""
+        conn = self.get_db_conn()
+        try:
+            cursor = conn.cursor()
+            # 瞬間算出每個虛擬資料夾裡面有幾張圖 (COUNT)
+            cursor.execute("""
+                SELECT c.id, c.name, COUNT(ci.file_path)
+                FROM collections c
+                LEFT JOIN collection_items ci ON c.id = ci.collection_id
+                GROUP BY c.id
+                ORDER BY c.created_at ASC
+            """)
+            return cursor.fetchall() # 回傳 [(id, name, count), ...]
+        except Exception as e:
+            print(f"[Engine] get_virtual_folders error: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def add_to_virtual_folder(self, collection_id, file_paths):
+        """將多張圖片加入虛擬資料夾 (支援拖曳寫入)"""
+        if not file_paths: return False
+        conn = self.get_db_conn()
+        try:
+            cursor = conn.cursor()
+            data = [(collection_id, p) for p in file_paths]
+            # 使用 INSERT OR IGNORE，重複把同一張圖丟進同一個資料夾也不會報錯
+            cursor.executemany("INSERT OR IGNORE INTO collection_items (collection_id, file_path) VALUES (?, ?)", data)
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"[Engine] add_to_virtual_folder error: {e}")
+            return False
+        finally:
+            conn.close()
+            
+    def get_virtual_folder_images(self, collection_id):
+        """取得特定虛擬資料夾內的所有圖片，用於顯示在畫廊"""
+        conn = self.get_db_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT file_path FROM collection_items WHERE collection_id = ?", (collection_id,))
+            paths = set(row[0] for row in cursor.fetchall())
+            
+            # 直接從 O(1) 的記憶體 data_store 中把圖片資訊抽出來！極度快速！
+            results = []
+            for item in self.data_store:
+                if item["path"] in paths:
+                    results.append({
+                        "score": 0.0, "clip_score": 0.0, "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
+                        "path": item["path"], "filename": item["filename"],
+                        "mtime": item.get("mtime", 0),
+                        "width": item.get("width", 0),
+                        "height": item.get("height", 0)
+                    })
+            # 按時間排序 (最新修改的排前面)
+            results.sort(key=lambda x: x["mtime"], reverse=True)
+            return results
+        except Exception as e:
+            print(f"[Engine] get_virtual_folder_images error: {e}")
+            return []
+        finally:
+            conn.close()
 
 from indexer import IndexerService # 確保引入
 
