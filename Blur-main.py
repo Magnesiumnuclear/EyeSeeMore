@@ -30,6 +30,7 @@ import faiss
 
 from core.search_orchestrator import SearchOrchestrator
 from core.image_action_manager import ImageActionManager
+from utils.translator import Translator
 
 # [New] 引入設定管理器
 from config_manager import ConfigManager
@@ -139,33 +140,7 @@ if sys.platform == 'win32':
     IID_ITaskbarList3 = GUID(0xEA1AFB91, 0x9E28, 0x4B86, (0x90, 0xE9, 0x9E, 0x9F, 0x8A, 0x5E, 0xEF, 0xAF))
 
 
-# ==========================================
-#  [NEW] 全域多國語言翻譯器
-# ==========================================
-class Translator:
-    def __init__(self, lang_code):
-        self.lang_code = lang_code
-        self.translations = {}
-        self.load()
-
-    def load(self):
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(base_dir, "languages", f"{self.lang_code}.json")
-        
-        # 若找不到指定的語言檔，預設退回繁體中文 (防呆機制)
-        if not os.path.exists(file_path):
-            file_path = os.path.join(base_dir, "languages", "zh_TW.json")
-            
-        if os.path.exists(file_path):
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    self.translations = json.load(f)
-            except Exception as e:
-                print(f"[Translator] 讀取語言檔失敗: {e}")
-
-    def t(self, section, key, default=""):
-        """取得翻譯字串的主力函式，使用方式：trans.t('settings', 'window_title', '預設值')"""
-        return self.translations.get(section, {}).get(key, default)
+# Translator 已移至 utils/translator.py
 
 class TaskbarController:
     """用來控制 Windows 工作列圖示的萬能控制器"""
