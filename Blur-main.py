@@ -28,6 +28,8 @@ import cv2
 
 import faiss
 
+from search_orchestrator import SearchOrchestrator
+
 # [New] 引入設定管理器
 from config_manager import ConfigManager
 from theme_manager import ThemeManager # [新增] 引入主題引擎
@@ -3997,6 +3999,10 @@ class MainWindow(QMainWindow):
         self.indexer_worker.scan_finished.connect(self.on_scan_finished)
         self.indexer_worker.all_finished.connect(self.on_indexing_finished)
 
+        self.search_orch = SearchOrchestrator(SearchWorker, parent=self)
+        self.search_orch.results_ready.connect(self.set_base_results)
+        self.search_orch.search_finished.connect(self.on_finished)
+
         # [修改 2] 連接訊號：當 AI 準備好時，執行 on_ai_loaded
         self.random_data_ready.connect(self.set_base_results)
         self.ai_ready.connect(self.on_ai_loaded)
@@ -4788,6 +4794,7 @@ class MainWindow(QMainWindow):
             
             # 正確建立 Engine 實例
             self.engine = ImageSearchEngine(self.config)
+            self.search_orch.engine = self.engine  # 將引擎注入 Orchestrator
             
             #self.status.setText("Rendering Gallery...")
             # 呼叫排序方法
@@ -4849,43 +4856,15 @@ class MainWindow(QMainWindow):
             self.inspector_panel.btn_sort_order.setText("↓")
             self.inspector_panel.combo_sort.blockSignals(False)
 
-        limit = self.inspector_panel.combo_limit_panel.currentText()
-        fetch_k = 100000 if limit == "All" else 2000
-        
-        # ==========================================
-        #  [完美修復] 執行緒收容與 C++ 幽靈物件防護
-        # ==========================================
-        try:
-            if getattr(self, 'worker', None):
-                # 1. 切斷舊的訊號：避免你拉滑桿太快，舊的結果算完跑出來蓋掉新的畫面
-                self.worker.batch_ready.disconnect()
-                self.worker.finished_search.disconnect()
-                
-                # 2. 如果舊的還在跑，把它丟進收容所讓它跑完自然消滅
-                if self.worker.isRunning():
-                    if not hasattr(self, '_retained_workers'): self._retained_workers = []
-                    self._retained_workers.append(self.worker)
-                    self.worker.finished.connect(lambda w=self.worker: self._retained_workers.remove(w) if w in self._retained_workers else None)
-        except (RuntimeError, TypeError):
-            # 捕捉到幽靈物件！C++ 底層已被 deleteLater 刪除，安全忽略
-            pass
-        
-        target_folder = None
-        is_local_mode = (self.inspector_panel.combo_search_scope.currentIndex() == 0)
-        
-        # 只有當選單是「目前資料夾」(Index 0) 且側邊欄真的不是「ALL」時，才鎖定路徑
-        if is_local_mode and self.current_folder_path != "ALL":
-            target_folder = self.current_folder_path
+        fetch_k, target_folder = self.search_orch.resolve_search_params(
+            self.inspector_panel, self.current_folder_path)
 
-        weight_config = self.inspector_panel.get_weight_config()
-        self.worker = SearchWorker(self.engine, q, fetch_k, search_mode="text", 
-                                   use_ocr=self.btn_ocr_toggle.isChecked(), 
-                                   weight_config=weight_config,
-                                   folder_path=target_folder)
-        self.worker.batch_ready.connect(self.set_base_results)
-        self.worker.finished_search.connect(self.on_finished)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.worker.start()
+        self.search_orch.submit(
+            q, search_mode="text",
+            use_ocr=self.btn_ocr_toggle.isChecked(),
+            weight_config=self.inspector_panel.get_weight_config(),
+            folder_path=target_folder, fetch_k=fetch_k,
+        )
 
     def start_image_search(self, image_path):
         if not self.engine: return
@@ -4904,36 +4883,16 @@ class MainWindow(QMainWindow):
         self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
         self.inspector_panel.btn_sort_order.setText("↓")
         self.inspector_panel.combo_sort.blockSignals(False)
-        
-        limit = self.inspector_panel.combo_limit_panel.currentText()
-        fetch_k = 100000 if limit == "All" else 2000
 
-        target_folder = None
-        is_local_mode = (self.inspector_panel.combo_search_scope.currentIndex() == 0)
-        if is_local_mode and self.current_folder_path != "ALL":
-            target_folder = self.current_folder_path
-        
-        # ==========================================
-        #  [完美修復] 執行緒收容與 C++ 幽靈物件防護
-        # ==========================================
-        try:
-            if getattr(self, 'worker', None):
-                self.worker.batch_ready.disconnect()
-                self.worker.finished_search.disconnect()
-                if self.worker.isRunning():
-                    if not hasattr(self, '_retained_workers'): self._retained_workers = []
-                    self._retained_workers.append(self.worker)
-                    self.worker.finished.connect(lambda w=self.worker: self._retained_workers.remove(w) if w in self._retained_workers else None)
-        except (RuntimeError, TypeError):
-            pass
-        
-        self.worker = SearchWorker(self.engine, image_path, fetch_k, search_mode="image", folder_path=target_folder)
-        self.worker.batch_ready.connect(self.set_base_results)
-        self.worker.finished_search.connect(self.on_finished)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.worker.start()
+        fetch_k, target_folder = self.search_orch.resolve_search_params(
+            self.inspector_panel, self.current_folder_path)
 
-    def start_multi_vector_search(self, pos_features, neg_features): #  改為 features
+        self.search_orch.submit(
+            image_path, search_mode="image",
+            folder_path=target_folder, fetch_k=fetch_k,
+        )
+
+    def start_multi_vector_search(self, pos_features, neg_features):
         if not self.engine: return
         if not self.nav.is_navigating: self.nav.push()
 
@@ -4949,29 +4908,15 @@ class MainWindow(QMainWindow):
         self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
         self.inspector_panel.btn_sort_order.setText("↓")
         self.inspector_panel.combo_sort.blockSignals(False)
-        
-        limit = self.inspector_panel.combo_limit_panel.currentText()
-        fetch_k = 100000 if limit == "All" else 2000
 
-        target_folder = None
-        if self.inspector_panel.combo_search_scope.currentIndex() == 0 and self.current_folder_path != "ALL":
-            target_folder = self.current_folder_path
-        
-        try:
-            if getattr(self, 'worker', None):
-                self.worker.batch_ready.disconnect()
-                self.worker.finished_search.disconnect()
-                if self.worker.isRunning():
-                    if not hasattr(self, '_retained_workers'): self._retained_workers = []
-                    self._retained_workers.append(self.worker)
-                    self.worker.finished.connect(lambda w=self.worker: self._retained_workers.remove(w) if w in self._retained_workers else None)
-        except (RuntimeError, TypeError): pass
-        
-        self.worker = SearchWorker(self.engine, {'pos': pos_features, 'neg': neg_features}, fetch_k, search_mode="multi_vector", folder_path=target_folder)
-        self.worker.batch_ready.connect(self.set_base_results)
-        self.worker.finished_search.connect(self.on_finished)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.worker.start()
+        fetch_k, target_folder = self.search_orch.resolve_search_params(
+            self.inspector_panel, self.current_folder_path)
+
+        self.search_orch.submit(
+            {'pos': pos_features, 'neg': neg_features},
+            search_mode="multi_vector",
+            folder_path=target_folder, fetch_k=fetch_k,
+        )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
