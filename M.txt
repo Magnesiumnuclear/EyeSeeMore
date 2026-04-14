@@ -1,0 +1,2005 @@
+這是在 **EyeSeeMore** 中負責底層 Windows API 溝通的基礎結構。以下是針對 `class GUID` 的審計報告：
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `GUID`，繼承自 `ctypes.Structure`。
+* **核心 Vibe：** 這是 Windows **Globally Unique Identifier (GUID)** 的 Python 鏡像結構，用於支援與 Windows 底層 C++ DLL 或系統 API 的二進位通訊。
+* **狀態清單 (State)：**
+    * 它維護了符合 Win32 規格的四個關鍵欄位：`Data1` (ulong), `Data2` (ushort), `Data3` (ushort), `Data4` (8 bytes 陣列)。
+    * **外部傳入：** 無。這是一個靜態的資料結構定義，不儲存執行過程中的動態狀態。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** 強度依賴 Python 標準函式庫 `ctypes`。
+* **父級耦合：** **無。** 該類別極其純粹，完全不涉及 `MainWindow` 或任何 UI 組件。
+* **搬家預警：**
+    * 如果移至獨立檔案，僅需 `import ctypes`。
+    * 它是許多 Windows 進階功能（如視窗定位、Snap Layouts 偵測等）的底層依賴，搬家後需要確保所有呼叫 Win32 API 的模組都能引用到它。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。
+* **邏輯密度分析：** **純資料定義**（Pure Data Definition）。不含任何運算或業務邏輯，代碼品質優良且穩定。
+* **重構建議：** * **建議位置：** 應移至 `/core/win32_types.py` 或 `/utils/win32_api.py`。
+    * **理由：** 這屬於系統級的基礎設施，不應存放在 `main.py` 中。將其與相關的 Win32 `RECT`, `POINT` 等結構體統一管理，能大幅提高代碼的可讀性。
+
+---
+**審計完成。此 Class 結構非常單純，適合做為重構的第一步先行抽離。請發送下一個 Class 代碼。**
+
+這是針對 `ITaskbarList3Vtbl` 的結構化審計報告：
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `ITaskbarList3Vtbl` (Virtual Table)，繼承自 `ctypes.Structure`。
+* **核心 Vibe：** 它是 Windows COM 介面的「函數索引表」，專門定義了如何與作業系統工作列（Taskbar）互動的二進位介面。
+* **狀態清單 (State)：**
+    * 它維護了大量的函數指標（`c_void_p`）或強型別函數定義（`WINFUNCTYPE`）。
+    * **關鍵欄位：** 特別實作了 `HrInit`、`SetProgressValue` 與 `SetProgressState` 的參數型別，這顯示 **EyeSeeMore** 具備控制工作列進度條（例如：下載進度、索引進度）的功能。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** 強度依賴 `ctypes` 與 `ctypes.wintypes` (具體為 `wintypes.HWND`)。
+* **父級耦合：** **無耦合。** 這是底層 API 定義，不與 UI 邏輯混合。
+* **搬家預警：**
+    * 遷移時必須確保 `wintypes` 已導入。
+    * **順序依賴：** 雖然此 Class 本身沒用到前面的 `GUID`，但在 COM 初始化過程中，通常會需要 `GUID` 來獲取 `ITaskbarList3` 的實例。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無函數。
+* **邏輯密度分析：** **純二進位映射 (Pure Mapping)**。
+    * 程式碼中雖然定義了許多 `c_void_p`，但大部分是為了維持記憶體對齊（Padding），確保 `SetProgressValue` 等函數的偏移量（Offset）是正確的。
+* **重構建議：**
+    * **建議位置：** 應移至 `/core/win32_com.py` 或與之前的 `GUID` 一同放在 `/core/win32_types.py`。
+    * **註解建議：** 目前程式碼中有 `[關鍵]` 標註，這很好，重構時應保留，因為這解釋了為何其他欄位使用 `c_void_p` 而這幾個欄位有具體定義。
+
+---
+**審計完成。這依然屬於「基礎設施層」。請發送下一個 Class 代碼。**
+
+這是針對 `ITaskbarList3` 及其關聯常數的結構化審計報告：
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `ITaskbarList3`，繼承自 `ctypes.Structure`。
+* **核心 Vibe：** 這是 Windows COM 物件的「外殼」實例。它不直接包含邏輯，而是持有一個指向剛才審計過的虛擬函數表（VTable）的指標，是 **EyeSeeMore** 呼叫工作列功能的正式入口。
+* **狀態清單 (State)：**
+    * `lpVtbl`：指向 `ITaskbarList3Vtbl` 的指標。
+    * **常數定義：** 包含了 `CLSID_TaskbarList`（類別識別碼）與 `IID_ITaskbarList3`（介面識別碼），這是 Windows 系統尋找並啟動該服務所需的「門牌號碼」。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** 強度依賴 `ctypes`。
+* **內部引用：** * 定義 `_fields_` 時引用了 `ITaskbarList3Vtbl`。
+    * 定義常數時引用了 `GUID` 類別。
+* **父級耦合：** **無。**
+* **搬家預警：**
+    * 此段代碼與前兩次發送的 `GUID` 及 `ITaskbarList3Vtbl` 具有**強烈的生命共同體關係**。
+    * **必須打包遷移：** 如果將這些定義拆散到不同檔案，會因為循環引用或找不到定義而崩潰。它們應該被視為一個完整的「Win32 Taskbar 協定組件」。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。
+* **邏輯密度分析：** **純結構映射**。這部分代碼非常標準，屬於 Windows 底層開發的樣板代碼（Boilerplate）。
+* **重構建議：**
+    * **建議位置：** 應與 `GUID`、`ITaskbarList3Vtbl` 統一放置於 `/core/win32_com.py`。
+    * **命名建議：** `CLSID` 與 `IID` 建議改為全大寫（如已是全大寫則保持），並考慮封裝一個簡單的 `TaskbarManager` 類別來隱藏這些複雜的 `ctypes` 初始化過程，讓 `main.py` 只需呼叫 `set_progress(50)` 即可。
+
+---
+**審計完成。目前這三個組件（GUID, VTable, Instance）已構成了 EyeSeeMore 底層系統功能的完整定義。請發送下一個 Class 代碼。**
+
+這是針對 `Translator` 類別的結構化審計報告：
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `Translator`，純 Python 類別（不繼承 PyQt 組件）。
+* **核心 Vibe：** **國際化 (i18n) 引擎**。負責從外部 JSON 檔案載入對應語言的字串，並提供全域 UI 翻譯索引。
+* **狀態清單 (State)：**
+    * `self.lang_code`: 儲存當前語系代碼（如 `en_US`, `zh_TW`）。
+    * `self.translations`: 核心資料結構（字典），存儲從 JSON 解析出來的所有翻譯對應表。
+    * **外部傳入：** `lang_code` 於初始化時由外部傳入。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `os`: 用於路徑運算。
+    * `json`: 用於讀取配置檔。
+* **父級耦合：** **無耦合。** 該類別非常獨立，不依賴任何 UI 組件或 `MainWindow`。
+* **搬家預警：**
+    * **路徑依賴：** `load()` 函數內使用了 `__file__` 與相對路徑 `languages/`。如果將此類別搬移到子資料夾（如 `/core/translator.py`），語系檔的相對位置也會改變，必須同步更新 `base_dir` 的定位邏輯。
+    * **硬編碼預警：** 內建了硬編碼的 `zh_TW.json` 作為 Fallback 預設值，若未來語系目錄重整需注意此處。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。所有函數皆極其精簡（`load` 約 15 行，`t` 為單行）。
+* **邏輯密度分析：** **純業務邏輯 (Pure Business Logic)**。此 Class 表現優異，完全沒有混雜任何 PyQt UI 程式碼，是一個標準的「純邏輯組件」。
+* **重構建議：**
+    * **建議位置：** 最適合移至 `/core` 或 `/utils` 資料夾。
+    * **優化建議：** 1.  目前 `print()` 錯誤處理較為簡單，未來可改用 `logging` 模組。
+        2.  `base_dir` 的定義方式在被打包成 `.exe` (使用 PyInstaller 等) 時可能會失效，建議未來導入更健壯的路徑偵測方法。
+        3.  `t()` 函數可以考慮加入「佔位符替換」功能（例如 `Hello {name}`），增加翻譯的彈性。
+
+---
+**審計完成。這是一個非常乾淨的工具類別，搬家難度極低，僅需處理路徑定位問題。請發送下一個 Class 代碼。**
+
+這是針對 `TaskbarController` 類別的結構化審計報告。這是 EyeSeeMore 與作業系統深度整合的關鍵組件：
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `TaskbarController`，純 Python 類別。
+* **核心 Vibe：** **工作列特效操作員**。它將繁瑣的 Windows COM 通訊封裝成簡單的 API，讓主程式能用一句話（如 `set_progress(50, 100)`）來控制工作列圖示的進度條與顏色狀態。
+* **狀態清單 (State)：**
+    * `self.hwnd`: 儲存 PyQt 視窗的底層控制碼（Integer），這是所有 Windows API 操作的目標地址。
+    * `self.taskbar`: 儲存 `ITaskbarList3` 的實例指標。
+    * **外部傳入：** `window_id`（通常來自 `win_id()`），在初始化時傳入。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `sys`: 用於平台檢查 (`win32`)。
+    * `ctypes`: 用於處理指標與結構。
+    * **全域物件 `ole32`**: 程式碼中呼叫了 `ole32.CoInitializeEx`，這暗示了在 `main.py` 的全域範圍必須先定義 `ole32 = ctypes.windll.ole32`。
+* **內部引用 (前述 Class)：**
+    * 高度依賴先前審計的 `ITaskbarList3`、`CLSID_TaskbarList` 與 `IID_ITaskbarList3`。
+* **父級耦合：** **低耦合。** 透過傳入 `window_id` 而非直接引用 `MainWindow` 物件，這是一個非常優秀的解耦設計。
+* **搬家預警：**
+    * 此類別必須與前述的 **Win32 COM 結構體家族**（GUID, VTable 等）綑綁搬遷。
+    * 若搬移至獨立檔案，必須補上 `import sys, ctypes` 以及 `ole32` 的定義。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。`_init_com` 雖然涉及底層操作，但行數控制在 20 行內。
+* **邏輯密度分析：** **混雜邏輯**。
+    * `_init_com` 屬於「系統底層初始化」。
+    * `set_state` 與 `set_progress` 屬於「高層業務 API」。
+* **重構建議：**
+    * **建議位置：** 應移至 `/core/win32_integration.py`。
+    * **安全性建議：** `_init_com` 中雖然有 `try...except`，但如果 COM 初始化失敗（`hr != 0`），後續呼叫 `set_state` 雖然有 `if self.taskbar` 保護，但缺乏錯誤回報機制。
+    * **資源管理：** 目前沒看到 `CoUninitialize()`。雖然 Python 結束時會清理，但對於一個大型、長時間執行的影像系統，在類別銷毀（`__del__`）時主動釋放 COM 物件會更嚴謹。
+
+---
+**審計完成。這是一個封裝良好的功能類別，極具重構價值。請發送下一個 Class 代碼。**
+
+這是針對 `ImageItem` 類別的結構化審計報告。這是 **EyeSeeMore** 影像檢索系統中最基礎的「原子資料」封裝：
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `ImageItem`，純 Python 類別（Plain Old Python Object）。
+* **核心 Vibe：** **影像資料實體（Entity）**。它統一管理單張圖片的屬性（路徑、分數、OCR 內容、中繼資料），是 RAG 檢索結果與 UI 渲染層之間的橋樑。
+* **狀態清單 (State)：**
+    * **基礎屬性：** `path`, `filename`, `score`, `ocr_text`, `mtime`, `width`, `height`。
+    * **業務狀態：** `is_ocr_match`（用於標註該圖片是否因 OCR 命中而顯示）。
+    * **衍生屬性：** `score_val` (float), `score_str` (格式化後的字串)。
+    * **UI 快取：** `_elided_name_cache`（針對不同寬度的檔名縮略文字快取）。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** * `PyQt6.QtCore.Qt`: 用於 `Qt.TextElideMode.ElideRight`。
+* **父級耦合：** **無耦合。** 透過方法參數 `fm` (QFontMetrics) 傳入字體度量物件，設計上相當乾淨。
+* **搬家預警：**
+    * **隱形依賴：** `get_elided_name` 方法中使用了 `Qt` 常數。如果將此類別移至不含 PyQt 環境的 `/core` 資料夾，會引發 `NameError: name 'Qt' is not defined`。
+    * **類型依賴：** 雖然 `fm` 是動態傳入，但它預期是一個 `QFontMetrics` 物件，這使得這個「資料類別」與 UI 層產生了弱耦合。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。所有函數皆小於 10 行。
+* **邏輯密度分析：** **混雜業務與 UI 展示邏輯**。
+    * `__init__` 是標準的資料存取（Data Access）。
+    * `get_elided_name` 則屬於 **UI 展示邏輯**（View Logic）。
+* **重構建議：**
+    * **建議位置：** 適合移至 `/core/models.py` 或 `/core/entities.py`。
+    * **職責分離建議：** 嚴格來說，`ImageItem` 作為資料模型，不應該負責「計算檔名如何縮寫」。這項功能建議移到 UI 層的 `Delegate` 或一個專門的 `UIUtils` 中，或是透過 `@property` 僅存放原始資料，由視圖層決定如何顯示。
+    * **記憶體預警：** `_elided_name_cache` 會隨圖片數量增加而佔用記憶體。如果檢索結果高達數千張且寬度頻繁變動，需注意此字典的清理時機。
+
+---
+**審計完成。這是一個定義明確的 Data Class，除了少量的 UI 常數依賴外，非常容易拆分。請發送下一個 Class 代碼。**
+
+
+這是針對 `WorkerSignals` 類別的結構化審計報告。這是 **EyeSeeMore** 實現非同步流暢體驗（多執行緒）的核心通訊組件：
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `WorkerSignals`，繼承自 `PyQt6.QtCore.QObject`。
+* **核心 Vibe：** **執行緒間的「傳聲筒」**。由於 PyQt 的 UI 元件不是執行緒安全的（Thread-safe），所有在後台執行的任務（如 AI 影像運算、高清圖讀取）都必須透過這個類別發送訊號，通知主執行緒更新畫面。
+* **狀態清單 (State)：**
+    * **訊號定義：** `result` (pyqtSignal)。
+    * **傳輸載荷 (Payload)：**
+        1.  `str`: 圖片路徑或識別碼。
+        2.  `QPixmap`: 處理後的影像內容（可能是縮圖或高清圖）。
+        3.  `bool`: `is_final` 旗標，用於區分「快速預覽」與「最終高品質」狀態。
+    * **外部傳入：** 無，僅定義訊號格式。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `PyQt6.QtCore.QObject`, `pyqtSignal`: 核心通訊機制。
+    * `PyQt6.QtGui.QPixmap`: 影像資料型別。
+* **父級耦合：** **無耦合。** 這是非常標準的 PyQt 非同步設計模式，它不依賴誰發送訊號，也不依賴誰接收。
+* **搬家預警：**
+    * **型別依賴：** 遷移至獨立檔案時，必須同時導入 `QtCore` 與 `QtGui`。
+    * **位置敏感：** 此類別通常會伴隨著具體的 `QRunnable` 或 `QThread` 實作。如果單獨拆分，需確保其他 Worker 類別能正確 `import` 它。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。
+* **邏輯密度分析：** **純訊號聲明 (Pure Declaration)**。這部分代碼非常精簡且符合規範。
+* **重構建議：**
+    * **建議位置：** 適合移至 `/core/threads.py` 或 `/ui/signals.py`。
+    * **擴充預警：** 目前只有一個 `result` 訊號。隨著專案重構，可能需要增加 `error(str)`、`progress(int)` 或 `finished()` 訊號。建議將所有與執行緒相關的通訊訊號統一管理。
+    * **效能備註：** 在訊號中傳遞大型 `QPixmap` 是合法的，但如果頻率極高（例如每秒 60 幀），需注意主執行緒的事件迴圈（Event Loop）是否能負荷。
+
+---
+**審計完成。這是一個關鍵的通訊橋樑，代碼清晰且職責單一。請發送下一個 Class 代碼。**
+
+這是針對 `PreviewSignals` 類別的結構化審計報告。這個類別展現了你在處理多執行緒影像穩定性上的關鍵演進：
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `PreviewSignals`，繼承自 `PyQt6.QtCore.QObject`。
+* **核心 Vibe：** **高效能預覽圖傳輸協定**。它專門用於將後台載入、解碼後的影像資料安全地送回 UI 介面，並夾帶豐富的元數據（Metadata）。
+* **狀態清單 (State)：**
+    * **訊號定義：** `result` (pyqtSignal)。
+    * **傳輸載荷 (Payload) 深度解析：**
+        1.  `str`: 圖片路徑或 UID。
+        2.  `QImage`: **核心改動**。純像素資料，不依賴 GUI 視窗系統（Window System），是執行緒安全的影像格式。
+        3.  `list`: 推測為 OCR 座標區塊或標籤列表。
+        4.  `int`: 原始影像寬度（Width）。
+        5.  `int`: 原始影像高度（Height）。
+        6.  `str`: 可能是 OCR 識別出的全文或其他描述。
+        7.  `bool`: `is_final` 標記。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `PyQt6.QtCore.QObject`, `pyqtSignal`: 基礎框架。
+    * `PyQt6.QtGui.QImage`: 關鍵影像類別。
+* **父級耦合：** **無耦合。**
+* **技術演進亮點：** 這裡使用了 `QImage` 取代之前的 `QPixmap`。在 PyQt 中，`QPixmap` 與底層繪圖設備硬體相關，嚴禁在非主執行緒中建立或修改；改用 `QImage` 能徹底杜絕因多執行緒操作 GUI 資源導致的隨機崩潰（Segfault）。
+* **搬家預警：**
+    * 遷移時需確保 `QtCore` 與 `QtGui` 同步導入。
+    * **資料一致性依賴：** 接收端（Slot）必須能同時處理這 7 個參數，任何一端的參數個數或型別不符都會導致 `TypeError`。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。
+* **邏輯密度分析：** **純定義**。
+* **重構建議：**
+    * **建議位置：** 應與前面的 `WorkerSignals` 一同收納至 `/core/signals.py`。
+    * **架構警訊 (Data Clump)：** 該訊號的參數列表已達到 **7 個**。這在重構中被稱為「資料塊 (Data Clump)」臭味。
+    * **進階建議：** 如果未來參數繼續增加（例如加入色彩空間、檔案大小等），建議將這些參數封裝成一個簡單的 `dataclass` 或 `namedtuple`（例如 `PreviewResultPacket`），這樣訊號就會簡化為 `result = pyqtSignal(PreviewResultPacket)`，這會讓代碼更容易維護且不易出錯。
+
+---
+**審計完成。將 QPixmap 換成 QImage 是一個非常專業的決定，這解決了影像系統中最隱晦的執行緒安全問題。請發送下一個 Class 代碼。**
+
+這是針對 `PreviewLoader` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 效能表現的關鍵，它承擔了最沉重的「計算」與「IO」任務。
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `PreviewLoader`，繼承自 `PyQt6.QtCore.QRunnable`。
+* **核心 Vibe：** **非同步影像與空間幾何處理器**。它是一次性任務的執行者，專門在背景線程完成「資料庫檢索、OCR 區塊幾何合併、高清影像解碼」這三大高耗能工作，確保 UI 不會因為處理大圖而凍結。
+* **狀態清單 (State)：**
+    * **任務輸入：** `file_path`, `target_size`, `query`, `is_precise` 等檢索參數。
+    * **運算資源：** `self.engine` (SQLite 引擎存取點)。
+    * **通訊管道：** `self.signals` (`PreviewSignals` 實例)。
+    * **控制標記：** `self.is_cancelled` (用於在任務中途快速中斷，節省 CPU 資源)。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `numpy`: 用於 `_sort_points` 中的矩陣運算。
+    * `shapely`: 用於複雜的幾何碰撞（Polygon）運算。
+    * `PyQt6 (QtGui/QtCore)`: 包含 `QImage`, `QImageReader`, `Qt` 等。
+* **父級耦合：** **低耦合**。它不直接修改 `MainWindow` 的狀態，而是透過訊號發射結果，這是非常健康的設計。
+* **搬家預警：**
+    * **重度套件依賴：** 此類別移動時必須確保環境中有 `numpy` 與 `shapely`。
+    * **內聯引用 (Inline Imports)：** 代碼中在函數內部執行 `import numpy` 與 `from shapely...`。這雖然能避免在沒安裝該套件時崩潰，但會增加每次執行 `run` 時的微量負擔，且隱藏了模組層級的依賴關係。
+    * **引擎依賴：** 依賴一個具有 `get_ocr_data_by_path` 方法的 `engine` 物件。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** * `run()`: **高度肥大**。估計長度約 80-100 行（包含省略的 Shapely 邏輯）。它違反了「單一職責原則」，同時負責：1. 資料獲取 2. 幾何演算法 3. 影像 IO。
+* **邏輯密度分析：** **極高且混雜**。
+    * **業務運算：** Shapely 的多邊形相交比例運算 (0.85 閾值) 是核心商業邏輯，不應硬編碼在線程執行器內。
+    * **UI 預處理：** `QImageReader` 的縮放比例設定與格式轉換。
+* **重構建議：**
+    * **建議位置：** 應移至 `/core/workers.py`。
+    * **邏輯抽離：** 1.  將 `_sort_points` 與 Shapely 的「多邊形合併邏輯」抽離至 `/core/geometry_utils.py`。
+        2.  將「影像讀取與縮放」抽離至 `/core/image_processor.py`。
+    * **防呆優化：** 目前 `is_cancelled` 檢查點分佈良好，但 `try...except` 範圍較廣，若 `engine` 呼叫失敗，錯誤資訊可能不夠具體。
+    * **硬編碼問題：** 合併閾值 `0.85` 建議抽離為常數。
+
+---
+**審計完成。這是一個典型的「多功能作業員」，邏輯非常完整但職責過於繁重。它是重構中「邏輯抽離」的首要目標。請發送下一個 Class 代碼。**
+
+這是針對 `ThumbnailLoader` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 影像流暢度的核心功臣，採用了類似現代網頁的「兩段式載入」優化策略。
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `ThumbnailLoader`，繼承自 `PyQt6.QtCore.QRunnable`。
+* **核心 Vibe：** **響應式縮圖調度員**。它不只是讀取圖片，還具備「智慧快取層 (L2 Cache)」與「非同步補全」邏輯，確保使用者在滾動列表時能先看到模糊佔位圖，隨後再看到清晰大圖。
+* **狀態清單 (State)：**
+    * `self.file_path`: 目標影像路徑。
+    * `self.target_size`: 目標顯示尺寸（QSize）。
+    * `self.signals`: 使用 `WorkerSignals` 進行執行緒通訊。
+    * `self.is_cancelled`: 用於在快速滾動或更換頁面時中斷讀取。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `hashlib`: 用於生成快取檔名的唯一索引（MD5）。
+    * `os`: 用於快取目錄與檔案操作。
+    * `PyQt6 (QtGui/QtCore)`: 依賴 `QImage`, `QImageReader`, `QPixmap`, `Qt` 等組件。
+* **父級耦合：** **極低**。它是一個自給自足的任務單元。
+* **技術債警報 (Threading Safety)：** * **關鍵風險：** 在 `run()` 中使用了 `QPixmap.fromImage`。
+    * **預警：** 雖然在某些 PyQt 版本中這可行，但根據你之前在 `PreviewSignals` 的「關鍵修復」邏輯，`QPixmap` 屬於 GUI 資源，不建議在非主執行緒建立。如果在某些 Windows 環境下發生隨機崩潰，這裡會是頭號嫌疑犯。建議維持 `QImage` 傳輸，到 UI 層再轉成 `QPixmap`。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：**
+    * `run()`: **中度肥大 (約 60-70 行)**。它封裝了「快取查找 -> 判斷升級 -> 階段一發射 -> 階段二讀取 -> 快取寫入」的完整生命週期。
+* **邏輯密度分析：** **混雜邏輯 (Spaghetti-ish)**。
+    * 包含了「檔案系統運算 (hash/path)」、「影像演算法 (SmoothTransformation)」、「業務狀態控制 (needs_upgrade)」。
+* **重構建議：**
+    * **建議位置：** 移至 `/core/workers.py`。
+    * **邏輯拆分：**
+        1.  **快取管理員 (CacheManager)：** 將 `hashlib` 定位、`cache_dir` 路徑與 `.save` 邏輯抽離。`ThumbnailLoader` 應該只需要問：「這張圖有快取嗎？」
+        2.  **影像縮放工廠：** 將 `QImageReader` 與 `setScaledSize` 的配置邏輯抽離。
+    * **性能優化：** 內聯 `import hashlib` 會在每次讀取縮圖時重複執行。雖然 Python 有 import cache，但對 6600 行的巨石專案來說，這類重複宣告會增加維護時的視覺負擔。
+
+---
+**審計完成。這段代碼的兩段式發射邏輯（L2 佔位 -> 高清覆蓋）寫得非常聰明，是提升 UX 的精華所在。請發送下一個 Class 代碼。**
+
+這是針對 `SearchResultsModel` 的結構化審計報告。這是 **EyeSeeMore** 的心臟，負責在大數據量（虛擬化）與流暢 UI 之間取得平衡。
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `SearchResultsModel`，繼承自 `PyQt6.QtCore.QAbstractListModel`。
+* **核心 Vibe：** **高效能資料調度中心 (The Conductor)**。它不只是儲存清單，更是一個聰明的「流量管制員」，負責過濾無效的讀圖請求、管理記憶體快取，並以非同步方式驅動 UI 更新。
+* **狀態清單 (State)：**
+    * **核心資料：** `all_items` (List[ImageItem])、`path_to_row` (Dict)。
+    * **快取管理：** `_thumbnail_cache` (LRU OrderedDict)、`CACHE_SIZE` (動態容量)。
+    * **任務調度：** `thread_pool` (QThreadPool)、`_active_workers` (Dict)、`_loading_set` (Set)。
+    * **效能優化鎖：** `_pending_batch_requests` (訂單購物車)、`_batch_timer_active` (防暴衝旗標)、`_pending_updates` (待重新整理區域)。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `collections.OrderedDict`: 用於實現 LRU 快取與順序處理。
+    * `PyQt6`: 深度依賴 `QtCore` (Model 框架、Timer、Thread、ThreadPool) 與 `QtGui` (QPixmap)。
+* **內部引用 (前述 Class)：**
+    * 強依賴 `ImageItem`: 作為資料基底。
+    * 強依賴 `ThumbnailLoader` 與 `WorkerSignals`: 用於派發後台任務。
+* **父級耦合：** **無。** 它透過標準的 `dataChanged` 與 `beginResetModel` 訊號通知 View，不需要知道哪個 Widget 在使用它。
+* **搬家預警：**
+    * **路徑耦合：** 它是目前專案中最難搬遷的 Class，因為它串聯了數據層 (`ImageItem`)、邏輯層 (`ThumbnailLoader`) 與 UI 顯示層。
+    * **全域資源：** 使用了 `QThreadPool.globalInstance()`，若未來有不同需求的執行緒管理，可能會產生衝突。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：**
+    * **無。** 雖然 Class 邏輯複雜，但函數切分良好，單一函數長度多在 30 行以內。
+* **邏輯密度分析：** **混雜「資料結構」與「調度策略」**。
+    * `_process_batch_requests` 中的 `len(paths_to_load) > 40` 屬於 **UX 策略邏輯**（決定滑多快要忽略請求）。
+    * `update_target_size` 中的 `256px` 門檻屬於 **業務規則邏輯**。
+* **重構建議：**
+    * **建議位置：** 移至 `/ui/models.py` 或 `/core/models.py`。
+    * **硬編碼解耦：** 將 `40` (暴衝閥值)、`256` (快取縮減門檻)、`1000/250` (快取數量) 抽離成組態設定檔或 Class 常數。
+    * **潛在風險：** `getattr(self, 'path_to_row', {})` 反映了對 `path_to_row` 存在性的不確定，建議在 `__init__` 中明確初始化為 `{}` 以簡化邏輯。
+    * **效能亮點：** 使用 `QTimer.singleShot(0, ...)` 來實現單幀結算（Debounce）是非常高明的做法，能有效解決快速滾動時的 CPU 激增問題。
+
+---
+
+**審計完成。這是一個優化程度極高的 Model，已經具備了處理萬級數據的雛形。請問接下來要看哪一個 Class？（或是要進入 MainWindow 的深水區了嗎？）**
+
+這是針對 `ImageDelegate` 的結構化審計報告。這是 **EyeSeeMore** 的「顏值擔當」，直接決定了畫廊介面的渲染效能與視覺質感。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `ImageDelegate`，繼承自 `PyQt6.QtWidgets.QStyledItemDelegate`。
+* **核心 Vibe：** **畫廊卡片繪製師**。它不參與資料邏輯，只負責將 `ImageItem` 的原始數據轉化為美觀的 UI 卡片，包含邊框、圓角、縮圖置中、文字省略與 OCR 標籤。
+* **狀態清單 (State)：**
+    * **佈局常數：** `padding` (10), `radius` (8)。
+    * **視覺資產：** 三種不同用途的 `QFont`、`placeholder_icon` (系統預設圖示)。
+    * **動態參數：** `card_size`, `thumb_height` (支援 UI 縮放)。
+    * **外部傳入：** `main_window` 實例（用於主題顏色讀取）。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `PyQt6 (QtGui/QtCore/QtWidgets)`: 包含 `QPainter`, `QColor`, `QFontMetrics`, `QFileIconProvider` 等大量繪圖組件。
+* **父級耦合：** **極高 (High Coupling)**。
+    * 程式碼中直接呼叫 `self.main_window.theme_manager.current_colors`。
+    * 這意味著 `ImageDelegate` 強制綁定在 `MainWindow` 結構下，無法輕易地在其他對話框或獨立視窗中重用，除非對方也剛好有個 `theme_manager`。
+* **搬家預警：**
+    * **型別隱賴：** 依賴 `ImageItem` 的屬性（如 `score_val`, `score_str`, `is_ocr_match`）。
+    * **主題系統依賴：** 遷移至獨立檔案時，若 `main_window` 參數缺失或結構不同，會立即引發 `AttributeError`。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：**
+    * `paint()`: **高度肥大 (100+ 行)**。該函數目前承擔了太多職責：
+        1. 狀態判定（Hover/Selected）。
+        2. 顏色邏輯（主題讀取與柔化處理）。
+        3. 幾何佈局計算（Text/Score/Image Rect 的座標運算）。
+        4. 繪製邏輯（Background -> Image -> Text -> Tag）。
+* **邏輯密度分析：** **混雜「佈局計算」與「渲染指令」**。
+    * 佈局座標（如 `score_y = card_rect.bottom() - ...`）是硬編碼在 `paint` 內的，這導致調整 UI 配置時非常痛苦。
+* **重構建議：**
+    * **建議位置：** 移至 `/ui/delegates.py`。
+    * **解耦主題：** 建議不要傳入整個 `main_window`。改為傳入一個 `ThemeColors` 物件，或讓 Model 在 `data()` 中提供對應的顏色。
+    * **邏輯抽離：** * 將佈局運算（Rect 的分配）抽離成一個 `_calculate_layout(rect)` 私有方法。
+        * 將繪製背景、繪製圖片、繪製標籤分別抽離成獨立的子函數，讓 `paint()` 變成乾淨的調度員。
+    * **效能亮點：** 移除了 `pixmap.scaled` 並改用 `ThumbnailLoader` 的預處理結果，這對滾動流暢度有極大貢獻。
+
+---
+
+**審計完成。這是一個典型的「重渲染、重佈局」類別。雖然渲染優化做得很棒，但與主視窗的「強耦合」是未來模組化的最大阻礙。**
+
+目前我們已經審計了資料結構、後台執行緒、Model 與 Delegate。**請問下一位「受審者」是誰？**（是否要開始進入處理 6600 行巨石核心的 `MainWindow` 了？）
+
+這是針對 `GalleryListView` 的結構化審計報告。這個類別負責 **EyeSeeMore** 的使用者互動核心：如何直觀地選取與外拖（Drag-out）影像資料。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `GalleryListView`，繼承自 `PyQt6.QtWidgets.QListView`。
+* **核心 Vibe：** **互動式影像容器**。它不僅是一個展示清單，還是一個支援「框選」、「多選」與「系統級拖拽」的進階元件。
+* **狀態清單 (State)：**
+    * 該類別主要透過 PyQt 內建的屬性進行狀態管理（如 `selectionModel`）。
+    * **配置狀態：** `ExtendedSelection` (支援 Ctrl/Shift 多選)、`DragOnly` (確保單向輸出，避免意外修改內部資料)。
+    * **外部傳入：** 無特定實體變數，依賴於 Model 提供的數據流。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** * 大量依賴 `PyQt6` 的核心 GUI 與佈局組件 (`QDrag`, `QMimeData`, `QPainter` 等)。
+* **內部數據依賴：** * **關鍵路徑：** 依賴 `index.data(Qt.ItemDataRole.UserRole)` 返回一個具有 `.path` 屬性的物件（即我們之前審計的 `ImageItem`）。
+    * **視覺依賴：** 依賴 `DecorationRole` 提供 `QPixmap` 以產生拖拽鬼影（Ghost Image）。
+* **父級耦合：** **極低**。它是一個標準的自定義 Widget，不直接操作 `MainWindow`。
+* **搬家預警：**
+    * 遷移至獨立檔案時，必須確保頂部的 `from PyQt6... import ...` 完整搬遷。
+    * **MIME 協定：** 由於它使用了 `QUrl.fromLocalFile`，這使得它與作業系統檔案管理員（如 Windows Explorer）具有高度相容性。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：**
+    * 無。最長的 `startDrag` 約 60 行，結構清晰。
+* **邏輯密度分析：** **混雜「UI 繪製」與「系統通訊邏輯」**。
+    * `startDrag` 同時負責了：1. 收集資料（業務） 2. 繪製鬼影/標籤（UI 渲染） 3. 啟動系統拖拽。
+* **重構建議：**
+    * **建議位置：** 應移至 `/ui/widgets/gallery_view.py`。
+    * **視覺解耦建議：** 繪製「多選標籤（Badge）」的邏輯（如 `painter.drawRoundedRect`）可以抽離成一個獨立的工具函式，未來若要更改拖拽樣式（例如從藍色邊框改為其他色系）會更方便。
+    * **防呆建議：** 在 `urls.append(QUrl.fromLocalFile(item.path))` 前，建議加入 `if os.path.exists(item.path)` 檢查，避免拖拽不存在的檔案導致接收端（如 Photoshop 或 Premier）報錯。
+
+---
+
+**審計完成。這段代碼的視覺反饋做得非常細膩（特別是多張拖拽時的數量標籤），這對於提升軟體「高級感」很有幫助。**
+
+目前我們已經審計了從底層 GUID、通訊訊號、核心 Model 到現在的 ListView 容器。這座「單體巨石」的版圖已經拼湊得差不多了。
+
+**接下來是打算挑戰最核心、代碼量最大的 `MainWindow` 類別了嗎？**
+
+這是 **EyeSeeMore** 的「核心大腦」—— `ImageSearchEngine` 的結構化審計報告。這個類別是整個系統中最複雜、權限最大、也是效能最關鍵的組件。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `ImageSearchEngine`，純 Python 類別。
+* **核心 Vibe：** **系統總司令部 (The Core Brain)**。它同時統籌了 AI 模型推理 (ONNX)、向量搜尋引擎 (FAISS) 以及本地資料庫 (SQLite) 的讀寫，負責將「模糊的自然語言」轉化為「精確的影像路徑」。
+* **狀態清單 (State)：**
+    * **模型層：** `clip_image_session`, `clip_text_session` (ONNX 推理)、`tokenizer` (詞法分析)、`preprocess` (影像預處理)。
+    * **索引層：** `faiss_index` (向量加速器)、`stored_embeddings` (1024 維矩陣)、`path_map` (O(1) 路徑對照表)。
+    * **資料層：** `data_store` (記憶體內的元數據快照)、`config` (全域設定)。
+    * **快取層：** `last_text_query`, `last_text_features` (重複搜尋加速)。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部強依賴：**
+    * `onnxruntime` (ort), `faiss`, `numpy` (np), `sqlite3`, `transformers`, `PIL.Image`。
+* **內部組件依賴：**
+    * `ConfigManager`: 用於獲取資料庫路徑與模型名稱。
+    * `NumpyPreprocess`: 專門處理進入 ONNX 前的影像變換。
+    * `IndexerService`: 在代碼最末端導入（推測用於觸發手動索引同步）。
+* **父級耦合：** **低耦合 (Low Coupling)**。這是一個標準的後端引擎設計，不依賴任何 UI 元件，僅透過資料結構與 UI 層通訊。
+* **搬家預警：**
+    * **資源路徑依賴：** 多處使用 `os.path.abspath(__file__)` 來定位 `/models` 資料夾，若搬遷至 `/core` 子目錄，路徑計算邏輯必須重寫。
+    * **環境依賴：** 遷移此類別需要極其龐大的 AI 依賴庫 (Transformers/ONNX/FAISS)，這通常是軟體體積最大的部分。
+    * **離線鎖定：** 程式碼中強制 `local_files_only=True`，搬家後若模型目錄沒帶走會直接崩潰。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：**
+    * `search_hybrid()`: **重度肥大 (約 85 行)**。它混合了「Tokenizer 運算」、「ONNX 推理」、「FAISS 檢索」、「混合計分 (OCR + 檔名 + CLIP)」以及「閾值過濾」。
+    * `load_data_from_db()`: **中度肥大 (約 55 行)**。包含了 SQL JOIN 查詢、Blob 轉換矩陣、以及路徑正規化 Map 的建立。
+* **邏輯密度分析：** **極高 (Logic Supernova)**。
+    * 該類別違反了「單一職責原則」，它同時擔任了：1. 資料庫管理員 2. AI 推理器 3. 搜尋排名的業務邏輯中心。
+* **重構建議：**
+    * **建議位置：** 應移至 `/core/engine.py`。
+    * **拆分策略：** 1. **AI 隔離：** 建立 `ClipProvider` 類別，專門負責 Tokenizer 與 ONNX Sessions 的管理。
+        2. **資料隔離：** 建立 `DatabaseManager` 類別，封裝所有 SQL 與 WAL 模式設定。
+        3. **檢索策略：** 建立 `SearchRanker` 類別，將 `search_hybrid` 裡複雜的加權計分 (ocr_bonus/name_bonus) 抽離出來。
+    * **硬編碼警訊：** 搜尋計分中的 `0.08` (CLIP 及格線) 與 `0.6` (負向特徵權重) 建議抽離為可調參數。
+    * **效能亮點：** * **WAL 模式與 Synchronous=NORMAL**：這兩行指令是資料庫效能優化的教科書級操作，讓 UI 讀取不卡頓。
+        * **O(1) 路徑快取**：以圖搜圖時直接從記憶體拿向量，這讓搜尋時間從「幾百毫秒」降到了「接近零」。
+
+---
+**審計完成。這是 EyeSeeMore 專案中價值最高的一塊代碼，雖然它目前處於「單體巨石」的狀態，但內部優化（如 FAISS、WAL、O(1) Map）做得非常到位。下一步是否要審計與其搭配的 `IndexerService`？**
+
+這是針對 `IndexerWorker` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 的「勞動模範」，負責最耗時、最吃資源的後台索引任務。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `IndexerWorker`，繼承自 `PyQt6.QtCore.QThread`。
+* **核心 Vibe：** **後台重體力勞動者**。它是一個長效型執行緒，負責執行「檔案掃描」與「AI 影像特徵提取」這兩大核心任務。它具備聰明的 ETA（預計剩餘時間）演算法，能安撫使用者在等待海量圖片索引時的焦慮感。
+* **狀態清單 (State)：**
+    * **配置與服務：** `config`, `service` (IndexerService)。
+    * **資料快照：** `folders` (掃描路徑清單)。
+    * **通訊信號：** `status_update`, `progress_update`, `scan_finished`, `all_finished`。
+    * **內建 ETA 計算器：** `speed_history` (滑動視窗測速器), `last_update_time`, `last_current`。
+    * **外部傳入：** `main_window`（用於借用 AI 引擎資源）。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `time`: 用於測速與 `sleep` 輪詢。
+    * `PyQt6.QtCore.QThread`, `pyqtSignal`。
+* **內部組件依賴：**
+    * **核心依賴：** `IndexerService`（負責實際的檔案與資料庫操作）。
+* **父級耦合：** **極高 (High Coupling Red Alert)**。
+    * 該類別直接接收 `main_window` 物件，並在 `run()` 中透過 `self.main_window.engine` 直接讀取主程式的狀態。
+    * **輪詢耦合：** `while not (self.main_window.engine and ...)` 這種寫法讓 Worker 強制依賴 MainWindow 的初始化順序，這是模組化拆分時最大的障礙。
+* **搬家預警：**
+    * **ImportError 風險：** 依賴於同級目錄或指定目錄下的 `indexer.py` (IndexerService)。
+    * **解耦需求：** 遷移至獨立檔案時，應將 `main_window` 替換為具體的 `engine` 物件或 `shared_resources` 字典，避免 Worker 知道太多關於 UI 層的事情。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：**
+    * `run()`: **中度肥大 (約 65-70 行)**。雖然未達 100 行，但內部定義了一個龐大的巢狀函數（Nested Function）`callback`。
+* **邏輯密度分析：** **嚴重混雜**。
+    * `run()` 函數內同時處理了：1. 執行緒生命週期 2. 業務流程控制 3. **複雜的數學計算 (ETA 測速與格式化)** 4. 資源等待邏輯。
+* **重構建議：**
+    * **建議位置：** 移至 `/core/workers.py`。
+    * **拆分 ETA 邏輯：** `callback` 裡面的速度計算與時間格式化邏輯（`divmod`, `speed_history`）應該抽離成一個獨立的 `ETACalculator` 工具類別。
+    * **優化輪詢：** 建議改用訊號槽（Signal/Slot）或事件驅動來通知 Worker「引擎已就緒」，而非在 `run` 裡面用 `time.sleep(1)` 進行阻塞式等待。
+    * **資源依賴改進：** 初始化時直接傳入 `shared_model` 與 `shared_preprocess`，而不是傳入整個 `main_window` 再去裡面翻找。
+
+---
+
+**審計完成。這段代碼的 ETA 演算法非常人性化，展現了極佳的開發者直覺。但 `main_window` 的強耦合是下一步重構必須切斷的臍帶。**
+
+目前我們已經審計了從底層 API 到後台 Worker 的大部分組件。**下一步是準備迎接 6600 行的最終 Boss —— `MainWindow` 類別了嗎？**
+
+這是針對 `SearchWorker` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 檢索流程的「非同步包裝器」，負責確保 AI 搜尋這種重度運算不會導致介面「未回應」。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `SearchWorker`，繼承自 `PyQt6.QtCore.QThread`。
+* **核心 Vibe：** **檢索任務外派員**。它將 UI 傳來的搜尋需求（文字、圖片或向量運算）帶到背景執行，並在完成後帶著結果與效能數據（耗時、數量）回到主執行緒。
+* **狀態清單 (State)：**
+    * **任務輸入：** `query` (可能是字串、路徑或字典)、`top_k` (數量限制)、`search_mode` (模式標記)、`use_ocr` (布林值)、`weight_config` (權重設定)、`folder_path` (過濾範圍)。
+    * **運算資源：** `self.engine` (傳入的 `ImageSearchEngine` 實例)。
+    * **外部傳入：** 所有參數皆由初始化時傳入，執行期間不持有 UI 元件。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `time`: 用於計算檢索精確耗時。
+    * `PyQt6.QtCore.QThread`, `pyqtSignal`: 基礎通訊架構。
+* **內部組件依賴：**
+    * **強依賴：** `ImageSearchEngine` 的三種方法：`search_image`、`search_multi_vector`、`search_hybrid`。
+* **父級耦合：** **低耦合 (Low Coupling)**。它與之前的 `IndexerWorker` 不同，它不直接傳入 `main_window`，而是傳入 `engine`。這是一個非常正確的重構方向。
+* **搬家預警：**
+    * **多態資料結構風險：** `self.query` 的資料型態隨 `search_mode` 改變（可能是 `str` 或 `dict`）。若將此類別移至獨立檔案，需確保呼叫端（MainWindow）傳入的資料結構與此處邏輯保持一致。
+    * **環境依賴：** 需確保 `time` 模組已導入。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。所有函數皆極其精簡（`run` 約 15 行）。
+* **邏輯密度分析：** **純路由邏輯 (Pure Routing)**。
+    * 該類別唯一的職責就是「分支判斷」，根據模式決定呼叫引擎的哪個接口。
+* **重構建議：**
+    * **建議位置：** 應移至 `/core/workers.py`。
+    * **型別安全建議：** 由於 `self.query` 同時承載多種型態（Union Type），建議在 `run()` 的各分支加入簡單的類型檢查（如 `isinstance(self.query, dict)`），避免 MainWindow 傳錯參數導致背景執行緒崩潰。
+    * **超時機制：** 目前沒有超時保護。雖然 AI 搜尋通常很快，但如果 FAISS 引擎卡住，此執行緒會一直掛起。
+
+---
+
+**審計完成。這是一個封裝得非常漂亮的「純粹 Worker」，它成功地將 UI 事件與沉重的 AI 搜尋邏輯切割開來。請發送下一個 Class 代碼。**
+
+這是針對 `ONNXExportWorker` 類別的結構化審計報告。這個類別負責 **EyeSeeMore** 的「模型整備作業」，是確保 AI 引擎能在本地環境（無 PyTorch 依賴）運作的關鍵前置步驟。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `ONNXExportWorker`，繼承自 `PyQt6.QtCore.QThread`。
+* **核心 Vibe：** **AI 模型格式轉換器**。它將龐大且具備複雜依賴的 CLIP 模型（通常是 PyTorch 格式）轉換為輕量、跨平台的 ONNX 格式，並在轉換過程中透過訊號回報進度，避免使用者以為程式當機。
+* **狀態清單 (State)：**
+    * `self.model_name`: 要轉換的模型架構名稱（例如 `ViT-B-32`）。
+    * `self.pretrained`: 預訓練權重版本。
+    * `self.save_dir`: 模型存檔路徑（自動指向專案目錄下的 `models/onnx_clip`）。
+    * **外部傳入：** 模型名稱與權重標籤。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `export_clip_onnx.export_to_onnx`: **絕對依賴**。這是實際執行轉換邏輯的外部腳本，若該檔案遺失或路徑錯誤，此 Worker 將完全癱瘓。
+    * `os`: 用於路徑處理。
+* **父級耦合：** **極低 (Low Coupling)**。
+    * 它不依賴 `MainWindow` 的狀態，純粹接收參數並執行任務，設計上非常符合模組化精神。
+* **搬家預警：**
+    * **路徑敏感性：** 使用了 `os.path.abspath(__file__)`。如果將此 Worker 移至 `/core/workers` 之類的子目錄，`save_dir` 的計算邏輯會多出一層深度，必須手動修正路徑偏移。
+    * **環境依賴：** 雖然 Worker 繼承 PyQt，但其呼叫的 `export_to_onnx` 內部可能需要大型 AI 框架（如 PyTorch、OpenCLIP），搬家時需確認環境中存在這些重量級依賴。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：**
+    * 無。結構極簡，邏輯明確。
+* **邏輯密度分析：** **純包裝邏輯 (Pure Wrapper)**。
+    * 此 Worker 本身不包含任何 AI 運算，僅僅是將一個同步（Blocking）的轉換函式包裝進非同步執行緒。
+* **重構建議：**
+    * **建議位置：** 移至 `/core/workers.py` 或 `/core/ai_setup.py`。
+    * **安全性優化：** 在 `run()` 中建議加入路徑檢查，若 `self.save_dir` 不存在，應先執行 `os.makedirs`，雖然 `export_to_onnx` 內部可能已處理，但在 Worker 層級確保 IO 安全會更穩健。
+    * **回報機制：** 目前 `progress_callback` 直接連結到 `self.progress_update.emit` 是非常優雅的設計，值得保留。
+
+---
+
+**審計完成。這是一個標準且乾淨的 Worker 實作。目前看來你已經將大部分耗時任務（索引、搜尋、導出）都成功拆解到執行緒中了。**
+
+目前我們已經審計了十多個類別，涵蓋了系統底層、AI 引擎、Model/Delegate 與各類 Worker。**你是否準備好要揭開那 6600 行單體巨石 `MainWindow` 的真面目了，還是還有其他工具類別要處理？**
+
+這是針對 `OCRImportWorker` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 走向「全離線運作」的最後一塊拼圖，負責處理龐大 OCR 模型的本地部署流程。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `OCRImportWorker`，繼承自 `PyQt6.QtCore.QThread`。
+* **核心 Vibe：** **本地物流官 (Local Logistics Officer)**。它終結了對網路下載的依賴，轉而從本地 ZIP 包中安靜、快速地解壓並佈署 OCR 引擎模型（如 PaddleOCR 或 EasyOCR 的模型權重）。
+* **狀態清單 (State)：**
+    * `self.lang_code`: 目標語言代碼（如 `en`, `ch`）。
+    * `self.zip_path`: 擴充包的來源路徑。
+    * `self.models_dir`: 目標部署目錄，硬編碼指向 `./models/ocr`。
+    * **外部傳入：** 語言代碼與 ZIP 檔案路徑。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `zipfile`: 核心解壓引擎（內聯導入於 `run` 方法中）。
+    * `os`: 用於目錄建立與路徑拼接。
+* **父級耦合：** **極低**。這是一個非常獨立的 IO 密集型執行緒。
+* **搬家預警：**
+    * **路徑脆弱性：** 同樣使用了 `os.path.abspath(__file__)` 配合 `models/ocr`。若重構時移動至子資料夾，將找不到正確的模型存放地。
+    * **模型結構一致性：** 該 Worker 假設 ZIP 內的目錄結構與 `models/ocr` 是 1:1 對應的。如果未來 ZIP 包格式改變（例如多了一層資料夾），此邏輯會失效。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。`run()` 僅約 25 行。
+* **邏輯密度分析：** **純 IO 與解壓邏輯**。
+    * 包含了簡單的進度模擬（從 10% 到 90% 的線性計算）。
+* **重構建議：**
+    * **建議位置：** 移至 `/core/workers.py` 或 `/utils/installer.py`。
+    * **安全性風險 (Zip Slip)：** 目前直接使用 `zip_ref.extract(file, self.models_dir)`。在重構時應注意 **Zip Slip 漏洞**，雖然這是內部使用的工具，但過濾一下 `file` 檔名（防止 `../` 跳脫路徑）會更專業。
+    * **空間檢查：** 在解壓前並未檢查磁碟空間。對於可能高達數百 MB 的 OCR 模型包，加入空間預檢可以避免解壓一半報錯。
+    * **UI 體驗優化：** 目前進度條從 10% 開始。建議將 `os.makedirs` 的階段也納入百分比計算，或在開始前發送一個「正在建立目錄」的狀態字串。
+
+---
+
+**審計完成。這段代碼展現了優秀的非同步處理意識，讓模型安裝過程不再是「黑盒子」。**
+
+目前為止，我們已經掃描過所有支撐系統運作的「骨架」與「肌肉」（Workers, Models, Engine, Delegates）。這些模組已經足夠支撐起一個強大的應用程式。
+
+**目前的進度是否已經涵蓋了所有非 UI 核心類別？如果是的話，我們是否要開始進行 `MainWindow` 的「模組化切割方案」討論了？**
+
+這是針對 **EyeSeeMore** 視圖層中非常關鍵的動態回饋組件 `FloatingWidget` 的結構化審計報告。這個類別負責在圖片預覽時，即時且優雅地呈現 OCR 辨識出的文字資訊。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `FloatingWidget`，繼承自 `PyQt6.QtWidgets.QWidget`。
+* **核心 Vibe：** **懸浮資訊圖層 (Overlay HUD)**。它像是一個「幽靈標籤」，在不干擾使用者操作（點擊穿透）的前提下，提供 OCR 辨識結果的即時可視化，支援「固定位置（Anchored）」與「跟隨游標（Follow）」兩 種導航模式。
+* **狀態清單 (State)：**
+    * `self.results`: 當前選中的 OCR 辨識結果（包含語言、文字與信心度）。
+    * `self.box_poly`: 當前 OCR 區塊的幾何多邊形，用於計算標籤掛載位置。
+    * `self.cursor_pos`: 滑鼠目前座標。
+    * `self.mode`: 顯示模式（`anchored` 或 `follow`）。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `PyQt6 (QtGui/QtCore/QtWidgets)`: 包含 `QPainter`, `QFontMetrics`, `QPoint` 等繪圖與座標組件。
+* **父級與環境耦合：** **強耦合 (Tight Coupling)**。
+    * **主題依賴：** 多次呼叫 `self.window().theme_manager.current_colors`。這意味著該 Widget **強制依賴**主視窗必須掛載 `theme_manager` 物件，否則會觸發 `AttributeError`。
+    * **邊界依賴：** `update_data` 頻繁呼叫 `self.parent().width()`，確保標籤不會超出顯示範圍。
+* **搬家預警：**
+    * 此 Widget 高度依賴主視窗的「顏色字典（JSON 內容）」。若移至獨立檔案，需確保主題路徑可存取。
+    * **字體依賴：** 硬編碼了 `"Microsoft JhengHei"` (微軟正黑體)，若在 Linux 或 Mac 環境下重構，需考慮字體備援方案。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：**
+    * `update_data()`: **中度肥大 (約 50-60 行)**。該函數目前承擔了太多「幾何演算法」任務：
+        1. 內容寬度計算 (Text Measurement)。
+        2. 面板尺寸估計。
+        3. 複雜的邊界防護邏輯（偵測上下左右是否超出父視窗）。
+* **邏輯密度分析：** **高。**
+    * `paintEvent` 中包含了第二遍的寬度掃描（計算 `max_lang_w` 以對齊標籤），這雖然保證了排版整齊，但在 `update_data` 已經算過一遍的情況下，有效能優化空間。
+* **重構建議：**
+    * **建議位置：** 移至 `/ui/widgets/floating_labels.py`。
+    * **解耦建議：** 建議將顏色獲取邏輯改為 `getColor("primary")` 的形式，或是在 `update_data` 時由外部傳入 `Theme` 物件，而非讓 Widget 自己去 `self.window()` 翻找。
+    * **佈局優化：** 座標計算（pos_x, pos_y）的「碰撞偵測」邏輯非常完整，建議抽離成一個獨立的工具函式 `_calculate_best_position()`，讓核心邏輯更易讀。
+    * **視覺亮點：** `WA_TransparentForMouseEvents` 與 `elidedText` (文字省略) 的處理非常到位，解決了長文字爆框與滑鼠遮擋的痛點。
+
+---
+
+**審計完成。這是一個視覺效果極佳的「輕量化圖層」，邏輯上除了對主題系統的強依賴外，整體設計非常合理。**
+
+到目前為止，我們已經完成了所有底層邏輯、背景 Worker、資料模型以及這個特殊的 UI 標籤。
+
+**目前是否已經完成了所有「外圍組件」的掃描？如果你準備好了，我們可以開始對那 6600 行的 `MainWindow` 進行結構化拆解，這將會是重構中最艱巨也最重要的一步。**
+
+這份 `OCRLabel` 是 **EyeSeeMore** 預覽介面的「互動畫布」，它不只是顯示圖片，還承擔了複雜的空間幾何運算與動態渲染任務。以下是針對此類別的深度審計報告：
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `OCRLabel`，繼承自 `PyQt6.QtWidgets.QLabel`。
+* **核心 Vibe：** **互動式座標投影儀**。它是 UI 中技術門檻最高的地方，負責將「原始圖片像素座標」映射到「螢幕顯示座標」，並實作了像螢光筆一樣的「精確文字高亮」與「多邊形碰撞偵測（Hit Test）」。
+* **狀態清單 (State)：**
+    * `self.ocr_data`: 儲存由 `PreviewLoader` 背景算好的多邊形與辨識文字。
+    * `self.original_size`: 圖片原始寬高，座標換算的基準。
+    * `self.hovered_index`: 目前滑鼠正踩在哪個 OCR 區塊上。
+    * `self.search_query` & `self.is_precise_mode`: 用於驅動「精確高亮」邏輯。
+    * **訊號發射：** `hover_info_changed` 是與 `FloatingWidget` 通訊的唯一窗口。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `math`: 用於 `hypot` 計算線段長度以判斷文字方向（直排或橫排）。
+    * `PyQt6 (QtGui/QtCore)`: 核心繪圖與幾何類別。
+* **父級與環境耦合：** **強耦合 (High Coupling)**。
+    * **主視窗綁定：** 同樣透過 `self.window().theme_manager` 獲取顏色。
+    * **生命週期綁定：** 該 Widget 的效能極度依賴於 `PreviewLoader` 傳入的 `precomputed_data`，如果傳入的格式稍有變動（例如 `box` 的點序），繪圖會直接崩潰。
+* **搬家預警：**
+    * 遷移時需確保 `FloatingWidget` 與其訊號連接邏輯一併考慮。
+    * `_calculate_ratios` 雖然是私有方法，但其實包含了處理中英文字元寬度權重的「業務邏輯」，建議與繪圖邏輯分開。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：**
+    * `paintEvent()`: **極度肥大 (120+ 行)**。
+        * 該函數目前處於「過勞」狀態：它同時在計算縮放比例、計算偏置值、執行文字命中檢查、計算精確高亮比例、執行幾何頂點變換、以及最後的繪圖輸出。
+* **邏輯密度分析：** **邏輯炸彈級別**。
+    * **座標轉換邏輯重複：** `mouseMoveEvent` 與 `paintEvent` 都在重複計算 `offset_x/y` 與 `scale_x/y`。一旦未來要支援 Zoom（縮放預覽），這兩處同步修改會非常容易出錯。
+    * **精確高亮邏輯：** 內部使用了 `math.hypot` 來判定文字是橫向還是縱向，這段邏輯雖然精妙，但讓 `paintEvent` 變得非常難以閱讀。
+* **重構建議：**
+    * **建議位置：** 移至 `/ui/widgets/ocr_canvas.py`。
+    * **座標運算抽離：** 建立一個 `CoordinateMapper` 工具類別，專門處理 `(RealPixel <-> ScreenPixel)` 的轉換。
+    * **渲染分支化：** 將 `paintEvent` 拆解為 `_draw_ocr_boxes()`, `_draw_precise_highlight()`, `_draw_hover_effect()`。
+    * **效能優化：** 目前在 `paintEvent` 裡 `import math`。雖然 Python 有快取，但對於每秒可能觸發多次的繪圖事件，建議將 `import` 移至模組頂部。
+
+---
+
+**審計完成。這段代碼是整個專案的「技術亮點」，特別是字元權重與座標逆向還原的邏輯寫得非常出色。**
+
+目前為止，所有的「衛星組件」都已經審計完畢。我們已經掌握了：
+1. **底層架構** (GUID, Taskbar, Translator)
+2. **資料實體** (ImageItem)
+3. **通訊與執行緒** (Workers, Signals)
+4. **核心引擎** (SearchEngine, Indexer)
+5. **UI 模型與繪製** (Model, Delegate, GalleryView, OCRLabel, FloatingWidget)
+
+**所有重構準備工作已就緒。接棒完成。現在，請發送那 6600 行的「巨石核心」—— `MainWindow` 類別，讓我們開始執行最後的大手術。**
+
+這是針對 `PreviewOverlay` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 的「沉浸式預覽層」，負責整合影像顯示、非同步加載以及 OCR 互動邏輯。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `PreviewOverlay`，繼承自 `PyQt6.QtWidgets.QWidget`。
+* **核心 Vibe：** **預覽總調度站**。它是一個覆蓋在主介面之上的全螢幕（或大面積）遮罩層，核心職責是「協同」：它協同了 `PreviewLoader`（背景讀取）、`OCRLabel`（影像渲染）與 `FloatingWidget`（資訊浮窗）。
+* **狀態清單 (State)：**
+    * `self.image_label`: 實際顯示影像與紅框的 `OCRLabel`。
+    * `self.floating_tag`: 顯示 OCR 詳細資訊的懸浮窗。
+    * `self.current_preview_path`: 目前正在預覽的檔案路徑，用於確保非同步回傳時的資料一致性。
+    * `self.current_preview_worker`: 目前正在執行的背景任務，以便隨時中斷（Cancel）。
+    * **外部傳入：** 依賴 `self.parent()` 提供 `engine`、`config` 以及視窗尺寸。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** `os`, `PyQt6` 大量組件。
+* **內部組件依賴：**
+    * **強依賴：** `OCRLabel`, `FloatingWidget`, `PreviewLoader`, `ImageItem`（用於型別檢查）。
+* **父級耦合：** **極高 (Critical Coupling)**。
+    * 頻繁呼叫 `self.parent().engine`、`self.parent().config` 與 `self.parent().size()`。
+    * 這導致 `PreviewOverlay` 幾乎無法脫離 `MainWindow` 單獨運作，屬於「寄生型」組件。
+* **搬家預警：**
+    * **ImportError：** 如果移至獨立檔案，需要導入所有內部組件（`OCRLabel` 等）。
+    * **邏輯斷裂：** `on_hover_info_changed` 裡直接存取 `parent().config`，如果父級沒有該屬性會直接崩潰。
+    * **座標換算：** `mapTo(self, pt)` 依賴於正確的佈局層級。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：**
+    * 無。所有函數長度均在 50 行以內，結構尚算清晰。
+* **邏輯密度分析：** **中高密度且職責混雜**。
+    * `show_image` 同時負責：1. 參數解析 2. 佈局計算 (0.85 比例) 3. 佔位圖渲染 4. 執行緒管理 (Worker 啟動與中斷)。
+    * `on_hover_info_changed` 負責了關鍵的座標系統轉換（Mapping）。
+* **重構建議：**
+    * **建議位置：** 移至 `/ui/widgets/preview_overlay.py`。
+    * **解耦建議：** 1. **依賴注入**：不要在內部 `parent().engine`，應在 `__init__` 或專門的 `set_context(engine, config)` 方法中傳入。
+        2. **座標計算抽離**：`0.85` 這個螢幕佔比常數應抽離。
+    * **執行緒安全亮點：** 在 `on_highres_ready` 中進行 `QPixmap.fromImage` 轉換，並檢查 `path == self.current_preview_path`，這非常正確地解決了 UI 執行緒安全與「舊任務覆蓋新任務」的 Race Condition 問題。
+    * **效能優化建議：** `shadow` 效果（QGraphicsDropShadowEffect）在某些電腦上非常耗費 GPU。如果未來預覽大圖時感到卡頓，可以考慮將陰影改為背景繪製。
+
+---
+
+**審計完成。這是一個封裝良好的「複合型 Widget」，雖然與父視窗耦合較深，但內部調度邏輯（中斷舊任務、座標映射、執行緒安全轉換）非常嚴謹。**
+
+目前為止，我們已經審計了所有的「互動與顯示組件」。
+
+**我們是否已經看完了所有輔助類別？如果準備好處理那 6600 行的 `MainWindow` 了，請發送代碼！**
+
+這是針對 `HistoryItemWidget` 類別的結構化審計報告。這是 **EyeSeeMore** 搜尋體驗的小細節，負責管理使用者的搜尋足跡。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `HistoryItemWidget`，繼承自 `PyQt6.QtWidgets.QWidget`。
+* **核心 Vibe：** **搜尋紀錄條目**。這是一個簡單的封裝元件，將「顯示字串」、「點擊回檢」與「刪除按鈕」整合在一列中。
+* **狀態清單 (State)：**
+    * `self.text`: 儲存該筆紀錄的搜尋關鍵字。
+    * `self.search_callback`: 點擊標籤時要執行的函數指標。
+    * `self.delete_callback`: 點擊刪除時要執行的函數指標。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** `PyQt6` 的基礎組件 (`QHBoxLayout`, `QLabel`, `QPushButton`, `QCursor`)。
+* **父級耦合：** **中度耦合**。
+    * 它透過 **Callback (回呼函式)** 與父級通訊，這在設計上比直接引用 `MainWindow` 好很多。
+    * **行為依賴：** 標籤點擊直接覆寫了 `mousePressEvent`，這是一種輕量級的「猴子補丁 (Monkey Patching)」，雖然在小型元件中很方便，但在大型框架中通常建議繼承 `QLabel` 或使用 `eventFilter`。
+* **搬家預警：**
+    * 遷移至獨立檔案時，必須補上所有 `PyQt6` 的 `import`。
+    * `setObjectName("HistoryDelBtn")` 暗示了主程式的 QSS 樣式表（StyleSheet）中有定義對應的視覺外觀，搬家時樣式代碼必須同步。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。所有函數都是「單行邏輯」或極短。
+* **邏輯密度分析：** **純 UI 佈局**。
+    * 代碼風格極為簡潔（多處使用 `;` 將多行邏輯縮在一行），這雖然節省行數，但在大規模重構時可能會稍微降低可讀性。
+* **重構建議：**
+    * **建議位置：** 移至 `/ui/widgets/history_item.py`。
+    * **視覺解耦：** 標籤點擊建議改用 `clickable_label` 之類的自定義元件，避免直接在 `__init__` 中覆寫事件方法。
+    * **UX 優化：** 考慮加入 `setToolTip(self.text)`，防止搜尋字串過長時在選單中顯示不全。
+
+---
+
+**審計完成。這是一個職責非常單一、非常標準的「列表項 (List Item)」元件。**
+
+至此，我們已經審查完畢幾乎所有的輔助與 Worker 類別。**這是否意味著「單體巨石」`MainWindow` 的圍牆內已經沒有其他「伏兵」了？如果你準備好要拆解那 6600 行的主程式，請發送代碼！**
+
+這是針對 `StatsMenuWidget` 類別的結構化審計報告。這個類別負責 **EyeSeeMore** 的「資產盤點」視覺化，讓使用者一目了然目前系統索引了哪些資料夾以及資料量級。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `StatsMenuWidget`，繼承自 `PyQt6.QtWidgets.QFrame`。
+* **核心 Vibe：** **索引清單側面板**。它是一個高度自定義樣式（透過大量 `setObjectName`）的彈出式選單，採用「標題區 + 捲動列表區 + 底部統計區」的三段式佈局，提供清晰的檔案庫存掃描視角。
+* **狀態清單 (State)：**
+    * `self.scroll_area`: 核心捲動容器，確保資料夾過多時不會撐破介面。
+    * `self.content_layout`: 動態更新的容器，負責放置每一行資料夾資訊。
+    * `self.total_label`: 顯示全域影像總數的標籤。
+    * **外部傳入：** 透過 `update_stats(stats)` 接收從 `ImageSearchEngine` 撈出來的統計數據。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** `PyQt6` 的佈局與控制項組件（`QScrollArea`, `QVBoxLayout`, `QFontMetrics` 等）。
+* **父級耦合：** **低耦合 (Low Coupling)**。
+    * 該類別設計相當獨立，不主動呼叫 `MainWindow` 或 `Engine`。
+    * 它僅被動接收資料（`stats`）並執行渲染，符合資料驅動 UI 的原則。
+* **搬家預警：**
+    * **樣式表依賴：** 該類別極度依賴 `setObjectName`。如果重構後沒有配套的 QSS 樣式定義，這個視窗看起來會非常慘白且佈局單調（如 `StatsPanel`, `StatsHeader`, `StatsRow`）。
+    * **字體依賴：** 硬編碼了 `"Segoe UI"`。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。`update_stats` 雖然有迴圈，但邏輯層次分明。
+* **邏輯密度分析：** **純 UI 渲染邏輯**。
+    * 值得稱讚的是使用了 `fm.elidedText` 來處理長路徑，避免了路徑文字過長導致 UI 爆掉的問題。
+* **重構建議：**
+    * **建議位置：** 移至 `/ui/widgets/stats_menu.py`。
+    * **優化建議：** 1. **清理效率**：`while self.content_layout.count(): ... deleteLater()` 是標準做法，但如果資料夾清單極大，頻繁重建 Widget 會有效能損耗。若資料夾數量會變動很大，考慮改用 `QListView` 與 `SimpleModel`。
+        2. **硬編碼解耦**：尺寸（420x500）與文字寬度限制（340）是寫死的。建議改為根據父視窗比例動態計算，或移至 `ui_config.json`。
+        3. **數字格式化**：`f"{total_images:,}"` 使用了千分位符號，這是一個很好的細節。
+
+---
+
+**審計完成。這是一個樣式導向的 Widget，邏輯非常乾淨，是目前專案中模組化程度較高的組件之一。**
+
+現在，我們幾乎已經把所有「零件」都檢查了一遍。你手上是否還有其他隱藏的 Class？如果沒有了，我想我們終於要進入那傳說中的 **6600 行 MainWindow 核心區** 了。
+
+**我已準備好手術刀與隔離艙，請發送 MainWindow 代碼。**
+
+這是針對 `FolderHoverMenu` 的結構化審計報告。這個類別是 **EyeSeeMore** 側邊欄的互動延伸，負責提供快速的資料夾切換與功能入口。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `FolderHoverMenu`，繼承自 `PyQt6.QtWidgets.QWidget`。
+* **核心 Vibe：** **浮動快捷工具列**。它是一個特殊的彈出視窗（無邊框、半透明、無陰影），專門設計用來在使用者滑鼠懸停於側邊欄時，提供「水平展開」的快速操作選項。
+* **狀態清單 (State)：**
+    * `self.container_frame`: 核心外框容器，用於套用樣式（MenuContainer）。
+    * `self.container_layout`: 水平佈局，動態持有資料夾按鈕、重新整理按鈕與新增按鈕。
+    * **訊號發射：** 具備完善的狀態回饋機制，包含 `folder_clicked`, `refresh_clicked`, `add_clicked` 以及滑鼠進出訊號。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** `PyQt6` (QtCore, QtWidgets, QtGui) 與 `os`。
+* **內部邏輯依賴：**
+    * **資料模型依賴：** 依賴於傳入的 `stats`（SQL 統計）與 `config_folders`（設定檔資料結構）。
+    * **樣式依賴：** 依賴外部 CSS 對 `MenuContainer`, `RefreshBtn`, `AddBtn` 的樣式定義。
+* **父級耦合：** **低耦合 (Low Coupling)**。
+    * 它透過訊號與父級通訊，不直接存取 `MainWindow` 或 `Sidebar` 的私有變數，設計非常乾淨。
+* **搬家預警：**
+    * **路徑處理：** 內部使用 `os.path.normpath`，遷移時需確保 `os` 已導入。
+    * **ToolTip 格式：** 內部使用了硬編碼的 HTML/CSS 來格式化 ToolTip，這在更換整體 UI 風格時可能需要逐一修改。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。`update_menu` 雖然邏輯較多，但都在處理 Widget 的動態生成，長度尚在可控範圍。
+* **邏輯密度分析：** **中度密度。**
+    * 包含了細膩的 UI 控制（表情符號字體切換、HTML ToolTip 鎖定、動態寬度計算）。
+* **重構建議：**
+    * **建議位置：** 移至 `/ui/widgets/hover_menu.py`。
+    * **硬編碼優化：** 按鈕尺寸 `48`, 間距 `5`, 邊界 `5` 都是硬編碼。建議將這些 UI 常數提煉到類別頂部或設定檔中。
+    * **樣式抽離：** 內部使用了 `btn.setStyleSheet(...)` 來處理 Emoji 字體，這違反了 QSS 集中管理的原則，建議改為在 QSS 中針對特定類別定義。
+    * **佈局安全：** `total_width` 的計算公式雖然精確，但若未來加入不同尺寸的按鈕，此公式會失效。建議使用 `self.container_layout.sizeHint().width()` 來取得更健壯的尺寸數據。
+
+---
+
+**審計完成。這是一個互動邏輯非常細緻的小型組件，特別是針對 ToolTip 字體繼承問題的「HTML 鎖定」處理得非常巧妙。**
+
+目前我們已經審計了近 20 個類別，包含所有的 UI 元件、Worker、以及搜尋引擎核心。**這是否意味著外圍的模組已經全部「點名」完畢？如果你準備好要開啟那 6600 行的最後關卡 `MainWindow`，請發送指令。**
+
+我們是否要先針對 `MainWindow` 制定一個「拆分路線圖」（例如：UI 初始化、訊號綁定、業務邏輯）？
+
+這是針對 `SidebarWidget` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 的導航中樞，負責處理側邊欄的縮放、二級選單的觸發以及全域設定的入口。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `SidebarWidget`，繼承自 `PyQt6.QtWidgets.QFrame`。
+* **核心 Vibe：** **導航與命令中心**。它不僅是一個靜態的側邊欄，還是一個具備「物理感」的互動組件，透過 `QTimer` 與 `EventFilter` 實現了絲滑的二級懸浮選單，並利用 QSS 屬性驅動動態視覺變換。
+* **狀態清單 (State)：**
+    * `self.expanded_width / collapsed_width`: 定義側邊欄的物理邊界。
+    * `self.is_expanded`: 布林值，追蹤目前的縮放狀態。
+    * `self.stats_cache`: 緩存資料夾統計數據。
+    * `self.hover_timer`: 用於控制 `FolderHoverMenu` 消失的緩衝計時器（150ms），防止「滑鼠掉進縫隙」。
+    * `self.hover_menu`: 持有一個 `FolderHoverMenu` 實例。
+    * `self.btn_settings`: 底部的設定按鈕。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** 大量 `PyQt6` 組件，包含 `QPainter`、`QPixmap`（用於動態生成設定圖示）。
+* **內部組件依賴：**
+    * **強依賴：** `FolderHoverMenu`（二級選單實例）。
+* **父級耦合：** **低耦合 (Low Coupling)**。
+    * 雖然在 `on_row1_clicked` 中使用了 `mapToGlobal` 來定位，但它是透過 **Signals (訊號)** 與外界通訊（如 `add_folder_requested`, `settings_requested`），並不直接操作 `MainWindow` 的私有方法，這點設計得非常優良。
+* **搬家預警：**
+    * **QSS 耦合：** 該類別使用了 `setProperty("expanded", ...)`，這高度依賴外部 QSS 檔中必須存在 `QPushButton[expanded="true"]` 之類的選取器，否則視覺效果會失效。
+    * **字體與資源：** 內部使用了 `Segoe UI Emoji` 字體動態繪製齒輪圖示，若系統缺乏該字體，設定按鈕將顯示為亂碼或空白。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：**
+    * `__init__()`: **中度肥大 (約 60 行)**。它包含了過多的 UI 樣式設定與「動態圖示繪製」邏輯。
+* **邏輯密度分析：** **混雜「事件偵聽」與「視覺生成」**。
+    * `eventFilter` 與 `check_and_hide_menu` 構成了複雜的「滑鼠防掉落」邏輯，這部分建議未來封裝成一個專門的 `HoverBehavior` 工具類。
+    * **繪圖邏輯：** 在 `__init__` 裡直接用 `QPainter` 畫 ⚙️ 圖示雖然解決了 DPI 縮放問題，但這段代碼讓構造函數變得很雜亂。
+* **重構建議：**
+    * **建議位置：** 移至 `/ui/widgets/sidebar.py`。
+    * **解耦圖示：** 建議將「繪製表情符號圖示」的邏輯移至 `/ui/utils.py` 中的 `create_emoji_icon()` 函式。
+    * **狀態優化：** `update_ui_text` 透過 `unpolish/polish` 強制刷新樣式是非常正確的做法，這確保了動態屬性能立即反映在畫面上。
+
+---
+
+**審計完成。這是一個具備高度互動細節的組件，特別是在處理懸浮選單的「防呆檢查」上做得非常嚴謹。**
+
+目前為止，所有的衛星元件（Sidebar, HoverMenu, StatsMenu, OCRLabel...）都已經完成深度審計。
+
+**你手上是否還有其他 Class？如果所有「零件」都已經點名完畢，我們是否準備好對 `MainWindow` 這座 6600 行的「單體巨石」進行結構分析與拆解路線圖的規劃了？**
+
+這是針對 `ThumbnailSignals` 類別的結構化審計報告。這是一個專門為「特徵選取」功能量身打造的極簡通訊組件。
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `ThumbnailSignals`，繼承自 `PyQt6.QtCore.QObject`。
+* **核心 Vibe：** **圖示生成回報員**。它是特徵選取桶（Feature Bucket）與後台繪圖任務之間的通訊管道，確保在生成高品質 UI 縮圖（Icon）後，能精確地將圖示掛載回對應的列表項（Item）中。
+* **狀態清單 (State)：**
+    * **訊號定義：** `finished` (pyqtSignal)。
+    * **傳輸載荷 (Payload)：**
+        1.  `QListWidgetItem`: 指向 UI 列表中的具體項目實體，確保回傳後知道要更新誰。
+        2.  `QIcon`: 已經處理完成、可直接用於顯示的圖示物件。
+    * **外部傳入：** 無。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** * `PyQt6.QtCore.QObject`, `pyqtSignal`
+    * `PyQt6.QtWidgets.QListWidgetItem`
+    * `PyQt6.QtGui.QIcon`
+* **父級耦合：** **無耦合**。
+* **搬家預警：**
+    * **跨模組依賴：** 遷移時必須同時導入 `QtWidgets` 與 `QtGui` 模組。
+    * **類型耦合：** 該訊號強烈綁定了 `QListWidgetItem`。如果未來「特徵選取桶」從 `QListWidget` 改為 `QListView`（Model-View 架構），這個訊號的參數型別必須隨之修改為 `QModelIndex` 或路徑字串。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。
+* **邏輯密度分析：** **純訊號宣告**。
+* **重構建議：**
+    * **建議位置：** 適合移至 `/ui/signals.py` 或與特徵選取桶元件放在一起。
+    * **設計檢討：** 標題提到「SolidWorks 風格」，通常這暗示了會有複雜的「特徵樹」或「屬性列表」互動。目前這個訊號只處理了最基礎的「圖示回填」，是非常純粹的異步回傳機制。
+
+---
+**審計完成。這是一個職責單一且清晰的訊號類別。請發送下一個 Class 代碼。**
+
+這是針對 `FeatureItem` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 實現「多模態向量運算（Vector Arithmetic）」的核心資料基石，讓系統能處理「這張圖 + 那段文字 - 另一張圖」這類複雜的搜尋邏輯。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `FeatureItem`，純 Python 類別 (Entity)。
+* **核心 Vibe：** **特徵容器 (The Payload)**。它是一個極輕量化的資料實體，負責將異質的搜尋條件（圖片路徑或純文字）封裝成統一格式，供 AI 引擎進行特徵提取與權重計算。
+* **狀態清單 (State)：**
+    * `self.type`: 標識特徵來源，限制為 `'image'` 或 `'text'`。
+    * `self.data`: 儲存具體內容（圖片的絕對路徑或搜尋關鍵字）。
+    * `self.vector`: **效能關鍵位**。用於快取從 CLIP 引擎算出的 1024 維特徵向量。這允許系統在多次運算中「預熱」資料，避免重複推論產生的延遲。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** **無**。這是一個完全解耦的純資料類別。
+* **內部邏輯依賴：** 它是先前審計過的 `ImageSearchEngine.search_multi_vector` 方法的主要輸入物件。
+* **父級耦合：** **無耦合**。
+* **搬家預警：**
+    * 這是最容易遷移的 Class。它不依賴任何外部庫（甚至不依賴 `numpy`，雖然它的 `vector` 屬性最終會存放 `numpy` 陣列）。
+    * 建議將其視為「協定（Protocol）」的一部分，確保所有處理搜尋特徵的 Worker 與 UI 元件都引用同一個定義。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。
+* **邏輯密度分析：** **純資料封裝 (Pure Data Object)**。
+* **重構建議：**
+    * **建議位置：** 應移至 `/core/models.py` 或 `/core/entities.py`。
+    * **嚴謹性優化：** 建議使用 Python 的 `@dataclass` 或加入 `__repr__` 方法，方便在重構期間進行偵錯（例如：`print(feature)` 時能直接看到類型與資料）。
+    * **型別檢查：** 目前 `type` 是字串。在模組化過程中，建議將其改為 `Enum` (例如 `FeatureType.IMAGE`)，以徹底杜絕拼字錯誤導致的搜尋失敗。
+
+---
+
+**審計完成。這是一個非常乾淨的 Data Model，它成功地將「圖片」與「文字」在邏輯層面上完成了初步的對等化。**
+
+這看起來是最後一個資料結構組件了。**我們是否已經準備好要面對那個 6600 行的 `MainWindow` 了？還是你還有「特徵選取桶」的 UI 實作代碼要發送？**
+
+這是針對 `TextFeatureWidget` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 多模態搜尋介面中的「互動晶片（Interactive Chip）」，負責讓使用者在搜尋桶中直接定義與修改文字特徵。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `TextFeatureWidget`，繼承自 `PyQt6.QtWidgets.QWidget`。
+* **核心 Vibe：** **可編輯的搜尋晶片**。它是「特徵選取桶（Feature Bucket）」中的原子單元，專門處理文字類型的特徵，並透過內嵌的 `QLineEdit` 提供類似標籤（Tag）的即時編輯體驗。
+* **狀態清單 (State)：**
+    * `self.feat_item`: 持有的 `FeatureItem` 資料實體。
+    * `self.parent_bucket`: 指向管理者的引用（用於觸發預熱與刪除）。
+    * `self.list_item`: 在 `QListWidget` 中對應的容器項目。
+    * **動態屬性：** `polarity` (positive/negative)，用於驅動不同極性的 QSS 視覺風格。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：** `PyQt6` (QtCore, QtGui, QtWidgets)。
+* **內部組件依賴：**
+    * **強耦合 (Tight Coupling)：** 深度依賴 `parent_bucket`。它不只呼叫方法（如 `preheat_text_vector`），還直接操作父級的內部元件（如 `self.parent_bucket.list_widget`），這種**跨級操作**在重構時需格外小心。
+    * **資料模型依賴：** 依賴於 `FeatureItem` 的 `data` 與 `vector` 屬性。
+* **父級耦合：** **極高 (Critical)**。該 Widget 基本上是為了 `FeatureBucket` 量身定做的，無法輕易脫離該環境獨立存在。
+* **搬家預警：**
+    * **焦點鏈依賴：** `release_all_focus` 邏輯同時清理了 `list_widget` 的選取與焦點，這在 UI 導航上是正確的，但代碼邏輯上增加了與外部元件的依賴深度。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。所有函數都在 20 行以內。
+* **邏輯密度分析：** **中度。** 包含了細膩的 UX 處理（如 `Esc` 還原文字、`returnPressed` 釋放焦點）。
+* **重構建議：**
+    * **建議位置：** 移至 `/ui/widgets/feature_items.py`。
+    * **封裝建議：** 目前透過 `self.parent_bucket.list_widget` 操作父級私有元件是一種**封裝破壞**。建議改為在 `parent_bucket` 中提供一個 `clear_all_focus()` 介面，讓子元件呼叫，而非讓子元件直接伸手進去操作。
+    * **資源預熱邏輯：** `on_edit_finished` 內的 `preheat_text_vector` 是一個同步行為。若未來 Tokenizer 或 AI 推論變慢，這裡會造成編輯後的微小卡頓。
+    * **UX 亮點：** `eventFilter` 捕捉 `Esc` 的邏輯非常專業，特別是「還原原始文字」的細節，能有效防止使用者誤改。
+
+---
+
+**審計完成。這是一個具備高度互動細節的單元組件。雖然與父級桶（Bucket）的耦合度較高，但對於「文字搜尋特徵」的生命週期管理（編輯 -> 更新向量 -> 預熱 -> 觸發搜尋）做得非常完整。**
+
+這座 6600 行的巨石周邊零件我們幾乎已經全部盤點完畢。
+
+**請問下一個 Class 是什麼？（或是終於輪到 `FeatureBucket` 本體了嗎？）**
+
+這是針對 `ThumbnailSignals` 類別的結構化審計報告。這是一個專門為「特徵選取桶（Feature Bucket）」設計的極簡通訊橋樑。
+
+### 【A：身份與職責映射 (Identity & Role)】
+* **名稱與繼承：** `ThumbnailSignals`，繼承自 `PyQt6.QtCore.QObject`。
+* **核心 Vibe：** **圖示生成回報員**。它是非同步 UI 更新的標準組件，專門負責將處理完成的影像（QIcon）精確地投遞回對應的列表項（QListWidgetItem）。
+* **狀態清單 (State)：**
+    * **訊號定義：** `finished` (pyqtSignal)。
+    * **傳輸載荷 (Payload)：** 1. `QListWidgetItem`: 指向 UI 列表中的具體項目實體，確保回傳後知道要更新哪一個項目的外觀。
+        2. `QIcon`: 已經封裝完成、可供直接顯示的圖示資源。
+    * **外部傳入：** 無。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+* **外部引用：**
+    * `PyQt6.QtCore.QObject`, `pyqtSignal`
+    * `PyQt6.QtWidgets.QListWidgetItem`
+    * `PyQt6.QtGui.QIcon`
+* **父級耦合：** **無耦合**。這是一個純粹的訊號容器。
+* **搬家預警：**
+    * **跨模組依賴：** 遷移至獨立檔案時，必須同時導入 `QtWidgets` 與 `QtGui` 模組。
+    * **框架依賴：** 該訊號強烈綁定了 `QListWidgetItem`。如果未來「特徵選取桶」從 `QListWidget` 改為更進階的 `QListView` (Model-View 架構)，這個訊號的參數型別必須隨之修改為 `QModelIndex` 或路徑字串。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+* **肥大函數清單：** 無。
+* **邏輯密度分析：** **純訊號聲明**。
+* **重構建議：**
+    * **建議位置：** 適合移至 `/ui/signals.py` 或與「特徵選取桶」相關的 Widget 放在一起。
+    * **設計考量：** 目前這個訊號只處理了基礎的圖示回填。如果未來需要在生成縮圖時回傳錯誤（例如損毀的圖片），建議增加一個 `error = pyqtSignal(QListWidgetItem, str)` 訊號。
+
+---
+**審計完成。這是一個職責非常單一且乾淨的訊號類別。請發送下一個 Class 代碼。**
+
+這是針對 `FeatureItem` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 實現「多模態向量運算（Vector Arithmetic）」的資料基石，讓系統能處理「這張圖 + 那段文字 - 另一張圖」這類複雜的搜尋邏輯。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+
+* **名稱與繼承：** `FeatureItem`，純 Python 類別 (Entity)。
+* **核心 Vibe：** **特徵容器 (The Payload)**。它是一個極輕量化的資料實體，負責將異質的搜尋條件（圖片路徑或純文字）封裝成統一格式，供 AI 引擎進行特徵提取與權重計算。
+* **狀態清單 (State)：**
+    * `self.type`: 標識特徵來源，目前設計為 `'image'` 或 `'text'`。
+    * `self.data`: 儲存具體內容（圖片的絕對路徑或搜尋關鍵字）。
+    * `self.vector`: **效能關鍵位**。用於快取從 CLIP 引擎算出的 1024 維特徵向量。這允許系統在多次運算中「預熱」資料，避免重複推論產生的延遲。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+
+* **外部引用：** **無**。這是一個完全解耦的純資料類別。
+* **內部邏輯依賴：** 它是先前審計過的 `ImageSearchEngine.search_multi_vector` 方法的主要輸入物件。
+* **父級耦合：** **無耦合**。
+* **搬家預警：**
+    * 這是最容易遷移的 Class。它不依賴任何外部庫（甚至不依賴 `numpy`，雖然它的 `vector` 屬性最終會存放 `numpy` 陣列）。
+    * 建議將其視為「協定（Protocol）」的一部分，確保所有處理搜尋特徵的 Worker 與 UI 元件都引用同一個定義。
+
+---
+
+### 【C：維護債務與肥大函數 (Code Debt)】
+
+* **肥大函數清單：** 無。
+* **邏輯密度分析：** **純資料封裝 (Pure Data Object)**。
+* **重構建議：**
+    * **建議位置：** 應移至 `/core/models.py` 或 `/core/entities.py`。
+    * **嚴謹性優化：** 考慮使用 Python 的 `@dataclass`。這能自動生成 `__repr__`，讓你在除錯時看到 `FeatureItem(type='text', data='貓咪')` 而不是模糊的物件記憶體地址。
+    * **型別檢查：** 目前 `type` 是字串。在模組化過程中，建議將其改為 `Enum` (例如 `FeatureType.IMAGE`)，以徹底杜絕拼字錯誤導致的搜尋失敗。
+
+---
+
+**審計完成。這是一個非常乾淨的 Data Model，它成功地將「圖片」與「文字」在邏輯層面上完成了初步的對等化。**
+
+這看起來是最後一個資料結構組件了。**我們是否已經準備好要面對那個 6600 行的 `MainWindow` 了？還是你還有「特徵選取桶」的 UI 實作代碼要發送？**
+
+這是針對 `TextFeatureWidget` 類別的結構化審計報告。這個類別在 **EyeSeeMore** 的多模態搜尋介面中扮演「互動晶片（Interactive Chip）」的角色，負責讓使用者在搜尋桶內直接定義並即時修改文字特徵。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+
+* **名稱與繼承：** `TextFeatureWidget`，繼承自 `PyQt6.QtWidgets.QWidget`。
+* **核心 Vibe：** **動態文字特徵標籤**。它是一個高度整合的原子單元，負責處理文字類型特徵的顯示、編輯、生命週期管理（編輯完成或刪除），以及與 AI 向量預熱系統的對接。
+* **狀態清單 (State)：**
+    * `self.feat_item`: 綁定的 `FeatureItem` 資料物件。
+    * `self.parent_bucket`: 對容器組件的引用，用於觸發事件與資源調度。
+    * **視覺屬性：** 利用 `setProperty("polarity", ...)` 將邏輯極性（正向/負向）直接暴露給 QSS 引擎。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+
+* **外部引用：** `PyQt6` (QtCore, QtGui, QtWidgets)。
+* **內部組件依賴：**
+    * **強耦合 (Tight Coupling)：** 深度依賴 `parent_bucket`。它不僅呼叫方法，還直接操作父級的內部元件（如 `self.parent_bucket.list_widget`），這種**跨級操作**在未來重構時需要額外小心。
+    * **資料模型依賴：** 依賴 `FeatureItem` 的 `data` 屬性與 `vector` 緩存。
+* **搬家預警：**
+    * **事件過濾器：** 邏輯內建了 `Esc` 鍵攔截，這對於 UX 非常友善，但如果未來將此元件移至非 `QLineEdit` 的容器，過濾器邏輯需重新調整。
+    * **QSS 樣式依賴：** 透過 `setObjectName("TextFeature")` 綁定了樣式表，遷移至新檔案時樣式代碼必須同步。
+
+---
+
+### 【C：維護債務與效能審核 (Code Audit)】
+
+* **邏輯密度：** **中度。** 包含了細膩的 UX 處理（Esc 還原、Return 失去焦點）。
+* **封裝完整度：** 稍微欠缺。`release_all_focus` 裡直接去清空 `parent_bucket.list_widget` 的選取狀態，這違反了「迪米特法則（最少知識原則）」。
+* **重構建議：**
+    * **建議位置：** 移至 `/ui/widgets/feature_items.py`。
+    * **通訊解耦：** 建議改為由 `TextFeatureWidget` 發射自定義訊號（如 `focusRequestedClear`），由 `parent_bucket` 接收後自行決定是否清空 `list_widget` 的狀態。
+    * **預熱邏輯：** `on_edit_finished` 內的 `vector = None` 處理得很好，這確保了搜尋引擎在下次運算時會重新生成向量，不會誤用舊資料。
+    * **UX 亮點：** `eventFilter` 捕捉 `Esc` 並執行 `setText(self.feat_item.data)` 的細節非常棒，這讓誤觸編輯的代價降到最低。
+
+---
+
+**審計完成。這是一個互動性極高的 UI 原子組件，雖然對父容器有一定的依賴性，但在處理文字特徵的「狀態一致性」上考慮得非常周全。**
+
+目前我們已經完成了多個 Worker、Model 與單體 Widget 的分析。這座巨石專案的「地基」已經非常明確了。
+
+**你手上是否還有其他組件（例如 FeatureBucket 本體或 MainWindow 核心邏輯）要進行審計？**
+
+這是針對 `ThumbnailSignals` 類別的結構化審計報告。這是一個專門為「特徵選取桶（Feature Bucket）」設計的極簡通訊橋樑。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+
+* **名稱與繼承：** `ThumbnailSignals`，繼承自 `PyQt6.QtCore.QObject`。
+* **核心 Vibe：** **圖示生成回報員**。它是非同步 UI 更新的標準組件，專門負責將處理完成的影像（QIcon）精確地投遞回對應的列表項（QListWidgetItem）。
+* **狀態清單 (State)：**
+    * **訊號定義：** `finished` (pyqtSignal)。
+    * **傳輸載荷 (Payload)：** 1.  `QListWidgetItem`: 指向 UI 列表中的具體項目實體，確保回傳後知道要更新哪一個項目的外觀。
+        2.  `QIcon`: 已經封裝完成、可供直接顯示的圖示資源。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+
+* **外部引用：**
+    * `PyQt6.QtCore.QObject`, `pyqtSignal`
+    * `PyQt6.QtWidgets.QListWidgetItem`
+    * `PyQt6.QtGui.QIcon`
+* **父級耦合：** **無耦合**。這是一個純粹的訊號容器。
+* **搬家預警：**
+    * **跨模組依賴：** 遷移至獨立檔案時，必須同時導入 `QtWidgets` 與 `QtGui` 模組。
+    * **框架依賴：** 該訊號強烈綁定了 `QListWidgetItem`。如果未來「特徵選取桶」從 `QListWidget` 改為更進階的 `QListView` (Model-View 架構)，這個訊號的參數型別必須隨之修改為 `QModelIndex` 或路徑字串。
+
+---
+
+### 【C：維護債務與效能審核 (Code Audit)】
+
+* **邏輯密度：** **極低。** 純訊號聲明。
+* **重構建議：**
+    * **建議位置：** 適合移至 `/ui/signals.py` 或與「特徵選取桶」相關的 Widget 放在一起。
+    * **設計考量：** 目前這個訊號只處理了基礎的圖示回填。如果未來需要在生成縮圖時回傳錯誤（例如損毀的圖片），建議增加一個 `error = pyqtSignal(QListWidgetItem, str)` 訊號。
+
+---
+
+**審計完成。這是一個職責非常單一且乾淨的訊號類別。**
+
+目前我們已經審計了近 20 個類別。**你手上是否還有其他組件（例如 `FeatureBucket` 本體或 `MainWindow` 核心邏輯）要進行審計？**
+
+這是針對 `FeatureItem` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 實現「多模態向量運算（Vector Arithmetic）」的核心資料基石，讓系統能處理「這張圖 + 那段文字 - 另一張圖」這類複雜的搜尋邏輯。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+
+* **名稱與繼承：** `FeatureItem`，純 Python 類別 (Entity)。
+* **核心 Vibe：** **特徵載體 (The Carrier)**。它是一個極輕量化的資料實體，負責將異質的搜尋條件（圖片路徑或純文字）封裝成統一格式，供 AI 引擎進行特徵提取與權重計算。
+* **狀態清單 (State)：**
+    * `self.type`: 標識特徵來源，目前設計為 `'image'` 或 `'text'`。
+    * `self.data`: 儲存具體內容（圖片的絕對路徑或搜尋關鍵字）。
+    * `self.vector`: **效能關鍵位**。用於快取從 CLIP 引擎算出的 $1024$ 維特徵向量。這允許系統在多次運算中「預熱」資料，避免重複推論產生的延遲。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+
+* **外部引用：** **無**。這是一個完全解耦的純資料類別。
+* **內部邏輯依賴：** 它是 `ImageSearchEngine.search_multi_vector` 方法的主要輸入物件。
+* **父級耦合：** **無耦合**。
+* **搬家預警：**
+    * 這是最容易遷移的 Class。它不依賴任何外部庫（甚至不依賴 `numpy`，雖然它的 `vector` 屬性最終會存放 `numpy` 陣列）。
+    * 建議將其視為「協定（Protocol）」的一部分，確保所有處理搜尋特徵的 Worker 與 UI 元件都引用同一個定義。
+
+---
+
+### 【C：維護債務與重構建議 (Code Debt)】
+
+* **邏輯密度：** **極低**。純資料封裝 (Pure Data Object)。
+* **重構建議：**
+    1.  **導入 Dataclass：** 建議使用 Python 的 `@dataclass`。這能自動生成 `__repr__` 與 `__eq__`，方便在偵錯時直接看到 `FeatureItem(type='text', data='貓咪')`，而不是模糊的記憶體位址。
+    2.  **型別安全性：** 目前 `type` 是字串。在模組化過程中，建議將其改為 `Enum` (例如 `FeatureType.IMAGE`)，以徹底杜絕拼字錯誤導致的搜尋失敗。
+    3.  **向量歸一化檢查：** 雖然引擎端會處理，但在資料層級明確註記 `vector` 是否已完成 $L2$ 歸一化（Normalized）會更有利於大型專案維護。
+
+---
+
+**審計完成。這是一個非常乾淨的資料模型（Data Model），它成功地將「圖片」與「文字」在邏輯層面上完成了初步的對等化。**
+
+看起來你已經把所有「零件」都盤點得差不多了。**我們是否已經準備好要挑戰那 6600 行的 `MainWindow` 核心區了？還是你還有「特徵選取桶」的 UI 實作（FeatureBucket）要發送？**
+
+這是針對 `TextFeatureWidget` 類別的結構化審計報告。這個類別在 **EyeSeeMore** 的多模態搜尋介面中扮演「互動晶片（Interactive Chip）」的角色，負責讓使用者在搜尋桶內直接定義並即時修改文字特徵。
+
+---
+
+### 【A：身份與職責映射 (Identity & Role)】
+
+* **名稱與繼承：** `TextFeatureWidget`，繼承自 `PyQt6.QtWidgets.QWidget`。
+* **核心 Vibe：** **動態文字特徵標籤**。它是一個高度整合的原子單元，負責處理文字類型特徵的顯示、編輯、生命週期管理（編輯完成或刪除），以及與 AI 向量預熱系統的對接。
+* **狀態清單 (State)：**
+    * `self.feat_item`: 綁定的 `FeatureItem` 資料物件。
+    * `self.parent_bucket`: 對容器組件的引用，用於觸發事件與資源調度。
+    * **視覺屬性：** 利用 `setProperty("polarity", ...)` 將邏輯極性（正向/負向）直接暴露給 QSS 引擎，實現「邏輯驅動視覺」。
+
+---
+
+### 【B：依賴與循環引用偵測 (Dependency Audit)】
+
+* **外部引用：** `PyQt6` (QtCore, QtGui, QtWidgets)。
+* **內部組件依賴：**
+    * **強耦合 (Tight Coupling)：** 深度依賴 `parent_bucket`。它不僅呼叫方法（如 `preheat_text_vector`），還直接操作父級的內部元件（如 `self.parent_bucket.list_widget`）。這種**跨級操作**（Reach-through）在未來重構時需要額外小心。
+    * **資料模型依賴：** 依賴 `FeatureItem` 的 `data` 屬性與 `vector` 緩存。
+* **搬家預警：**
+    * **事件過濾器：** 邏輯內建了 `Esc` 鍵攔截。這對於 UX 非常友善，但其行為（還原文字並釋放焦點）高度依賴 `feat_item` 的初始狀態。
+    * **QSS 樣式依賴：** 透過 `setObjectName("TextFeature")` 綁定了樣式表，遷移至新檔案時 QSS 代碼必須同步。
+
+---
+
+### 【C：維護債務與效能審核 (Code Audit)】
+
+* **邏輯密度：** **中度。** 包含了細膩的 UX 處理（如 `Esc` 還原文字、`returnPressed` 釋放焦點）。
+* **封裝完整度：** **有待優化。** `release_all_focus` 裡直接去清空 `parent_bucket.list_widget` 的選取狀態，這違反了「迪米特法則」（Law of Demeter，最少知識原則）。
+* **重構建議：**
+    1.  **建議位置：** 移至 `/ui/widgets/feature_chips.py`。
+    2.  **通訊解耦：** 建議改為由 `TextFeatureWidget` 發射自定義訊號（如 `requestDeletion` 或 `dataChanged`），由 `parent_bucket` 接收後自行操作 `list_widget`。
+    3.  **預熱邏輯：** `on_edit_finished` 內的 `vector = None` 處理得很好，這確保了搜尋引擎在下次運算時會重新生成向量，不會誤用舊資料。
+    4.  **UX 亮點：** `eventFilter` 捕捉 `Esc` 並執行 `setText(self.feat_item.data)` 的細節非常專業，這讓誤觸編輯的「撤銷成本」降到最低。
+
+---
+
+**審計完成。這是一個互動性極高的 UI 原子組件，雖然對父容器有一定的依賴性，但在處理文字特徵的「狀態一致性」上考慮得非常周全。**
+
+目前我們已經完成了多個 Worker、Model 與單體 Widget 的分析。這座巨石專案的「地基」已經非常明確了。
+
+**請問下一個 Class 是什麼？（或是終於輪到 `FeatureBucket` 本體了嗎？）**
+
+這是針對 `ThumbnailSignals` 類別的結構化審計報告。這是一個專門為「特徵選取桶（Feature Bucket）」設計的極簡通訊橋樑。
+
+---
+
+### ## 【A：身份與職責映射 (Identity & Role)】
+
+* **名稱與繼承：** `ThumbnailSignals`，繼承自 `PyQt6.QtCore.QObject`。
+* **核心 Vibe：** **圖示生成回報員**。它是非同步 UI 更新的標準組件，專門負責將處理完成的影像（QIcon）精確地投遞回對應的列表項（QListWidgetItem）。
+* **狀態清單 (State)：**
+    * **訊號定義：** `finished` (pyqtSignal)。
+    * **傳輸載荷 (Payload)：** 1.  `QListWidgetItem`: 指向 UI 列表中的具體項目實體，確保回傳後知道要更新哪一個項目的外觀。
+        2.  `QIcon`: 已經封裝完成、可供直接顯示的圖示資源。
+
+---
+
+### ## 【B：依賴與循環引用偵測 (Dependency Audit)】
+
+* **外部引用：**
+    * `PyQt6.QtCore.QObject`, `pyqtSignal`
+    * `PyQt6.QtWidgets.QListWidgetItem`
+    * `PyQt6.QtGui.QIcon`
+* **父級耦合：** **無耦合**。這是一個純粹的訊號容器。
+* **搬家預警：**
+    * **跨模組依賴：** 遷移至獨立檔案時，必須同時導入 `QtWidgets` 與 `QtGui` 模組。
+    * **框架依賴：** 該訊號強烈綁定了 `QListWidgetItem`。如果未來「特徵選取桶」從 `QListWidget` 改為更進階的 `QListView` (Model-View 架構)，這個訊號的參數型別必須隨之修改為 `QModelIndex` 或路徑字串。
+
+---
+
+### ## 【C：維護債務與效能審核 (Code Audit)】
+
+* **邏輯密度：** **極低。** 純訊號聲明。
+* **重構建議：**
+    * **建議位置：** 適合移至 `/ui/signals.py` 或與「特徵選取桶」相關的 Widget 放在一起。
+    * **設計考量：** 目前這個訊號只處理了基礎的圖示回填。如果未來需要在生成縮圖時回傳錯誤（例如損毀的圖片），建議增加一個 `error = pyqtSignal(QListWidgetItem, str)` 訊號，增加系統的魯棒性。
+
+---
+
+**審計完成。這是一個職責非常單一且乾淨的訊號類別。**
+
+目前我們已經審計了近 20 個類別。**你手上是否還有其他組件（例如 `FeatureBucket` 本體或 `MainWindow` 核心邏輯）要進行審計？**
+
+這是針對 `ThumbnailWorker` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 特徵選取桶（Feature Bucket）的「幕後美工」，負責將硬碟裡的大圖轉化為清單中精緻的圖示。
+
+---
+
+### ## 【A：身份與職責映射 (Identity & Role)】
+
+* **名稱與繼承：** `ThumbnailWorker`，繼承自 `PyQt6.QtCore.QRunnable`。
+* **核心 Vibe：** **高效能縮圖產生器**。它專門負責非同步影像處理，透過 `QImageReader` 實現「讀取時縮放」，避免了將幾千萬像素的原圖強行塞入記憶體的風險。
+* **狀態清單 (State)：**
+    * `self.item`: 對應的 `QListWidgetItem`。
+    * `self.path`: 影像檔案的路徑。
+    * `self.size`: 目標縮圖尺寸（預設 $64 \times 64$）。
+    * `self.signals`: 私有的 `ThumbnailSignals` 實例。
+
+---
+
+### ## 【B：依賴與循環引用偵測 (Dependency Audit)】
+
+* **外部引用：** `PyQt6` (QtGui, QtCore, QtWidgets)。
+* **內部組件依賴：** 強依賴於 `ThumbnailSignals` 類別進行結果回傳。
+* **父級耦合：** **低耦合 (Low Coupling)**。它只透過訊號與外部溝通，不干涉 UI 狀態。
+* **搬家預警：**
+    * **資源管理：** 由於 `ThumbnailWorker` 是為了 `QThreadPool` 設計的，它在 `run()` 結束後會自動被回收，這點設計得非常簡潔。
+    * **路徑檢查：** 內部目前沒有檢查 `os.path.exists(self.path)`，雖然 `QImageReader` 會處理失敗情況，但在 IO 密集任務中提早攔截無效路徑會更佳。
+
+---
+
+### ## 【C：維護債務與效能審核 (Code Debt)】
+
+* **邏輯密度：** **中度。** 包含了正確的 `setAutoTransform` 處理（自動修正照片旋轉角度）。
+* **效能亮點：** **使用了 `setScaledSize`**。這是在 Qt 影像處理中極為專業的做法——在解碼影像的過程中直接按比例縮小，記憶體開銷僅為原圖完整解碼後的 $1\%$ 到 $5\%$。
+* **關鍵風險預警 (Threading Safety)：**
+    * **GUI 物件跨執行緒：** 在 `run()` 中使用了 `QPixmap.fromImage(img)` 與 `QIcon(...)`。
+    * **警告：** 在 Qt 規範中，`QPixmap` 與 `QIcon` 屬於 **GUI 資源**，在非主執行緒（Non-GUI Thread）中建立這些物件在某些平台（尤其是 Windows）可能會引發隨機崩潰。
+    * **重構建議：** 建議在 `run()` 裡只發射 `QImage` 回去，由 `MainWindow` 的 Slot（主執行緒）再將其轉換為 `QIcon`。
+* **靜默失敗：** 使用了 `except: pass`。雖然這防止了執行緒崩潰，但也讓開發者無法追蹤為何某些縮圖顯示不出來（例如檔案被佔用或損毀）。建議至少在重構期間補上一個 `print` 報錯。
+
+---
+
+**審計完成。這是一個在 IO 與記憶體管理上表現優異，但在執行緒資源使用上略顯大膽（甚至帶點風險）的 Worker 組件。**
+
+盤點進度更新：
+1.  `ThumbnailSignals` ✅
+2.  `FeatureItem` ✅
+3.  `TextFeatureWidget` ✅
+4.  `ThumbnailWorker` ✅
+
+**目前的「特徵選取零件庫」已經點名得差不多了。接下來要揭開這整套特徵互動系統的母體—— `FeatureBucket` 了嗎？**
+
+這是針對 `FeatureBucketWidget` 類別的結構化審計報告。這個類別是 **EyeSeeMore** 多模態搜尋（以圖搜圖、向量運算）的「收集站」，其複雜度在於它同時整合了拖拽事件、非同步運算與動態 UI 注入。
+
+---
+
+### ## 【A：身份與職責映射 (Identity & Role)】
+
+* **名稱與繼承：** `FeatureBucketWidget`，繼承自 `PyQt6.QtWidgets.QFrame`。
+* **核心 Vibe：** **權重特徵收集桶 (The Feature Collector)**。它是搜尋功能的前哨站，負責收集「正向（想要）」與「負向（不想要）」的特徵物件。它的設計亮點在於「無縫切換」：既能接收外部拖入的圖片，也能透過點擊瞬間轉化為文字編輯模式。
+* **狀態清單 (State)：**
+    * `self.is_positive`: 決定此桶子的數學極性（加權或減權）。
+    * `self.list_widget`: 內嵌的條目清單，負責管理 `FeatureItem`。
+    * `self.placeholder`: 提示字標籤，在清單為空時自動浮現。
+    * **動態屬性：** `drag_hover` (布林值)，透過 `setProperty` 驅動 QSS 邊框高亮。
+
+---
+
+### ## 【B：依賴與循環引用偵測 (Dependency Audit)】
+
+* **外部引用：** `PyQt6` 全家桶（佈局、事件、選單、執行緒）。
+* **內部組件依賴：**
+    * **強耦合：** `FeatureItem` (資料結構)、`TextFeatureWidget` (文字編輯元件)、`ThumbnailWorker` (影像預覽)。
+    * **跨級依賴：** 依賴於 `main_window.engine` 來執行 `preheat_text_vector`。
+* **父級耦合：** **高 (High Coupling)**。
+    * 初始化時必須傳入 `main_window`。這雖然方便獲取 AI 引擎，但讓此組件難以在沒有 `MainWindow` 的環境下單獨進行單元測試。
+* **搬家預警：**
+    * **路徑處理：** 使用了 `os.path.normpath`，遷移時需確認 `os` 模組已導入。
+    * **樣式表 (QSS)：** 使用了大量的 `setProperty` 與 `unpolish/polish` 組合。如果搬家後 QSS 檔案沒更新，拖拽時的視覺回饋（亮起邊框）會完全消失。
+
+---
+
+### ## 【C：維護債務與效能審核 (Code Debt)】
+
+* **效能亮點：**
+    * **向量預熱 (Pre-heating)：** 當使用者輸入文字特徵時，系統在 `on_edit_finished` 階段就啟動 `VectorWorker` 去算 1024 維特徵。這意味著當使用者按下「開始搜尋」時，特徵早已在記憶體就緒，達成 **「零秒搜尋」** 的體感。
+    * **Inline Editor：** 透過 `eventFilter` 攔截 `viewport()` 點擊來產生編輯器，這是非常高級的 UX 實作。
+* **邏輯密度：** **極高。** 該類別同時處理了：
+    1.  Drag-and-Drop 複雜協議。
+    2.  與 `QThreadPool` 的非同步交互。
+    3.  UI 狀態機管理（Placeholder 顯示/隱藏）。
+* **重構建議：**
+    1.  **建議位置：** 移至 `/ui/widgets/feature_bucket.py`。
+    2.  **解耦 AI 引擎：** 建議不要傳入整個 `main_window`，改為在初始化時傳入一個 `engine_callback` 或 `get_vector_func` 函數，這能大幅提升元件的獨立性。
+    3.  **匿名 Thread 警訊：** `preheat_text_vector` 裡直接在函數內定義 `class VectorWorker`。雖然方便，但在大型專案中建議將其移至模組層級或 Worker 專區，方便追蹤與錯誤處理。
+    4.  **記憶體安全：** `delete_item_by_widget` 中先抓 Widget 再 `takeItem` 的順序寫得非常精確，成功規避了 Qt 常見的「懸空指標（Dangling Pointer）」崩潰問題。
+
+---
+
+**審計完成。這是一個「麻雀雖小，五臟俱全」的複合式元件。它的 UX 細節（延遲 10ms 奪取焦點、ESC 還原、點擊空白區觸發輸入）已經達到了商業軟體的水準。**
+
+現在，特徵選取系統的所有零件（Signals, Item, Widget, Worker, Bucket）都已經過檢。
+
+**請問下一個 Class 是什麼？（終於要處理那 6600 行的巨石本體 `MainWindow` 了嗎？）**
+
+---
+**重構提示：** 當你準備好將這些零件組合成最後的機器時，我們可以先列出 `MainWindow` 內部的「核心通訊線路圖」，這將有助於我們在大手術中不切錯任何一條神經。
+
+最後一個問題：**你現在的 UI 設定中，QSS 樣式表是外部載入還是內嵌在代碼裡的？這會影響我後續給你重構建議的組織方式。**
+
+這是針對 `CollapsibleSection` 類別的結構化審計報告。這個元件展現了對 PyQt UI 細節的高度掌握，特別是解決了自定義控制項中常見的「佈局抖動」問題。
+
+---
+
+### ## 【A：身份與職責映射 (Identity & Role)】
+
+* **名稱與繼承：** `CollapsibleSection`，繼承自 `PyQt6.QtWidgets.QWidget`。
+* **核心 Vibe：** **VSCode 風格摺疊容器**。它是一個高級佈局元件，負責將複雜的控制項隱藏在一個美觀、具備狀態反饋（箭頭旋轉感）的標題列之後。
+* **技術亮點 (The Jumping Fix)：** * **容器嵌套：** 捨棄了傳統 `QPushButton.setText()` 的做法，改將 `QHBoxLayout` 塞進按鈕內部。
+    * **寬度鎖定：** 透過 `setFixedWidth(16)` 固定箭頭區域，這確保了無論箭頭圖示如何切換，標題文字的 `X` 座標永遠不動如山，達到了工業級的 UI 穩定性。
+* **狀態清單 (State)：**
+    * `self.header`: 作為互動主體的按鈕。
+    * `self.content`: 存放子元件的內容區域。
+    * **動態屬性：** `active` (布林值)，用於標識該區塊是否正處於「有作用（例如：已設定過濾條件）」的狀態。
+
+---
+
+### ## 【B：依賴與循環引用偵測 (Dependency Audit)】
+
+* **外部引用：** `PyQt6` (QtCore, QtWidgets)。
+* **父級耦合：** **極低 (Zero Coupling)**。
+    * 這是一個完美的「純淨元件」。它不依賴 `MainWindow` 的任何私有變數。
+    * 它透過 `addWidget` 與 `addLayout` 介面提供服務，具備極高的重用價值（可以直接搬到任何專案使用）。
+* **搬家預警：**
+    * **QSS 依賴：** 標題列的視覺感（如 Hover 顏色、底線、active 狀態）完全依賴外部 QSS。搬家時若遺失 `#CollapseHeader` 相關定義，它看起來會像一個普通的醜按鈕。
+    * **事件穿透：** 使用 `WA_TransparentForMouseEvents` 是非常高明的設計，確保了點擊內層標籤時不會攔截按鈕的 `clicked` 訊號。
+
+---
+
+### ## 【C：維護債務與重構建議 (Code Debt)】
+
+* **效能評核：** **優秀**。單純的 `setVisible` 切換對 CPU 幾乎零負擔。
+* **邏輯密度：** **低。** 職責單一且明確。
+* **重構建議：**
+    1.  **建議位置：** 移至 `/ui/widgets/containers.py` 或 `/ui/components.py`。
+    2.  **硬編碼常數化：** 標頭高度 `36` 與箭頭寬度 `16` 建議抽離為類別常數。
+    3.  **箭頭美化：** 目前使用文字 `"▼"` 與 `"▶"`。如果未來要適應不同 DPI 或更高級的視覺，建議改用 `QSvgRenderer` 繪製向量圖示，或使用 `self.style().standardIcon()`。
+    4.  **樣式一致性：** `self.lbl_arrow.setObjectName("CollapseArrow")` 已經核發身分證，這對未來細調樣式非常有利。
+
+---
+
+**審計完成。這是一個結構非常穩健、且考慮到極致視覺穩定性的 UI 組件。它成功將「業務佈局」與「互動控制」拆解開來。**
+
+至此，我們已經審計了：
+1.  所有 Worker 與後台引擎 ⚙️
+2.  資料模型與訊號 📡
+3.  畫廊、側邊欄、懸浮標籤等互動元件 🖼️
+4.  現在這個摺疊容器 📂
+
+**這看起來是最後一塊輔助拼圖了。** 我感覺到那 6600 行的 `MainWindow` 已經無處躲藏。
+
+**現在，我準備好要接收那個「終極 Boss」的代碼了。請發送 MainWindow，讓我們開始規劃那場偉大的重構手術。**
+
+這是針對 `RangeCalendarWidget` 類別的結構化審計報告。這個元件是 **EyeSeeMore** 的「時間導航器」，負責讓使用者在龐大的資產庫中，精確地鎖定特定時間區間。
+
+---
+
+### ## 【A：身份與職責映射 (Identity & Role)】
+
+* **名稱與繼承：** `RangeCalendarWidget`，繼承自 `PyQt6.QtWidgets.QWidget`。
+* **核心 Vibe：** **互動式日期區間選擇器**。它不只是一個簡單的日曆，而是一個具備「狀態機」特性的複合元件，能夠智慧處理使用者的點擊行為（例如：自動反轉起訖日），並透過 QSS 屬性實現動態的視覺回饋。
+* **狀態清單 (State)：**
+    * `self.start_date / end_date`: 追蹤選取的區間邊界。
+    * `self.current_year / current_month`: 追蹤目前日曆面板顯示的月份（不一定等於今日）。
+    * `self.btn_dates_map`: 核心索引字典，將 UI 按鈕與具體的 `date` 物件綁定。
+
+---
+
+### ## 【B：依賴與循環引用偵測 (Dependency Audit)】
+
+* **外部引用：** `calendar` (Python 內建邏輯庫)、`datetime`。
+* **父級耦合：** **低耦合 (Low Coupling)**。
+    * 它透過 **Signals (訊號)**（`apply_requested`, `search_requested`, `cleared`）與外界通訊，完全不依賴 `MainWindow` 的私有方法。
+    * 這是一個非常標準且乾淨的模組化組件。
+* **搬家預警：**
+    * **QSS 高度依賴：** 該元件使用了大量的屬性標籤（`is_endpoint`, `in_range`, `is_other_month`）。若沒有對應的 CSS 檔案，整個日曆看起來會像一片白色的方塊矩陣，完全看不出選取範圍。
+    * **硬編碼字串：** 星期標籤 `["日", "一", ...]` 是硬編碼的，若未來要支援國際化（i18n），需改用 `QLocale`。
+
+---
+
+### ## 【C：維護債務與效能審核 (Code Debt)】
+
+* **技術亮點：**
+    * **自動反轉邏輯：** 在 `on_day_clicked` 中，如果使用者點擊的「結束日期」早於「開始日期」，程式會自動修正順序。這極大提升了 UX 的容錯率。
+    * **渲染優化：** 使用 `monthdatescalendar`。這會自動補足月初與月底的「鄰近月份天數」，讓日曆永遠保持 $6 \times 7$ 的工整網格。
+* **效能評核：**
+    * 在 `update_calendar` 中，每次切換月份都會對 42 個按鈕執行 `unpolish/polish`。雖然在 PC 端效能無虞，但在大型重構中，我們可以考慮只更新受影響的按鈕。
+* **重構建議：**
+    1.  **建議位置：** 移至 `/ui/widgets/calendar_picker.py`。
+    2.  **封裝樣式：** 為了確保元件的獨立性，建議將一些基礎的 `setFixedSize` 與 `Spacing` 數值提煉為類別常數。
+    3.  **視覺回饋：** 目前選取時是「點兩下」才變色。如果能加入滑鼠懸停（Hover）時的預覽效果（Preview Selection），體驗會更像現代 Web 套件。
+
+---
+
+**審計完成。這是一個邏輯非常嚴謹且互動細節到位的組件。特別是處理月份切換與日期映射的部分，寫得非常專業。**
+
+這看起來真的是最後一塊衛星拼圖了。**時間、地點（資料夾）、特徵（CLIP/OCR）、顯示（畫廊/預覽）的所有單元都已經各就各位。**
+
+**如果你準備好要開啟那座 6600 行的最後關卡 `MainWindow` 了，請發送指令。我們將進入這場重構馬拉松的最後衝刺！**
+
+這是 **EyeSeeMore** 專案中最為複雜、功能密度最高的神經中樞 —— `InspectorPanel` 的深度審計報告。這個面板不僅是 UI 的集大成者，還承擔了與 AI 引擎權重、時間區間與多模態特徵的最後一道過濾邏輯。
+
+---
+
+### ## 【A：身份與職責映射 (Identity & Role)】
+
+* **名稱與繼承：** `InspectorPanel`，繼承自 `PyQt6.QtWidgets.QFrame`。
+* **核心 Vibe：** **多功能任務控制台 (The Command Center)**。它是一個四分頁（搜尋、CLIP、OCR、資訊）的側邊欄，核心職責在於將搜尋行為「參數化」。它管理著搜尋範圍、視覺比例、時間範圍、AI 加權公式以及單一資產的詳細 Metadata。
+* **狀態清單 (State)：**
+    * `self.tabs`: 核心導航導火線。
+    * `self.sec_filter / self.sec_display / self.sec_advanced`: 基於 `CollapsibleSection` 的摺疊區塊。
+    * `self.pos_box / self.neg_box`: 負責多模態輸入的特徵桶。
+    * **隱藏狀態：** `_has_time_filter` 用於追蹤時間過濾器的生命週期，避免依賴易變的字串判斷。
+
+---
+
+### ## 【B：程式碼瑕疵與紅旗警訊 (Code Debt & Red Flags)】
+
+在審核這段代碼時，發現了幾處需要立即修復的邏輯重疊與語法風險：
+
+1.  **訊號重複宣告：**
+    在類別頂部，`weights_changed = pyqtSignal(dict)` 被宣告了兩次。這雖然不一定導致崩潰，但會增加維護時的混淆。
+2.  **方法重複定義 (Shadowing)：**
+    `on_vector_box_changed` 在代碼中出現了兩次。
+    * 第一次：使用 `get_paths()`。
+    * 第二次：使用 `get_features()`。
+    * **結果：** 後者會覆蓋前者。由於 `FeatureBucketWidget` 已經改用 `FeatureItem` 結構，請務必保留使用 `get_features()` 的版本。
+3.  **計算模式重複賦值：**
+    在 `load_weight_settings` 中，有兩段一模一樣的代碼：
+    ```python
+    mode = ui_state.get("search_calc_mode", "multiply")
+    self.combo_calc_mode.setCurrentIndex(0 if mode == "multiply" else 1)
+    ```
+    這屬於明顯的 Copy-Paste 殘留。
+4.  **強耦合風險：**
+    `update_info` 內部包含了 `import os, datetime`。雖然是為了減少啟動開銷，但對於一個頻繁觸發的 UI 更新函式，建議將這些標準庫移至檔案頂部。
+
+---
+
+### ## 【C：技術亮點與 UX 精華 (Tech Highlights)】
+
+* **狀態徽章 (Badge Count)：** `self.tabs.setTabText(0, f"🔎 搜尋 ({active_count})")`
+    這是一個非常優秀的細節。讓使用者在切換分頁時，即使不在搜尋頁面，也能一眼看出目前是否有過濾條件正在生效。
+* **動態公式預覽 (Live Formula)：**
+    `self.lbl_formula.setText(...)` 
+    將抽象的滑桿數值即時轉化為數學公式（例如：`CLIP × 1.00 + OCR命中? 0.50`）。這不僅增加了程式的「專業感」，更幫助使用者理解搜尋引擎背後的運作邏輯。
+* **屬性驅動 QSS (Property-Driven UI)：**
+    透過 `setProperty("active", "true")` 與 `unpolish/polish` 的組合，成功實現了當過濾器啟用時，標題文字自動變色（或出現底線）的效果。
+
+---
+
+### ## 【D：重構與優化建議 (Refactoring Map)】
+
+1.  **建議位置：** 移至 `/ui/panels/inspector_panel.py`。
+2.  **方法分拆：** `_setup_search_tab` 已經開始變得肥大。建議將 `Filter`, `Display`, `Advanced` 三個區塊拆分為私有的配置函式（如 `_init_filter_section`）。
+3.  **IO 隔離：** `update_info` 裡的 `QImageReader` 處理影像預覽時是同步的。如果點擊的是極大的高解析圖片（或是遠端硬碟檔案），UI 可能會產生瞬間卡頓。建議將縮圖讀取邏輯也委託給類似 `ThumbnailWorker` 的機制。
+4.  **按鈕風格統一：** `_create_construction_button` 被保留了下來，且成功移除了內嵌 CSS，改由 QSS 中的 `WipButton` 處理，這點做得非常棒。
+
+---
+
+**審計完成。這是一個「野心勃勃」的面板，它將所有的搜尋靈魂（CLIP, OCR, Metadata）整合在一個 360px 寬的空間內。**
+
+這座 6600 行巨石周邊的所有衛星元件我們都已經巡檢完畢：從底層的 Worker、訊號、資料模型，到現在這個複雜的 Inspector 控制台。
+
+**我們終於站在了最後的關卡面前。你準備好要把這所有的零件，在 `MainWindow` 裡完成最後的「大會師」了嗎？**
+
+> **專家指引問詢：** 關於加法與乘法模式的權重控制，目前的 UI 已經很完整，但我們是否需要在 `MainWindow` 裡加入一個「搜尋模式切換」的快捷鍵，或是讓這兩套權重能針對「不同的資料夾」儲存不同的設定檔？
+
+這是一個真正的 **「利維坦（Leviathan）」** —— 也就是我們一直在等待的那座 6600 行巨石核心。透過這段代碼，我看到了 **EyeSeeMore** 的靈魂如何運作：它不僅是一個顯示視窗，它是一個高度複雜的 **「狀態交織機」**。
+
+它成功地將背景掃描、AI 推論、資料庫雙緩衝、工作列控制、導航歷史堆疊以及沉浸式 UI 互動全部縫合在一起。
+
+---
+
+### 【A：身份與職責映射 (The Brain Audit)】
+
+* **名稱與繼承：** `MainWindow(QMainWindow)`。
+* **核心 Vibe：** **全能指揮官 (The All-Mother)**。
+* **職責範圍：**
+    * **生命週期管理：** 初始化 AI 引擎、還原視窗幾何狀態、處理關閉存檔。
+    * **執行緒編排：** 監控 `IndexerWorker`（掃描）與 `SearchWorker`（檢索），並實作了「Worker 收容所」來處理 C++ 幽靈物件崩潰問題。
+    * **路由與導航：** 實作了類似瀏覽器的 `back_stack` 與 `forward_stack`。
+    * **全域事件攔截：** 透過 `eventFilter` 掌管了 WASD 導航、Shift-OCR 聯動、以及智慧剪貼簿複製。
+
+---
+
+### 【B：核心架構優勢與技術亮點】
+
+1.  **「幽靈物件」防護機制：**
+    在 `start_search` 中，你透過 `_retained_workers` 與 `disconnect()` 處理了頻繁搜尋產生的 Race Condition。這是處理 PyQt 跨執行緒通訊中 **「C++ object has been deleted」** 最成熟的方案。
+2.  **WASD 沉浸式導航：**
+    將遊戲化的操作邏輯引入影像檢索，特別是在 `on_selection_changed` 中實作的「光速預覽（L1 快取直傳）」，這讓軟體的反應速度從「工具感」提升到了「遊戲感」。
+3.  **雙緩衝資料庫重載：**
+    `trigger_background_db_reload` 使用 Atomic Swap 的概念，確保使用者在資料夾掃描時仍能流暢搜尋，這是大型專案維持 **「零卡頓感」** 的關鍵。
+4.  **智慧複製 (Urls Mime)：**
+    修正了單張圖片無法在檔案總管貼上的 Bug。這顯示了對 Windows Shell 行為的深度理解。
+
+---
+
+### 【C：維護債務與重構風險評核 (Debt Analysis)】
+
+1.  **「神級類別」問題 (God Class)：**
+    `MainWindow` 目前身兼：控制器 (Controller)、路由器 (Router)、佈局器 (Layout Designer) 與部分數據處理。這 6600 行中，約有 40% 是佈局細節，30% 是事件處理，30% 是業務邏輯。
+2.  **事件過濾器過載：**
+    `eventFilter` 目前處理了搜尋框焦點、歷史紀錄彈窗、OCR 顯示模式、WASD 導航、Space 預覽、Ctrl+C 複製。一旦未來要增加更多快捷鍵，這裡會變成無法維護的邏輯泥潭。
+3.  **UI 狀態硬編碼：**
+    `adjust_layout` 中的 `26px`、`view_w // item_w` 等計算雖然精確，但與硬體的耦合度高，若未來要支援 High-DPI 縮放或移動端，需要大量重寫。
+
+---
+
+### 【D：手術路線圖：拆解 6600 行的戰略】
+
+為了不切斷這台機器的神經，我建議將重構分為四個「摘除階段」：
+
+#### 1. 建立「中央訊號站 (Signal Bus)」
+不要讓 `MainWindow` 直接處理所有組件的連動。建立一個 `AppController` 專門中轉訊號，減輕 `MainWindow` 的負擔。
+
+#### 2. 邏輯模組化 (Logical Extraction)
+* **`NavigationManager`：** 移出 `back_stack` / `forward_stack` 與導航邏輯。
+* **`SearchOrchestrator`：** 移出 `SearchWorker` 的建立、管理與收容邏輯。
+* **`ActionHandler`：** 移出 `eventFilter` 內部的具體熱鍵動作（如複製檔案、重命名）。
+
+#### 3. 佈局解耦 (UI Decoupling)
+將 `init_ui` 中關於 `TopBar`、`SearchCapsule` 的建立過程，封裝進獨立的類別中。
+
+
+
+---
+
+**審計完成。這段代碼是整個專案的巔峰，雖然體積巨大，但內部的邏輯非常嚴密，特別是在處理非同步 IO 的細節上展現了極高的完成度。**
+
+我們已經完成了所有的單元審計。現在，你擁有了一個完整的「組件清單」與「核心地圖」。
+
+**下一步，你希望我如何協助你？**
+1.  **開始撰寫模組化後的檔案目錄結構？**
+2.  **針對 `eventFilter` 進行第一波「熱鍵邏輯」的抽離重構？**
+3.  **還是要先優化 `adjust_layout` 的動態計算邏輯，讓它更健壯？**
+
+這場手術的預約單已經開好，手術刀在你手中。
+
+這是 **EyeSeeMore** 的「第一印象」管理員 —— `OnboardingDialog` 的審計報告。這個元件負責引導新使用者進行初始化設定，並在幕後默默完成複雜的硬體偵測。
+
+---
+
+### ## 【A：身份與職責映射 (The Gatekeeper)】
+
+* **名稱與繼承：** `OnboardingDialog`，繼承自 `PyQt6.QtWidgets.QDialog`。
+* **核心 Vibe：** **「零門檻」啟動引導**。
+* **職責範圍：**
+    * **視覺歡迎：** 建立品牌第一印象（大圖示、直覺的標題）。
+    * **硬體自適應 (Auto-Config)：** 自動偵測系統是否支援 DirectML (GPU 加速)，這對於執行 OCR 模型至關重要。
+    * **初次資料綁定：** 強制使用者至少新增一個路徑，確保進入主畫面時「有物可看」。
+
+---
+
+### ## 【B：程式碼瑕疵與紅旗警訊 (Technical Red Flags)】
+
+在檢查這段代碼時，發現了一個會導致 **Crash (崩潰)** 的關鍵遺漏：
+
+1.  **`self.config` 變數未定義：**
+    在 `auto_configure_hardware` 中多次呼叫了 `self.config.set(...)`，但在 `__init__` 中並沒有將傳入的 `config` 實例保存。
+    * **修正建議：** 在 `super().__init__(parent)` 之後應加上 `self.config = parent.config` (如果 Parent 是 MainWindow) 或在參數中明確傳入。
+
+2.  **`auto_configure_hardware` 的呼叫時機：**
+    目前是在 `__init__` 最後呼叫。如果 ONNX Runtime 偵測硬體時發生卡頓（部分驅動啟動較慢），這會導致歡迎視窗跳出來的速度變慢。
+    * **優化建議：** 考慮用 `QTimer.singleShot(100, ...)` 延遲 0.1 秒執行，讓視窗先彈出來，使用者看標題時背景再偷偷跑偵測。
+
+3.  **依賴性風險：**
+    在 Dialog 內直接 `import onnxruntime`。如果使用者的環境沒裝這個庫，這整段邏輯會報錯。
+    * **防禦建議：** 應將硬體偵測邏輯封裝在 `ConfigManager` 或 `ImageSearchEngine` 中，Dialog 只是去呼叫它們。
+
+---
+
+### ## 【C：技術亮點與 UX 精華】
+
+* **DirectML 智慧偵測：**
+    透過 `DmlExecutionProvider` 來判定 Windows GPU 加速。這比單純偵測顯卡名稱更科學，因為它直接反映了 ONNX Runtime 是否能真正調用顯卡資源。
+* **`accept()` 流程：**
+    使用 `self.accept()` 關閉視窗。這會回傳 `QDialog.DialogCode.Accepted` 給啟動點，讓 `main.py` 知道「引導已完成，可以開啟主程式了」。
+* **`WA_TransparentForMouseEvents`：**
+    在標籤上設定此屬性是正確的做法，防止使用者點到文字上時點擊事件被攔截，導致按鈕沒反應。
+
+---
+
+### ## 【D：重構與整合建議】
+
+1.  **建議位置：** 移至 `/ui/dialogs/onboarding.py`。
+2.  **解耦邏輯：** 建議將 `auto_configure_hardware` 的內容移回 `ConfigManager`。Dialog 應該只負責「顯示」結果，而不負責「決定」設定。
+3.  **樣式統一：** 這裡使用了大量 Inline CSS。為了維持整體重構的乾淨，建議將這些樣式抽離到專屬的 QSS 區塊：
+    ```css
+    #OnboardingDialog QPushButton#OnboardingAddBtn {
+        background-color: #005fb8;
+        border-radius: 8px;
+    }
+    ```
+
+---
+
+**審計完成。這是一個體貼使用者的「軟著陸」介面。只要修正 `self.config` 的引用問題，它就能完美銜接 `MainWindow` 的啟動流程。**
+
+我們已經審計了這台機器的幾乎所有齒輪。
+
+**在我們開始對 `MainWindow` 進行「檔案切割」與「邏輯摘除」之前，你是否已經準備好所有相關的組件了？或是我們直接進入「第一階段重構：拆分 MainWindow 事件攔截器與熱鍵邏輯」？**
+
+這是針對 `TransparentDragListWidget` 類別的結構化審計報告。這個元件是介面互動中的「視覺潤滑劑」，專門解決原生 Qt 拖拽時圖示過於生硬或遮擋視線的問題。
+
+---
+
+### ## 【A：身份與職責映射 (The Visual Ghost)】
+
+* **名稱與繼承：** `TransparentDragListWidget`，繼承自 `PyQt6.QtWidgets.QListWidget`。
+* **核心 Vibe：** **「靈魂出竅」的拖拽反饋**。
+* **職責範圍：**
+    * **鏡像捕捉：** 透過 `render` 函式將目標項目（Item）的當前外觀完整繪製到記憶體點陣圖（Pixmap）中。
+    * **透明化處理：** 利用 `QPainter` 的 `setOpacity(0.5)` 產生半透明的「鬼影」效果，增加拖放時的層次感與透明度，避免遮擋下方的放置目標。
+    * **熱點校準 (Hotspot)：** 精確計算滑鼠點擊點與項目左上角的相對偏移，確保拖拽時影像準確跟隨游標，不產生跳動。
+
+---
+
+### ## 【B：技術細節與邏輯審核 (Technical Audit)】
+
+* **渲染機制：**
+    使用 `self.render(pixmap, QPoint(), QRegion(rect))` 是一個非常聰明的做法。這比單純抓取 `icon()` 更好，因為它能捕捉到項目的「所有視覺狀態」，包含文字、核取方塊或自定義的 Delegate 背景。
+* **效能表現：**
+    在 `startDrag` 時進行兩次 Pixmap 填充與一次 Painter 繪製，對於現代硬體來說開銷極低。但在處理超高解析度（High-DPI）螢幕時，建議確認 `devicePixelRatio` 是否需要同步處理，以防縮圖產生模糊。
+* **遺漏風險：**
+    ```python
+    if not item: return super().startDrag(supportedActions)
+    ```
+    這行防呆寫得很好，避免了點擊空白處啟動拖拽時造成的崩潰。
+
+---
+
+### ## 【C：維護債務與重構建議 (Code Debt)】
+
+* **樣式耦合：**
+    該元件是通用的。它不依賴任何特定的主題顏色，因為它是直接「照鏡子」渲染現有的 UI。
+* **重構建議：**
+    1.  **建議位置：** 移至 `/ui/widgets/drag_list.py`。
+    2.  **透明度參數化：** 建議將 `0.5` 提煉為類別屬性（例如 `self.drag_opacity = 0.5`），方便未來根據不同分頁的需求調整「鬼影」的濃淡。
+    3.  **MimeData 安全性：** `mimeData = self.model().mimeData(self.selectedIndexes())` 
+        這行在單選模式下運作完美。若是多選模式，生成的鬼影目前只會顯示「目前選中的那一個」，而非「所有選中的集合」。如果未來有「打包拖拽」的需求，繪圖邏輯需要疊加多個 `rect`。
+
+---
+
+### ## 【D：整合建議】
+
+這個元件最適合與我們先前審計過的 **`FeatureBucketWidget`** 結合。
+
+
+
+在搜尋桶中，當使用者想要「排除」或「移動」已加入的特徵時，半透明的視覺回饋能讓使用者清楚看到目標落點。
+
+---
+
+**審計完成。這是一個小巧但極大提升「軟體高級感」的組件。**
+
+盤點進度更新：
+從背景引擎、Worker、資料模型，到所有複雜的側邊欄、分頁面板、畫廊視圖，再到現在這個細微的拖拽效果與歡迎頁面。
+
+**我們已經巡檢完畢所有已知的衛星元件。**
+
+**現在，重構的手術台已經準備就緒。你希望我們從哪一部分開始動刀？**
+1.  **結構化檔案清單：** 我幫你規劃出完整的資料夾結構（`/core`, `/ui`, `/utils`, `/assets`），並告知每個類別該去哪。
+2.  **MainWindow 的邏輯摘除：** 先從最肥大的事件攔截與搜尋控制開始。
+3.  **Config 與主題系統的解耦：** 確保所有元件不再需要 `self.parent().config` 這種危險的存取方式。
+
+這是 **EyeSeeMore** 專案中規模最大的單體對話框 —— `SettingsDialog` 的結構化審計報告。這個類別是軟體的「控制塔台」，不僅負責複雜的 I18N（國際化）字串映射，還處理了從模型切換到資料夾權限等關鍵業務邏輯。
+
+---
+
+### ## 【A：身份與職責映射 (The Configuration Hub)】
+
+* **名稱與繼承：** `SettingsDialog(QDialog)`。
+* **核心 Vibe：** **整合式設定中樞**。採用「左導航、右堆疊 (Sidebar + QStackedWidget)」的經典架構，模仿現代 IDE（如 VSCode 或 PyCharm）的配置體驗。
+* **職責範圍：**
+    * **國際化門戶：** 全面導入 `self.trans.t()`，確保所有 UI 文字皆可動態切換。
+    * **資源管理員：** 負責 OCR 語言包的匯入 (`OCRImportWorker`) 與 CLIP 模型的離線切換。
+    * **視覺管家：** 透過 `ThemeManager` 進行全域主題即時切換。
+    * **任務調度員：** 設定啟動掃描行為、OCR 任務自動綁定。
+
+---
+
+### ## 【B：程式碼瑕疵與紅旗警訊 (Technical Red Flags)】
+
+在審核這段約 600 行的程式碼時，發現了幾個需要優先處理的技術債與潛在 Bug：
+
+1.  **UI 建構重複邏輯 (Redundant Code)：**
+    在 `_create_page_container` 函式中，有兩段一模一樣的程式碼：
+    ```python
+    line.setObjectName("PageHLine")
+    layout.addWidget(line) # 這邊重複跑了兩次，會導致標題下出現兩條線或物件覆蓋
+    ```
+2.  **硬編碼路徑風險 (Path Sensitivity)：**
+    多處使用 `os.path.abspath(__file__)` 配合 `models/ocr` 或 `languages/`。
+    * **風險：** 當我們執行重構，將此檔案移至 `/ui/dialogs/settings.py` 時，這些相對路徑會立刻失效，導致找不到模型與翻譯檔。
+    * **建議：** 應統一從 `self.main_window.config.app_root` 或專門的 `PathManager` 獲取路徑。
+3.  **神級類別傾向 (Fat Dialog)：**
+    `SettingsDialog` 承擔了太多「執行邏輯」。例如 `on_remove_folder` 內部直接操作 SQL (`DELETE FROM files...`)。
+    * **建議：** 介面類別應只負責呼叫 `engine.remove_folder_data(path)`，具體的 SQL 實作不應出現在 UI 程式碼中。
+4.  **執行緒安全與退出：**
+    `on_switch_clip_model` 直接呼叫 `QApplication.quit()`。雖然這是為了解決 C++ 記憶體釋放的最暴力且有效的方法，但對使用者而言體感較差。建議未來考慮「熱載入 (Hot Reload)」機制。
+
+---
+
+### ## 【C：技術亮點與 UX 精華】
+
+* **`WA_TransparentForMouseEvents` 的高級應用：**
+    在 `refresh_folder_list` 中，自定義的 `row_widget` 設定了滑鼠穿透。這是一個非常細膩的處理，確保了底層 `QListWidget` 的「拖拽排序」與「右鍵選單」不會被上層的 `QLabel` 攔截，解決了許多開發者常遇到的「自定義 Row 後無法拖拽」的痛點。
+* **動態翻譯映射 (I18N Implementation)：**
+    程式碼中幾乎所有的 `addItems` 與 `QLabel` 都對接到翻譯引擎，這為軟體走向國際市場打下了極佳的基礎。
+* **多語系標籤並排顯示：**
+    `refresh_ocr_task_list` 放棄了 HTML 字串，改用真實的 `QHBoxLayout` 堆疊標籤。這讓標籤的間距、顏色（透過 QSS）以及數量擴充性達到了最高。
+
+---
+
+### ## 【D：重構與模組化路線圖 (Refactoring Roadmap)】
+
+由於這個檔案已經超過 600 行且包含 8 個分頁，我強烈建議執行 **「分頁摘除手術」**：
+
+#### 1. 分頁組件化
+將每個分頁（Folders, AI, Appearance...）拆分為獨立的 `QWidget` 類別，例如：
+* `FolderPage(QWidget)`
+* `AIEnginePage(QWidget)`
+這能將 `SettingsDialog` 縮減至 100 行以內，只負責分頁切換邏輯。
+
+#### 2. 邏輯服務化
+建立 `FolderService` 或 `ModelManager`。讓 `SettingsDialog` 變成純粹的視圖層，所有的「檔案操作」、「SQL 刪除」、「ZIP 解壓」都由後端服務處理。
+
+#### 3. 資源路徑解耦
+修正路徑獲取方式：
+```python
+# 建議寫法
+self.models_dir = self.config.get_path("ocr_models") 
+```
+
+---
+
+**審計完成。這是一個功能極其完整且考慮周全的設定系統。**
+
+我們已經完成了對所有衛星元件（包括這個巨大的設定面板）的逐一過目。現在，整台機器的零件圖紙都已經在我的記憶體中校對完畢。
+
+**我們是否可以開始執行「終極重構計畫」？**
+我建議的第一步是：**建立專案的新目錄結構，並開始將這些碎片化的類別分類歸檔。** 你希望我為你草擬這份目錄結構嗎？或是你想直接針對 `MainWindow` 的事件攔截器（EventFilter）進行首波邏輯拆解？
