@@ -3970,10 +3970,6 @@ class MainWindow(QMainWindow):
         self.last_search_results = [] # 儲存最近一次檢索回來的原始資料
         self.active_time_range = None # 目前選取的時間區間 (start_ts, end_ts)
 
-        self.back_stack = []
-        self.forward_stack = []
-        self.is_navigating = False
-        self.pending_scroll_pos = None
         self.current_image_search_path = None
         
         # 設定歷史紀錄檔路徑
@@ -3983,6 +3979,17 @@ class MainWindow(QMainWindow):
 
         self.load_history()
         self.init_ui()
+
+        # NavigationManager 需要在 init_ui() 之後建立 (因為依賴 UI 元件)
+        from navigation_manager import NavigationManager
+        self.nav = NavigationManager(
+            state_snapshot_fn=self._nav_snapshot,
+            apply_state_fn=self._nav_apply,
+            update_buttons_fn=lambda b, f: (
+                self.btn_back.setEnabled(b),
+                self.btn_forward.setEnabled(f),
+            ),
+        )
         
         self.indexer_worker = IndexerWorker(self.config, self)  # 加入 self 參數
         self.indexer_worker.status_update.connect(self.update_status) # 稍微改一下 status label 的用法
@@ -3994,6 +4001,9 @@ class MainWindow(QMainWindow):
         self.random_data_ready.connect(self.set_base_results)
         self.ai_ready.connect(self.on_ai_loaded)
         self.db_reloaded.connect(self.on_db_reloaded)
+
+        from action_handler import ActionHandler
+        self.action_handler = ActionHandler(self)
 
         QApplication.instance().installEventFilter(self)
         
@@ -4054,7 +4064,10 @@ class MainWindow(QMainWindow):
             else:
                 self.start_search(triggered_by_slider=True)
 
-    def get_current_state(self):
+    # ------------------------------------------------------------------
+    #  導航回呼 (供 NavigationManager 呼叫)
+    # ------------------------------------------------------------------
+    def _nav_snapshot(self):
         """擷取當前頁面的完整快照 (包含滾輪位置)"""
         return {
             "query": self.input.text().strip(),
@@ -4064,44 +4077,10 @@ class MainWindow(QMainWindow):
             "image_path": getattr(self, "current_image_search_path", None)
         }
 
-    def push_current_state(self):
-        """發生新動作時，儲存現有狀態並清空「下一頁」紀錄"""
-        if self.is_navigating: return
-        state = self.get_current_state()
-        self.back_stack.append(state)
-        self.forward_stack.clear()
-        self.update_nav_buttons()
-
-    def update_nav_buttons(self):
-        """更新 ← → 按鈕的可用狀態"""
-        self.btn_back.setEnabled(len(self.back_stack) > 0)
-        self.btn_forward.setEnabled(len(self.forward_stack) > 0)
-
-    def navigate_back(self):
-        if not self.back_stack: return
-        self.is_navigating = True
-        self.forward_stack.append(self.get_current_state())
-        target_state = self.back_stack.pop()
-        self.apply_state(target_state)
-        self.update_nav_buttons()
-        self.is_navigating = False
-
-    def navigate_forward(self):
-        if not self.forward_stack: return
-        self.is_navigating = True
-        self.back_stack.append(self.get_current_state())
-        target_state = self.forward_stack.pop()
-        self.apply_state(target_state)
-        self.update_nav_buttons()
-        self.is_navigating = False
-
-    def apply_state(self, state):
+    def _nav_apply(self, state):
         """套用紀錄中的狀態並執行對應的載入"""
         self.current_folder_path = state["folder_path"]
         self.breadcrumb_lbl.setText(state["breadcrumb"])
-        
-        # 標記等待還原的滾輪位置 (交給底層的 set_base_results 處理)
-        self.pending_scroll_pos = state["scroll_pos"] 
 
         if state["image_path"]:
             self.start_image_search(state["image_path"])
@@ -4111,6 +4090,12 @@ class MainWindow(QMainWindow):
         else:
             self.input.setText("")
             self.on_folder_filter(state["folder_path"])
+
+    def navigate_back(self):
+        self.nav.go_back()
+
+    def navigate_forward(self):
+        self.nav.go_forward()
 
     def refresh_sidebar(self):
         """通知側邊欄更新資料夾狀態與排序"""
@@ -4164,8 +4149,8 @@ class MainWindow(QMainWindow):
     def on_folder_filter(self, path):
         if not self.engine: return
 
-        if not self.is_navigating:
-            self.push_current_state()
+        if not self.nav.is_navigating:
+            self.nav.push()
 
         self.current_folder_path = path
         
@@ -4225,144 +4210,45 @@ class MainWindow(QMainWindow):
             self.set_base_results(results)
             self.status.setText(f"Folder: {os.path.basename(path)} ({len(results)} items)")
 
-        # [修改] MainWindow.eventFilter
     def eventFilter(self, obj, event):
-        # 從設定檔讀取操作模式
-        ui_state = self.config.get("ui_state", {})
-        ocr_mode = ui_state.get("ocr_shift_mode", "hold")      
-        nav_mode = ui_state.get("preview_wasd_mode", "nav")    
+        ah = self.action_handler
+        cfg = ah.get_config()
 
-        # 1. 處理鍵盤按下 (KeyPress)
+        # 1. 鍵盤按下 (KeyPress) — 純分流
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
-            
-            # ==========================================
-            #  [新增] ESC 鍵邏輯：全域強制釋放焦點
-            # ==========================================
+
             if key == Qt.Key.Key_Escape:
-                if self.input.hasFocus():
-                    # 如果目前是在頂部搜尋框打字，取消它的焦點
-                    self.input.clearFocus()
-                    self.list_view.clearSelection() # 順便清空畫廊的藍色選取框
+                if ah.handle_escape():
                     return True
-        
-            # --- Shift 鍵邏輯：查看 OCR ---
+
             if key == Qt.Key.Key_Shift:
-                if self.preview_overlay.isVisible():
-                    if ocr_mode == "toggle":
-                        # 切換模式：反轉目前的鎖定狀態
-                        self.is_ocr_locked = not self.is_ocr_locked
-                        self.preview_overlay.set_ocr_visible(self.is_ocr_locked)
-                    else:
-                        # 長按模式：按下即顯示
-                        self.preview_overlay.set_ocr_visible(True)
-                return True 
+                return ah.handle_shift_press(cfg["ocr_mode"])
 
             focused_widget = QApplication.focusWidget()
             is_typing = isinstance(focused_widget, QLineEdit)
-            
+
             if not is_typing and QApplication.activeWindow() == self:
                 if key in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D):
-                    # 判斷預覽視窗是否開啟
-                    is_preview_active = self.preview_overlay.isVisible()
-                
-                    # 如果是「模式 1：關閉預覽」，且預覽正開啟時按下 WASD
-                    if is_preview_active and nav_mode == "close":
-                        self.preview_overlay.hide()
-                        self.is_ocr_locked = False
-                
-                    # 執行底層移動
-                    self.list_view.setFocus()
-                    if key == Qt.Key.Key_W: self.send_nav_key(Qt.Key.Key_Up)
-                    elif key == Qt.Key.Key_S: self.send_nav_key(Qt.Key.Key_Down)
-                    elif key == Qt.Key.Key_A: self.send_nav_key(Qt.Key.Key_Left)
-                    elif key == Qt.Key.Key_D: self.send_nav_key(Qt.Key.Key_Right)
-                    return True
-                
+                    return ah.handle_wasd(key, cfg["nav_mode"])
                 elif key == Qt.Key.Key_Space:
-                    self.toggle_preview()
-                    return True
-                
-            # ==========================================
-            #  [新增] Ctrl+C 智慧複製 (全面統一為檔案路徑複製)
-            # ==========================================
+                    return ah.handle_space()
+
             if key == Qt.Key.Key_C and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-                # 確保焦點不在搜尋框內，且目前視窗是活躍狀態
-                if not self.input.hasFocus() and QApplication.activeWindow() == self:
-                    selected_indexes = self.list_view.selectionModel().selectedIndexes()
-                    
-                    if not selected_indexes:
-                        return False # 沒選中東西，讓系統照常處理
-                        
-                    # 1. 記住目前的狀態文字
-                    current_status = self.status.text()
-                    if not getattr(self, '_is_toast_active', False):
-                        self._previous_status_text = current_status
-                    
-                    self._is_toast_active = True # 標記進入提示狀態
-                        
-                    #  【統一邏輯】無論單選或多選，一律打包成實體檔案路徑 (Urls)
-                    # 解決單張圖片無法在檔案總管 Ctrl+V 貼上的 Bug
-                    from PyQt6.QtCore import QMimeData, QUrl
-                    mime_data = QMimeData()
-                    urls = []
-                    for idx in selected_indexes:
-                        item = idx.data(Qt.ItemDataRole.UserRole)
-                        if item and item.path:
-                            urls.append(QUrl.fromLocalFile(item.path))
-                    
-                    mime_data.setUrls(urls)
-                    QApplication.clipboard().setMimeData(mime_data)
-                    
-                    # 更新提示文字
-                    if len(urls) == 1:
-                        self.status.setText("已複製 1 個檔案到剪貼簿")
-                    else:
-                        self.status.setText(f"已複製 {len(urls)} 個檔案到剪貼簿")
-                        
-                    # 2. 建立還原函式，1.5秒後恢復文字並解除提示狀態
-                    def restore_status():
-                        self.status.setText(getattr(self, '_previous_status_text', "System Ready"))
-                        self._is_toast_active = False
-                        
-                    QTimer.singleShot(1500, restore_status)
-                        
-                    return True #  成功攔截並處理，不再往下傳遞
-    
-        # 2. 處理鍵盤放開 (KeyRelease) -> 關閉紅框 (僅限 Hold 模式)
+                result = ah.handle_copy()
+                if result:
+                    return True
+
+        # 2. 鍵盤放開 (KeyRelease)
         if event.type() == QEvent.Type.KeyRelease:
             if event.key() == Qt.Key.Key_Shift:
-                if self.preview_overlay.isVisible():
-                    # 只有在「長按模式」下，放開按鍵才會隱藏紅框
-                    if ocr_mode != "toggle":
-                        self.preview_overlay.set_ocr_visible(False)
-                return True
+                return ah.handle_shift_release(cfg["ocr_mode"])
 
-        # 3. 處理滑鼠點擊 (MouseButtonPress) -> 顯示/隱藏歷史紀錄
+        # 3. 滑鼠點擊 (MouseButtonPress)
         if event.type() == QEvent.Type.MouseButtonPress:
-            click_pos = event.globalPosition().toPoint()
-            
-            # 點擊外部關閉歷史紀錄
-            if self.history_list.isVisible():
-                input_rect = QRect(self.input.mapToGlobal(QPoint(0, 0)), self.input.size())
-                list_rect = QRect(self.history_list.mapToGlobal(QPoint(0, 0)), self.history_list.size())
-                if not input_rect.contains(click_pos) and not list_rect.contains(click_pos): 
-                    self.history_list.hide()
+            ah.handle_mouse_press(obj, event)
 
-            # 點擊搜尋框彈出歷史紀錄
-            if obj == self.input: 
-                self.show_history_popup()
-
-        # 最後確保所有未攔截的事件正常傳遞給父層
         return super().eventFilter(obj, event)
-
-    # [新增] 輔助函式：發送模擬按鍵給 ListView
-    def send_nav_key(self, key_code):
-        from PyQt6.QtGui import QKeyEvent
-        press_event = QKeyEvent(QEvent.Type.KeyPress, key_code, Qt.KeyboardModifier.NoModifier)
-        release_event = QKeyEvent(QEvent.Type.KeyRelease, key_code, Qt.KeyboardModifier.NoModifier)
-        QApplication.sendEvent(self.list_view, press_event)
-        QApplication.sendEvent(self.list_view, release_event)
 
 # ==========================================
 # 請找到 MainWindow 類別中的 toggle_preview 與 on_selection_changed 函式並替換
@@ -4470,7 +4356,7 @@ class MainWindow(QMainWindow):
         self.model.sort_items(key_func, reverse=is_descending)
         
         #  4. 防禦：只有在「沒有」等待還原的歷史滾輪位置時，才自動滾回最上方
-        if getattr(self, 'pending_scroll_pos', None) is None:
+        if self.nav.pending_scroll_pos is None:
             self.list_view.scrollToTop()
 
     # ==========================================
@@ -4524,9 +4410,9 @@ class MainWindow(QMainWindow):
         # 5. 順便套用目前的排序設定
         self.apply_gallery_sort() 
 
-        if getattr(self, 'pending_scroll_pos', None) is not None:
-            pos = self.pending_scroll_pos
-            self.pending_scroll_pos = None
+        if self.nav.pending_scroll_pos is not None:
+            pos = self.nav.pending_scroll_pos
+            self.nav.pending_scroll_pos = None
             # 等待極短時間讓 Grid 佈局計算完成後定位
             QTimer.singleShot(50, lambda: self.list_view.verticalScrollBar().setValue(pos))
 
@@ -4947,8 +4833,8 @@ class MainWindow(QMainWindow):
         
         if not triggered_by_slider:
 
-            if not self.is_navigating:
-                self.push_current_state()
+            if not self.nav.is_navigating:
+                self.nav.push()
 
             self.current_image_search_path = None
             self.add_to_history(q)
@@ -5004,8 +4890,8 @@ class MainWindow(QMainWindow):
     def start_image_search(self, image_path):
         if not self.engine: return
 
-        if not self.is_navigating:
-            self.push_current_state()
+        if not self.nav.is_navigating:
+            self.nav.push()
         self.current_image_search_path = image_path
 
         self.history_list.hide(); self.progress.show(); self.progress.setRange(0, 0)
@@ -5049,7 +4935,7 @@ class MainWindow(QMainWindow):
 
     def start_multi_vector_search(self, pos_features, neg_features): #  改為 features
         if not self.engine: return
-        if not self.is_navigating: self.push_current_state()
+        if not self.nav.is_navigating: self.nav.push()
 
         self.history_list.hide()
         self.progress.show()
