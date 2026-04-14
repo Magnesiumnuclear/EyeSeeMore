@@ -1109,6 +1109,62 @@ class ImageSearchEngine:
         except Exception as e:
             print(f"[Error] Failed to get stats: {e}"); return []
 
+    def remove_folder_data(self, folder_path: str) -> bool:
+        """
+        原子化移除資料夾：同時清理資料庫記錄與記憶體索引。
+        :param folder_path: 要移除的資料夾路徑（需與 DB 中的 folder_path 完全一致）
+        :return: True 表示成功
+        """
+        norm_folder = os.path.normpath(folder_path)
+        try:
+            # --- 1. 資料庫清理（foreign_keys 保護 cascade） ---
+            conn = self.get_db_conn()
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("DELETE FROM files WHERE folder_path = ?", (folder_path,))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[Engine] remove_folder_data DB error: {e}")
+            return False
+
+        # --- 2. 記憶體索引同步 ---
+        if not self.data_store:
+            return True
+
+        # 找出所有屬於此資料夾的索引位置
+        keep_mask = [
+            os.path.normpath(item["path"]) != norm_folder and
+            not os.path.normpath(item["path"]).startswith(norm_folder + os.sep)
+            for item in self.data_store
+        ]
+
+        new_data_store = [item for item, keep in zip(self.data_store, keep_mask) if keep]
+        keep_indices = [i for i, keep in enumerate(keep_mask) if keep]
+
+        if len(new_data_store) == len(self.data_store):
+            # 沒有任何項目被移除（路徑可能不符），仍視為成功
+            return True
+
+        # 重建 path_map（新索引號與舊不同，需完整重建）
+        new_path_map = {}
+        for new_idx, item in enumerate(new_data_store):
+            new_path_map[os.path.normpath(item["path"])] = new_idx
+
+        # 重建 stored_embeddings 與 FAISS
+        if self.stored_embeddings is not None and len(keep_indices) > 0:
+            new_emb = self.stored_embeddings[keep_indices]
+            self.stored_embeddings = new_emb
+            self.build_faiss_index(new_emb)
+        else:
+            self.stored_embeddings = None
+            self.faiss_index = None
+
+        self.data_store = new_data_store
+        self.path_map = new_path_map
+        print(f"[Engine] remove_folder_data: removed folder '{folder_path}', "
+              f"{len(self.data_store)} records remain.")
+        return True
+
     def rename_file(self, old_path, new_name):
         folder = os.path.dirname(old_path); new_path = os.path.join(folder, new_name)
         if os.path.exists(new_path): return False, "Target filename already exists."
@@ -4013,7 +4069,19 @@ class MainWindow(QMainWindow):
 
     def show_settings_dialog(self):
         dialog = SettingsDialog(self)
+        dialog.clip_model_changed.connect(self._on_clip_model_switched)
         dialog.exec()
+
+    def _on_clip_model_switched(self, model_id: str):
+        """接收 SettingsDialog.clip_model_changed 訊號，顯示友善提示後安全關閉。"""
+        reply = QMessageBox.information(
+            self,
+            "模型切換成功",
+            f"已切換至 {model_id}。\n\n為確保記憶體安全釋放，程式即將關閉，請手動重新啟動。",
+            QMessageBox.StandardButton.Ok,
+        )
+        if reply == QMessageBox.StandardButton.Ok:
+            QApplication.quit()
 
     def init_ui(self):
         from ui.main_window_ui import Ui_MainWindow
@@ -5017,17 +5085,39 @@ class TransparentDragListWidget(QListWidget):
         drag.exec(supportedActions, Qt.DropAction.MoveAction)
 
 class SettingsDialog(QDialog):
-    """常駐的主設定面板"""
+    """設定對話框（精簡容器版）— 僅負責 nav ↔ stack 的連結，
+    所有頁面邏輯已移至 ui/settings_pages/ 下各自的模組。"""
+
+    clip_model_changed = pyqtSignal(str)   # model_id，由 AIEnginePage 透傳
+
     def __init__(self, main_window):
         super().__init__(main_window)
-        self.main_window = main_window 
+        mw = main_window
+        trans = mw.config.translator
 
-        self.trans = self.main_window.config.translator
-        self.setWindowTitle(self.trans.t("settings", "window_title", "設定 (Settings)"))
-
+        self.setWindowTitle(trans.t("settings", "window_title", "設定 (Settings)"))
         self.resize(800, 600)
         self.setObjectName("SettingsDialog")
 
+        # ── 共用上下文：注入到所有子頁面 ──────────────────────────────────
+        ctx = {
+            "config":             mw.config,
+            "translator":         trans,
+            "engine":             mw.engine,
+            "theme_manager":      mw.theme_manager,
+            "change_view_mode":   mw.change_view_mode,
+            "reload_index":       mw.trigger_background_db_reload,
+            "refresh_sidebar":    mw.refresh_sidebar,
+            "on_refresh_clicked": mw.on_refresh_clicked,
+            "current_view_mode":  mw.current_view_mode,
+            "ocr_worker_class":   OCRImportWorker,
+        }
+
+        # ── 跨頁面回呼 hub（在頁面全部建立後填入）─────────────────────────
+        hub: dict = {}
+        ctx["hub"] = hub
+
+        # ── 建立導覽列 ────────────────────────────────────────────────────
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(15)
@@ -5035,1154 +5125,66 @@ class SettingsDialog(QDialog):
         self.nav_list = QListWidget()
         self.nav_list.setFixedWidth(200)
         self.nav_list.setObjectName("SettingsNavList")
-        
-        tabs = [
-            self.trans.t("settings", "nav_folders", "📁 資料夾管理"),
-            self.trans.t("settings", "nav_ai", "🧠 AI 引擎設定"),
-            self.trans.t("settings", "nav_appearance", "🖥️ 介面與顯示"),
-            self.trans.t("settings", "nav_hotkeys", "⌨️ 操作與快捷鍵"),
-            self.trans.t("settings", "nav_performance", "⚡ 效能調整"), # NEW
-            self.trans.t("settings", "nav_auto_tasks", "🕒 自動任務"), # NEW
-            self.trans.t("settings", "nav_language", "🌍 語言與翻譯"),
-            self.trans.t("settings", "nav_about", "ℹ️ 關於與說明")
-        ]
 
-        for tab in tabs:
-            self.nav_list.addItem(tab)
-            
+        nav_labels = [
+            trans.t("settings", "nav_folders",     "📁 資料夾管理"),
+            trans.t("settings", "nav_ai",           "🧠 AI 引擎設定"),
+            trans.t("settings", "nav_appearance",   "🖥️ 介面與顯示"),
+            trans.t("settings", "nav_hotkeys",      "⌨️ 操作與快捷鍵"),
+            trans.t("settings", "nav_performance",  "⚡ 效能調整"),
+            trans.t("settings", "nav_auto_tasks",   "🕒 自動任務"),
+            trans.t("settings", "nav_language",     "🌍 語言與翻譯"),
+            trans.t("settings", "nav_about",        "ℹ️ 關於與說明"),
+        ]
+        for label in nav_labels:
+            self.nav_list.addItem(label)
         main_layout.addWidget(self.nav_list)
+
         self.stack = QStackedWidget()
         self.stack.setObjectName("SettingsStack")
         main_layout.addWidget(self.stack, stretch=1)
         self.nav_list.currentRowChanged.connect(self.stack.setCurrentIndex)
 
-        self.init_page_folders()
-        self.init_page_ai()
-        self.init_page_appearance()
-        self.init_page_hotkeys()
-        self.init_page_performance() #  加入呼叫
-        self.init_page_auto_tasks()  #  加入呼叫
-        self.init_page_language() # 語言設定頁面
-        self.init_page_about()
+        # ── 實例化各頁面並加入 QStackedWidget ────────────────────────────
+        from ui.settings_pages.folders_page     import FoldersPage
+        from ui.settings_pages.ai_engine_page   import AIEnginePage
+        from ui.settings_pages.appearance_page  import AppearancePage
+        from ui.settings_pages.hotkeys_page     import HotkeysPage
+        from ui.settings_pages.performance_page import PerformancePage
+        from ui.settings_pages.auto_tasks_page  import AutoTasksPage
+        from ui.settings_pages.language_page    import LanguagePage
+        from ui.settings_pages.about_page       import AboutPage
+
+        self._folders_page    = FoldersPage(ctx)
+        self._ai_page         = AIEnginePage(ctx)
+        self._appearance_page = AppearancePage(ctx)
+        self._hotkeys_page    = HotkeysPage(ctx)
+        self._perf_page       = PerformancePage(ctx)
+        self._auto_page       = AutoTasksPage(ctx)
+        self._lang_page       = LanguagePage(ctx)
+        self._about_page      = AboutPage(ctx)
+
+        for page in (
+            self._folders_page, self._ai_page, self._appearance_page,
+            self._hotkeys_page, self._perf_page, self._auto_page,
+            self._lang_page, self._about_page,
+        ):
+            self.stack.addWidget(page)
+
+        # ── 填入跨頁面 hub ────────────────────────────────────────────────
+        hub["refresh_ocr_status"]    = self._ai_page.refresh_ocr_status
+        hub["refresh_folder_list"]   = self._folders_page.refresh_folder_list
+        hub["navigate_to_ai_ocr_tab"] = self._navigate_to_ai_ocr_tab
+
+        # ── 透傳 AIEnginePage 的 clip_model_changed ───────────────────────
+        self._ai_page.clip_model_changed.connect(self.clip_model_changed)
+
         self.nav_list.setCurrentRow(0)
 
-    def _create_page_container(self, title_text):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(15)
-        title = QLabel(title_text)
-        title.setObjectName("PageTitle")
-        layout.addWidget(title)
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setObjectName("PageHLine")
-        layout.addWidget(line)
-        line.setObjectName("PageHLine")
-        layout.addWidget(line)
-        return page, layout
-    
-    def _create_construction_button(self, text):
-        btn = QPushButton(text)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setObjectName("WipButton") 
-        return btn
-
-    def init_page_folders(self):
-        #  套用翻譯
-        page, layout = self._create_page_container(self.trans.t("folders", "page_title", "📁 資料夾管理 (Folders)"))
-        
-        #  套用翻譯
-        lbl_hint = QLabel(self.trans.t("folders", "hint", "提示：拖曳列表項目可改變排序。在項目上「點擊右鍵」可設定語系標記與圖示。"))
-        lbl_hint.setObjectName("SettingsHint")
-        layout.addWidget(lbl_hint)
-        
-        self.folder_list = TransparentDragListWidget()
-        self.folder_list.setObjectName("FolderSettingsList")
-        self.folder_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.folder_list.model().rowsMoved.connect(self.on_folder_order_changed)
-        
-        self.folder_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.folder_list.customContextMenuRequested.connect(self.show_folder_context_menu)
-        
-        layout.addWidget(self.folder_list)
-        
-        btn_layout = QHBoxLayout()
-        #  套用翻譯
-        self.btn_add = QPushButton(self.trans.t("folders", "btn_add", "+ 新增資料夾"))
-        self.btn_del = QPushButton(self.trans.t("folders", "btn_remove", "- 移除選取"))
-        
-        self.btn_add.setProperty("cssClass", "ActionBtn")
-        self.btn_del.setProperty("cssClass", "DangerBtn")
-        
-        self.btn_add.clicked.connect(self.on_add_folder)
-        self.btn_del.clicked.connect(self.on_remove_folder)
-        
-        btn_layout.addWidget(self.btn_add)
-        btn_layout.addWidget(self.btn_del)
-        btn_layout.addStretch(1)
-        layout.addLayout(btn_layout)
-        
-        self.refresh_folder_list()
-        self.stack.addWidget(page)
-
-    def refresh_folder_list(self):
-        self.folder_list.clear()
-        config_folders = self.main_window.config.get("source_folders")
-        stats = []
-        if self.main_window.engine:
-            stats = self.main_window.engine.get_folder_stats()
-        stats_dict = {os.path.normpath(p): c for p, c in stats}
-        
-        for i, f in enumerate(config_folders, 1):
-            path = f["path"]
-            icon = f.get("icon", "")
-            count = stats_dict.get(os.path.normpath(path), 0)
-            
-            display_icon = f"[{icon}]" if icon else f"[{i}]"
-            base_name = os.path.basename(path)
-            
-            # 1. 建立底層的 List Item
-            item = QListWidgetItem()
-            item.setToolTip(path) 
-            item.setData(Qt.ItemDataRole.UserRole, path)
-            item.setSizeHint(QSize(0, 48)) # 設定固定的完美行高
-            
-            # 2. 建立自訂的列元件 (Row Widget)
-            row_widget = QWidget()
-            # 💡 讓滑鼠點擊「穿透」這個 Widget，右鍵選單跟拖曳排序才能正常運作
-            row_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            
-            # 3. 使用水平佈局達成欄位對齊
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(15, 0, 20, 0) 
-            row_layout.setSpacing(10)
-            
-            # --- 欄位 A: 資料夾名稱 ---
-            lbl_name = QLabel(f"{display_icon}   {base_name}")
-            lbl_name.setStyleSheet("font-size: 15px; font-weight: 500; background: transparent;")
-            row_layout.addWidget(lbl_name, stretch=1)
-            
-            # --- 欄位 B: 圖片數量 ---
-            lbl_count = QLabel(f"({count})")
-            lbl_count.setFixedWidth(60)
-            lbl_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            lbl_count.setObjectName("FolderCountLabel")
-            row_layout.addWidget(lbl_count)
-            
-            # (已經刪除原本的語系標籤渲染邏輯，保持畫面乾淨)
-                
-            # 將我們做好的列元件塞進清單中
-            self.folder_list.addItem(item)
-            self.folder_list.setItemWidget(item, row_widget)
-
-    def show_folder_context_menu(self, pos):
-        item = self.folder_list.itemAt(pos)
-        if not item: return
-        
-        # 取得資料夾路徑 (保留給編輯圖示使用)
-        path = item.data(Qt.ItemDataRole.UserRole)
-        
-        menu = QMenu(self)
-        menu.setStyleSheet("QMenu { font-size: 14px; } QMenu::item { padding: 8px 30px; }")
-        
-        # 1. 編輯圖示 (現在只保留這個功能)
-        action_edit = QAction("✏️ 編輯圖示", self)
-        action_edit.triggered.connect(self.on_edit_icon)
-        menu.addAction(action_edit)
-            
-        menu.exec(self.folder_list.mapToGlobal(pos))
-
-    def show_ocr_task_menu(self, path, global_pos):
-        """點擊資料夾列時，在滑鼠游標處彈出語系選擇選單"""
-        config_folders = self.main_window.config.get("source_folders")
-        current_langs = []
-        for f in config_folders:
-            if os.path.normpath(f["path"]) == os.path.normpath(path):
-                current_langs = f.get("enabled_langs", [])
-                break
-                
-        menu = QMenu(self)
-        menu.setStyleSheet("QMenu { font-size: 14px; } QMenu::item { padding: 8px 30px; }")
-        
-        langs_map = [("ch", "中文"), ("jp", "日文"), ("kr", "韓文"), ("en", "英文")]
-        
-        for lang_code, lang_name in langs_map:
-            # 動態判斷：如果已經存在，顯示「取消」；如果不存在，顯示「指派」
-            if lang_code in current_langs:
-                action_lang = QAction(f"❌ 取消 {lang_name} OCR 任務", self)
-            else:
-                action_lang = QAction(f"✅ 指派 {lang_name} OCR 任務", self)
-            
-            action_lang.triggered.connect(lambda checked, p=path, l=lang_code, n=lang_name: self.on_toggle_lang(p, l, n))
-            menu.addAction(action_lang)
-            
-        # 讓選單直接在滑鼠點擊的位置精準彈出
-        menu.exec(global_pos)
-
-    def on_toggle_lang(self, path, lang_code, lang_name):
-        import copy
-        
-        # 1. 取得現有的資料夾清單 (深拷貝，避免直接改到記憶體沒觸發存檔)
-        config_folders = copy.deepcopy(self.main_window.config.get("source_folders", []))
-        
-        current_langs = []
-        target_folder = None
-        
-        # 找出目標資料夾
-        for f in config_folders:
-            if os.path.normpath(f.get("path", "")) == os.path.normpath(path):
-                target_folder = f
-                current_langs = f.get("enabled_langs", [])
-                break
-                
-        if target_folder is None:
-            return # 防呆：找不到該資料夾
-        
-        # 2. 檢查實體模型是否存在 (如果是要新增的話)
-        is_adding = lang_code not in current_langs
-        if is_adding:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            models_dir = os.path.join(base_dir, "models", "ocr")
-            rec_path = os.path.join(models_dir, lang_code, "rec.onnx")
-            dict_path = os.path.join(models_dir, lang_code, "dict.txt")
-            
-            is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
-            
-            # 若未安裝，觸發跳轉並中斷
-            if not is_installed:
-                reply = QMessageBox.question(
-                    self, "語言包未安裝", f"尚未安裝【{lang_name}】語言包。\n\n是否前往「AI 引擎設定」進行下載？",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.Yes:
-                    self.nav_list.setCurrentRow(1)
-                    self.ai_tabs.setCurrentIndex(1)
-                return 
-
-        #  3. 核心修改：執行陣列的新增或移除 (支援多選)
-        if is_adding:
-            current_langs.append(lang_code)
-        else:
-            current_langs.remove(lang_code)
-            
-        target_folder["enabled_langs"] = current_langs
-        
-        #  4. 強制寫回設定檔 (這會觸發 config.json 的實際儲存)
-        self.main_window.config.set("source_folders", config_folders)
-        
-        # 5. 更新所有會受到影響的畫面
-        self.refresh_folder_list()    # 雖然沒標籤了，但確保資料同步
-        self.refresh_ocr_status()     # 更新 AI 引擎頁面的狀態
-        self.refresh_ocr_task_list()  #  重新繪製自動任務清單，讓多個標籤並排顯示！
-
-        # 6. 引導重新掃描防呆
-        if is_adding:
-            reply = QMessageBox.question(
-                self, 
-                "任務已指派", 
-                f"已成功對資料夾指派【{lang_name}】OCR 任務。\n\n是否要立即重新掃描此資料夾，為現有的圖片補跑 {lang_name} 的文字辨識？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.main_window.on_refresh_clicked()
-
-    def on_folder_order_changed(self):
-        ordered_paths = []
-        for i in range(self.folder_list.count()):
-            ordered_paths.append(self.folder_list.item(i).data(Qt.ItemDataRole.UserRole))
-        self.main_window.config.update_folder_order(ordered_paths)
-        self.main_window.refresh_sidebar() 
-
-    def on_add_folder(self):
-        from PyQt6.QtWidgets import QFileDialog
-        folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
-        if folder:
-            if self.main_window.config.add_source_folder(folder):
-                self.refresh_folder_list()
-                self.main_window.refresh_sidebar()
-                QMessageBox.information(self, "Success", "加入成功！請點擊側邊欄的「⟳」按鈕進行掃描。")
-            else:
-                QMessageBox.warning(self, "重複", "此資料夾已經存在。")
-
-    def on_remove_folder(self):
-        item = self.folder_list.currentItem()
-        if not item: return
-        
-        path = item.data(Qt.ItemDataRole.UserRole)
-        reply = QMessageBox.question(self, '確認移除', f"確定要移除此資料夾的索引嗎？\n\n{path}\n\n(這只會從軟體中移除，不會刪除電腦裡的實體照片)", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            self.main_window.config.remove_source_folder(path)
-            if self.main_window.engine:
-                try:
-                    conn = self.main_window.engine.get_db_conn()
-                    conn.execute("PRAGMA foreign_keys = ON;")
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM files WHERE folder_path = ?", (path,))
-                    conn.commit()
-                    conn.close()
-                    
-                    #  改為觸發背景雙緩衝載入
-                    self.main_window.trigger_background_db_reload()
-                except Exception as e:
-                    print(f"Delete DB error: {e}")
-            self.refresh_folder_list()
-            # sidebar 的 refresh 會交由 db_reloaded 訊號統一處理
-
-    def on_edit_icon(self):
-        item = self.folder_list.currentItem()
-        if not item: return
-        path = item.data(Qt.ItemDataRole.UserRole)
-        
-        icon, ok = QInputDialog.getText(self, "編輯圖示", "請輸入 1 個 Emoji (或最多 2 個英數字)：\n建議按 Win + . 叫出表情符號小鍵盤")
-        if ok:
-            icon = icon.strip()
-            if len(icon) > 4: icon = icon[:4]
-            self.main_window.config.update_folder_icon(path, icon)
-            self.refresh_folder_list()
-            self.main_window.refresh_sidebar()
-
-    def init_page_ai(self):
-        #  套用翻譯：主標題
-        page, layout = self._create_page_container(self.trans.t("ai_engine", "page_title", "🧠 AI 引擎設定 (AI Engine)"))
-        
-        line = layout.itemAt(1).widget()
-        if isinstance(line, QFrame):
-            line.hide()
-            
-        self.dl_status_container = QWidget()
-        dl_layout = QVBoxLayout(self.dl_status_container)
-        dl_layout.setContentsMargins(0, 0, 0, 0)
-        dl_layout.setSpacing(5)
-        
-        self.dl_status_label = QLabel("")
-        self.dl_status_label.setObjectName("DlStatusLabel")
-        self.dl_status_label.hide()
-        
-        self.dl_progress = QProgressBar()
-        self.dl_progress.setRange(0, 100)
-        self.dl_progress.setValue(0)
-        self.dl_progress.setTextVisible(False)
-        self.dl_progress.setFixedHeight(2)
-        self.dl_progress.setObjectName("DownloadProgress")
-        
-        dl_layout.addWidget(self.dl_status_label)
-        dl_layout.addWidget(self.dl_progress)
-        layout.insertWidget(1, self.dl_status_container)
-        
-        self.ai_tabs = QTabWidget()
-        self.ai_tabs.setObjectName("AITabs")
-        
-        tab_clip = QWidget()
-        clip_layout = QVBoxLayout(tab_clip)
-        clip_layout.setContentsMargins(20, 20, 20, 20)
-        clip_layout.setSpacing(15)
-        
-        #  套用翻譯：CLIP 群組標題
-        group_clip = QGroupBox(self.trans.t("ai_engine", "grp_clip_title", "語意搜尋模型 (Semantic Models)"))
-        clip_list_layout = QVBoxLayout(group_clip)
-        clip_list_layout.setSpacing(10)
-        
-        current_model = self.main_window.config.get("model_name")
-        #  套用翻譯：CLIP 模型清單與描述
-        mock_clips = [
-            {"name": self.trans.t("ai_engine", "model_std_name", "🟢 標準模式 (ViT-B-32)"), "id": "ViT-B-32", "pre": "laion2b_s34b_b79k", "desc": self.trans.t("ai_engine", "model_std_desc", "速度極快，佔用極低")},
-            {"name": self.trans.t("ai_engine", "model_acc_name", "🔵 精準模式 (ViT-H-14)"), "id": "ViT-H-14", "pre": "laion2b_s32b_b79k", "desc": self.trans.t("ai_engine", "model_acc_desc", "準確度高，細節辨識佳")},
-            {"name": self.trans.t("ai_engine", "model_multi_name", "🟣 多語系模式 (xlm-roberta)"), "id": "xlm-roberta-large-ViT-H-14", "pre": "frozen_laion5b_s13b_b90k", "desc": self.trans.t("ai_engine", "model_multi_desc", "支援中文等多國語言搜尋")}
-        ]
-        
-        for item in mock_clips:
-            row = QHBoxLayout()
-            
-            #  1. 動態取得主題顏色注入 HTML
-            muted_color = self.main_window.theme_manager.current_colors.get("text_muted", "#888888")
-            lbl_name = QLabel(f"{item['name']}<br><span style='color:{muted_color}; font-size:12px;'>{item['desc']}</span>")
-            lbl_name.setFixedWidth(240)
-            lbl_name.setTextFormat(Qt.TextFormat.RichText)
-            
-            is_active = (item['id'] == current_model)
-            if is_active:
-                status_text = self.trans.t("ai_engine", "status_running", "✅ 運行中")
-                state_val = "running"  #  改用狀態標記
-                btn_text = self.trans.t("ai_engine", "btn_in_use", "目前使用中")
-                btn_enabled = False
-            else:
-                status_text = self.trans.t("ai_engine", "status_installed", "💾 已安裝")
-                state_val = "installed" #  改用狀態標記
-                btn_text = self.trans.t("ai_engine", "btn_switch", "切換並重啟")
-                btn_enabled = True
-                
-            lbl_status = QLabel(status_text)
-            lbl_status.setObjectName("ModelStatusLabel") #  發放身分證
-            lbl_status.setProperty("state", state_val)   #  設定狀態
-            
-            btn_action = QPushButton(btn_text)
-            btn_action.setFixedWidth(100)
-            btn_action.setEnabled(btn_enabled)
-            
-            btn_action.setProperty("cssClass", "ActionBtn")
-            if btn_enabled:
-                # 正確綁定切換模型的事件，並把模型的 id 與 pre 傳過去
-                btn_action.clicked.connect(lambda checked, m_id=item['id'], pre=item['pre']: self.on_switch_clip_model(m_id, pre))
-            
-            row.addWidget(lbl_name)
-            row.addWidget(lbl_status)
-            row.addStretch(1)
-            row.addWidget(btn_action)
-            clip_list_layout.addLayout(row)
-            
-            line = QFrame(); line.setFrameShape(QFrame.Shape.HLine); line.setObjectName("SolidLine")
-            clip_list_layout.addWidget(line)
-            
-        clip_layout.addWidget(group_clip)
-        clip_layout.addStretch(1)
-        #  套用翻譯：CLIP 分頁標籤
-        self.ai_tabs.addTab(tab_clip, self.trans.t("ai_engine", "tab_clip", "👁️ CLIP 語意模型"))
-        
-        tab_ocr = QWidget()
-        ocr_layout = QVBoxLayout(tab_ocr)
-        ocr_layout.setContentsMargins(20, 20, 20, 20)
-        ocr_layout.setSpacing(15)
-        
-        #  套用翻譯：OCR 群組標題
-        group_lang = QGroupBox(self.trans.t("ai_engine", "grp_ocr_title", "語系擴充包 (Language Packs)"))
-        self.lang_layout = QVBoxLayout(group_lang)
-        self.lang_layout.setSpacing(10)
-        
-        ocr_layout.addWidget(group_lang)
-        ocr_layout.addStretch(1)
-        #  套用翻譯：OCR 分頁標籤
-        self.ai_tabs.addTab(tab_ocr, self.trans.t("ai_engine", "tab_ocr", "📝 OCR 文字辨識"))
-        
-        layout.addWidget(self.ai_tabs, stretch=1)
-        self.stack.addWidget(page)
-        
-        self.lang_ui_elements = {}
-        self.refresh_ocr_status()
-
-    # ==========================================
-    #  OCR 動態狀態判斷與下載邏輯
-    # ==========================================
-    def refresh_ocr_status(self):
-        while self.lang_layout.count():
-            item = self.lang_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-            elif item.layout():
-                while item.layout().count():
-                    sub_item = item.layout().takeAt(0)
-                    if sub_item.widget(): sub_item.widget().deleteLater()
-                item.layout().deleteLater()
-            
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        models_dir = os.path.join(base_dir, "models", "ocr")
-        
-        active_langs = set()
-        for f in self.main_window.config.get("source_folders", []):
-            active_langs.update(f.get("enabled_langs", []))
-            
-        #  套用翻譯
-        langs = [
-            ("ch", self.trans.t("ai_engine", "lang_ch", "🇨🇳 中文 (通用)")),
-            ("jp", self.trans.t("ai_engine", "lang_jp", "🇯🇵 日文 (日本語)")),
-            ("kr", self.trans.t("ai_engine", "lang_kr", "🇰🇷 韓文 (한국어)")),
-            ("en", self.trans.t("ai_engine", "lang_en", "🇬🇧 英文 (English)"))
-        ]
-        
-        self.lang_ui_elements.clear()
-        
-        for lang_code, name in langs:
-            rec_path = os.path.join(models_dir, lang_code, "rec.onnx")
-            dict_path = os.path.join(models_dir, lang_code, "dict.txt")
-            is_installed = os.path.exists(rec_path) and os.path.exists(dict_path)
-            is_running = lang_code in active_langs
-            
-            #  換成狀態指派，拔除寫死的 color
-            if is_running and is_installed:
-                status = self.trans.t("ai_engine", "status_running", "✅ 運行中")
-                state_val = "running"
-                btn_text = self.trans.t("ai_engine", "btn_enabled", "已啟用")
-                btn_enabled = False
-            elif is_installed:
-                status = self.trans.t("ai_engine", "status_installed", "💾 已安裝")
-                state_val = "installed"
-                btn_text = self.trans.t("ai_engine", "btn_apply", "套用")
-                btn_enabled = True
-            else:
-                status = self.trans.t("ai_engine", "status_not_installed", "📥 未安裝")
-                state_val = "missing"
-                btn_text = self.trans.t("ai_engine", "btn_import", "匯入")
-                btn_enabled = True
-                
-            row_widget = QWidget()
-            row = QHBoxLayout(row_widget)
-            row.setContentsMargins(0, 5, 0, 5)
-            
-            lbl_name = QLabel(name)
-            lbl_name.setFixedWidth(160)
-            lbl_name.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
-            
-            lbl_status = QLabel(status)
-            lbl_status.setObjectName("ModelStatusLabel") #  發放身分證
-            lbl_status.setProperty("state", state_val)   #  設定狀態
-            
-            btn_action = QPushButton(btn_text)
-            btn_action.setFixedWidth(90)
-            btn_action.setEnabled(btn_enabled)
-            
-            if btn_enabled and not is_installed:
-                btn_action.setProperty("cssClass", "ActionBtn")
-                btn_action.clicked.connect(lambda checked, l=lang_code: self.start_download_ocr(l))
-            elif btn_enabled and is_installed:
-                btn_action.setProperty("cssClass", "SuccessBtn")
-                btn_action.clicked.connect(lambda checked: QMessageBox.information(self, "提示", "此語言包已就緒！..."))
-            else:
-                btn_action.setProperty("cssClass", "ActionBtn")
-            
-            row.addWidget(lbl_name)
-            row.addWidget(lbl_status)
-            row.addStretch(1)
-            row.addWidget(btn_action)
-            
-            self.lang_layout.addWidget(row_widget)
-            self.lang_ui_elements[lang_code] = {"status": lbl_status, "btn": btn_action}
-            
-            line = QFrame()
-            line.setFrameShape(QFrame.Shape.HLine)
-            line.setObjectName("SolidLine")
-            self.lang_layout.addWidget(line)
-
-    def start_download_ocr(self, lang_code):
-        from PyQt6.QtWidgets import QFileDialog
-        # [離線版] 不再連網，改為讓使用者選擇已下載的 ZIP 模型包
-        zip_path, _ = QFileDialog.getOpenFileName(self, f"選擇 {lang_code.upper()} 語言模型包 (ZIP)", "", "ZIP Files (*.zip)")
-        
-        if not zip_path:
-            return # 使用者取消選擇
-
-        self.dl_progress.setFixedHeight(12) 
-        self.dl_progress.setValue(0)
-        self.dl_status_label.setText(f"準備匯入 {lang_code.upper()} 語言包...")
-        self.dl_status_label.show()
-        
-        # 鎖定所有下載按鈕，防止重複點擊
-        for elems in self.lang_ui_elements.values():
-            elems["btn"].setEnabled(False)
-            
-        # 啟動本地解壓縮 Worker
-        self.dl_worker = OCRImportWorker(lang_code, zip_path)
-        self.dl_worker.progress_update.connect(self.update_download_progress)
-        self.dl_worker.finished_signal.connect(self.on_download_finished)
-        self.dl_worker.start()
-
-    def on_switch_clip_model(self, model_id, pretrained):
-        # [離線版] 不再使用 ONNXExportWorker 轉換，改為直接檢查本地檔案
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        img_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_id}_image.onnx")
-        txt_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_id}_text.onnx")
-        
-        if os.path.exists(img_onnx_path) and os.path.exists(txt_onnx_path):
-            # 檔案存在，直接更新設定檔並提示重啟
-            self.main_window.config.set("model_name", model_id)
-            self.main_window.config.set("pretrained", pretrained)
-            
-            QMessageBox.information(
-                self, 
-                "切換成功", 
-                "AI 模型已在本地找到並切換成功！\n\n為了確保記憶體安全釋放，程式將會關閉，請您手動重新啟動。"
-            )
-            QApplication.quit()
-        else:
-            # 檔案不存在，請使用者手動放入
-            QMessageBox.warning(
-                self, 
-                "模型缺失", 
-                f"在本地找不到 {model_id} 的 ONNX 檔案。\n\n請先將對應的模型檔案放入 `models/onnx_clip/` 資料夾中，或透過安裝包匯入。"
-            )
-
-    def update_download_progress(self, percent, msg):
-        self.dl_progress.setValue(percent)
-        self.dl_status_label.setText(msg)
-
-    def on_download_finished(self, success, lang_code, msg):
-        # 恢復變形：縮回 2px 的一般分隔線
-        self.dl_progress.setFixedHeight(2)
-        self.dl_progress.setValue(0)
-        self.dl_status_label.hide()
-        
-        if success:
-            QMessageBox.information(self, "下載成功", msg)
-        else:
-            QMessageBox.critical(self, "下載失敗", msg)
-            
-        # 重新掃描狀態並解鎖按鈕
-        self.refresh_ocr_status()
-
-
-
-# ==========================================
-#  [NEW] 在設定介面加入快捷鍵設定區塊
-# ==========================================
-# 請將這段程式碼覆蓋回 SettingsDialog 的 init_page_appearance 方法
-
-    def init_page_appearance(self):
-        #  套用翻譯
-        page, layout = self._create_page_container(self.trans.t("appearance", "page_title", "🖥️ 介面與顯示 (Appearance)"))
-        ui_state = self.main_window.config.get("ui_state", {}) 
-
-        
-
-        # ==========================================
-        #  [新增] 軟體主題切換
-        # ==========================================
-        layout.addWidget(QLabel("軟體主題配色 (Theme):"))
-        self.combo_theme = QComboBox()
-        self.combo_theme.setFixedHeight(38)
-        
-
-        # 從 ThemeManager 動態抓取可用的主題
-        themes = self.main_window.theme_manager.get_available_themes()
-        for i, theme in enumerate(themes):
-            self.combo_theme.addItem(theme["name"], theme["id"])
-            if theme["id"] == self.main_window.theme_manager.current_theme_id:
-                self.combo_theme.setCurrentIndex(i)
-                
-        self.combo_theme.currentIndexChanged.connect(self.on_theme_changed)
-        layout.addWidget(self.combo_theme)
-        layout.addSpacing(10)
-
-        layout.addWidget(QLabel(self.trans.t("appearance", "lbl_startup", "啟動時預設顯示的資料夾：")))
-        self.combo_startup = QComboBox()
-        self.combo_startup.setFixedHeight(38)
-
-        # 1. 綁定「全部圖片」選項 (ID 固定為 "ALL")
-        self.combo_startup.addItem(self.trans.t("appearance", "startup_all", "全部圖片 (All Images)"), "ALL")
-
-        # 2. 動態載入使用者目前設定的實體資料夾
-        source_folders = self.main_window.config.get("source_folders", [])
-        for f in source_folders:
-            path = f["path"]
-            
-            #  修復：嚴格檢查圖示，如果是空字串就給預設的資料夾符號
-            icon = f.get("icon", "")
-            if not icon:
-                icon = "📁"
-                
-            folder_name = os.path.basename(path)
-            
-            #  拿掉醜醜的括號，直接顯示圖示與名稱，多加一個空格讓排版更透氣
-            self.combo_startup.addItem(f"{icon}  {folder_name}", path)
-
-        # 3. 讀取並套用目前的設定值
-        startup_path = ui_state.get("default_startup_folder", "ALL")
-        index_to_set = self.combo_startup.findData(startup_path)
-        if index_to_set >= 0:
-            self.combo_startup.setCurrentIndex(index_to_set)
-
-        self.combo_startup.currentIndexChanged.connect(self.on_startup_folder_changed)
-        layout.addWidget(self.combo_startup)
-        layout.addSpacing(10)
-
-        #  套用翻譯
-        layout.addWidget(QLabel(self.trans.t("appearance", "lbl_size", "預設圖片顯示大小：")))
-        self.combo_size = QComboBox()
-        self.combo_size.setFixedHeight(38)
-        
-        
-        #  套用翻譯到下拉選項
-        self.combo_size.addItems([
-            self.trans.t("appearance", "size_xl", "超大圖示 (Extra Large)"), 
-            self.trans.t("appearance", "size_l", "大圖示 (Large)"), 
-            self.trans.t("appearance", "size_m", "中圖示 (Medium)")
-        ])
-    
-        mode_map = {"xl": 0, "large": 1, "medium": 2}
-        self.combo_size.setCurrentIndex(mode_map.get(self.main_window.current_view_mode, 1))
-        self.combo_size.currentIndexChanged.connect(self.on_view_mode_changed)
-        layout.addWidget(self.combo_size)
-        
-        layout.addSpacing(10)
-        #  套用翻譯
-        layout.addWidget(QLabel(self.trans.t("appearance", "lbl_tag_mode", "OCR 懸浮標籤顯示方式：")))
-        
-        self.combo_tag_mode = QComboBox()
-        self.combo_tag_mode.setFixedHeight(38) 
-        
-        
-        #  套用翻譯到下拉選項
-        self.combo_tag_mode.addItems([
-            self.trans.t("appearance", "tag_anchored", "選項 A：固定在 OCR 框邊緣 (Anchored) - 推薦"), 
-            self.trans.t("appearance", "tag_follow", "選項 B：跟隨滑鼠游標 (Follow Mouse)")
-        ])
-        
-        tag_mode = ui_state.get("ocr_tag_mode", "anchored")
-        self.combo_tag_mode.setCurrentIndex(0 if tag_mode == "anchored" else 1)
-        self.combo_tag_mode.currentIndexChanged.connect(self.on_tag_mode_changed)
-        layout.addWidget(self.combo_tag_mode)
-
-        layout.addStretch(1)
-        self.stack.addWidget(page)
-
-    def on_theme_changed(self, index):
-        theme_id = self.combo_theme.itemData(index)
-        app = QApplication.instance()
-        self.main_window.theme_manager.apply_theme(app, theme_id)
-
-    # [新增] 儲存設定事件
-    def on_tag_mode_changed(self, index):
-        mode = "anchored" if index == 0 else "follow"
-        ui_state = self.main_window.config.get("ui_state", {})
-        ui_state["ocr_tag_mode"] = mode
-        self.main_window.config.set("ui_state", ui_state)
-
-    # [新增] 儲存啟動資料夾設定
-    def on_startup_folder_changed(self, index):
-        # 取得我們剛剛偷偷藏在選項背後的 Data (即 "ALL" 或 "實際路徑")
-        selected_path = self.combo_startup.itemData(index)
-        ui_state = self.main_window.config.get("ui_state", {})
-        ui_state["default_startup_folder"] = selected_path
-        self.main_window.config.set("ui_state", ui_state)
-
-    def init_page_hotkeys(self):
-        #  套用翻譯
-        page, layout = self._create_page_container(self.trans.t("hotkeys", "page_title", "⌨️ 操作與快捷鍵 (Hotkeys)"))
-        ui_state = self.main_window.config.get("ui_state", {})
-
-        
-
-        #  套用翻譯
-        group_nav = QGroupBox(self.trans.t("hotkeys", "grp_nav_title", "預覽導覽行為"))
-        layout_nav = QVBoxLayout(group_nav)
-        layout_nav.setSpacing(10)
-        lbl_nav = QLabel(self.trans.t("hotkeys", "lbl_nav", "空白鍵預覽時，按下 W/A/S/D 的反應："))
-        lbl_nav.setObjectName("SettingsHint")
-        layout_nav.addWidget(lbl_nav)
-    
-        self.combo_wasd = QComboBox()
-        
-        self.combo_wasd.setFixedHeight(38)
-        self.combo_wasd.addItems([
-            self.trans.t("hotkeys", "nav_opt_a", "選項 A：移動背景游標並保持預覽 (預設)"),
-            self.trans.t("hotkeys", "nav_opt_b", "選項 B：關閉預覽圖 (快速偷瞄模式)"),
-            self.trans.t("hotkeys", "nav_opt_c", "選項 C：切換預覽圖 (沉浸看圖模式)")
-        ])
-        nav_map = {"nav": 0, "close": 1, "sync": 2}
-        self.combo_wasd.setCurrentIndex(nav_map.get(ui_state.get("preview_wasd_mode", "nav"), 0))
-        self.combo_wasd.currentIndexChanged.connect(self.on_wasd_mode_changed)
-        layout_nav.addWidget(self.combo_wasd)
-        layout.addWidget(group_nav)
-
-        #  套用翻譯
-        group_ocr = QGroupBox(self.trans.t("hotkeys", "grp_ocr_title", "OCR 檢視方式"))
-        layout_ocr = QVBoxLayout(group_ocr)
-        layout_ocr.setSpacing(10)
-        lbl_ocr = QLabel(self.trans.t("hotkeys", "lbl_ocr", "預覽圖片時，Shift 鍵的觸發邏輯："))
-        lbl_ocr.setObjectName("SettingsHint")
-        layout_ocr.addWidget(lbl_ocr)
-    
-        self.combo_ocr = QComboBox()
-        
-        self.combo_ocr.setFixedHeight(38)
-        self.combo_ocr.addItems([
-            self.trans.t("hotkeys", "ocr_opt_hold", "模式 A：長按 Shift 顯示紅框，放開隱藏 (Hold)"),
-            self.trans.t("hotkeys", "ocr_opt_toggle", "模式 B：按一下 Shift 切換顯示 / 隱藏 (Toggle)")
-        ])
-        ocr_mode = ui_state.get("ocr_shift_mode", "hold")
-        self.combo_ocr.setCurrentIndex(1 if ocr_mode == "toggle" else 0)
-        self.combo_ocr.currentIndexChanged.connect(self.on_ocr_mode_changed)
-        layout_ocr.addWidget(self.combo_ocr)
-        layout.addWidget(group_ocr)
-
-        #  套用翻譯
-        group_visual = QGroupBox(self.trans.t("hotkeys", "grp_visual_title", "進階視覺效果 (Advanced Visuals)"))
-        layout_visual = QVBoxLayout(group_visual)
-        layout_visual.setSpacing(12)
-
-        self.chk_precise_ocr = QCheckBox(self.trans.t("hotkeys", "chk_precise", "啟用精確文字高亮 (僅著色關鍵字部分)"))
-        is_precise = ui_state.get("precise_ocr_highlight", False)
-        self.chk_precise_ocr.setChecked(is_precise)
-        
-        self.chk_margin_comp = QCheckBox(self.trans.t("hotkeys", "chk_margin", "↳ 啟用邊緣縮減補償 (Margin Compensation)"))
-        self.chk_margin_comp.setObjectName("SubCheckBox")
-        is_margin = ui_state.get("margin_compensation", True) 
-        self.chk_margin_comp.setChecked(is_margin)
-        self.chk_margin_comp.setEnabled(is_precise)
-
-        self.chk_precise_ocr.stateChanged.connect(self.on_precise_highlight_changed)
-        self.chk_margin_comp.stateChanged.connect(self.on_margin_comp_changed)
-
-        self.chk_dedup = QCheckBox(self.trans.t("hotkeys", "chk_dedup", "啟用多語系重疊防護 (Deduplication)"))
-        is_dedup = ui_state.get("ocr_deduplication", True)
-        self.chk_dedup.setChecked(is_dedup)
-        self.chk_dedup.stateChanged.connect(self.on_dedup_changed)
-
-        layout_visual.addWidget(self.chk_precise_ocr)
-        layout_visual.addWidget(self.chk_margin_comp)
-        
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setObjectName("DashedLine")
-        layout_visual.addWidget(line)
-        
-        layout_visual.addWidget(self.chk_dedup)
-        layout.addWidget(group_visual)
-        
-        layout.addStretch(1)
-        self.stack.addWidget(page)
-
-    def init_page_performance(self):
-        page, layout = self._create_page_container(self.trans.t("performance", "page_title", "⚡ 效能調整 (Performance)"))
-        
-        #  呼叫公用函式，自動套用 QSS 樣式
-        btn_wip = self._create_construction_button(self.trans.t("performance", "wip_text", "🚧 施工中：動畫效果與系統資源控制"))
-        layout.addWidget(btn_wip)
-        layout.addStretch(1)
-        self.stack.addWidget(page)
-
-    def init_page_auto_tasks(self):
-        # 1. 建立頁面容器與主佈局
-        page, layout = self._create_page_container(self.trans.t("auto_tasks", "page_title", "🕒 自動任務 (Automated Tasks)"))
-        
-        # 移除頂部的分隔線，保持與 AI 引擎頁面一致的乾淨外觀
-        line = layout.itemAt(1).widget()
-        if isinstance(line, QFrame):
-            line.hide()
-
-        # 2. 建立分頁標籤
-        self.auto_tabs = QTabWidget()
-        self.auto_tabs.setObjectName("AutoTabs")
-        
-        # ==========================================
-        # 分頁 1: OCR 任務資料夾
-        # ==========================================
-        tab_ocr_tasks = QWidget()
-        ocr_tasks_layout = QVBoxLayout(tab_ocr_tasks)
-        ocr_tasks_layout.setContentsMargins(20, 20, 20, 20)
-        ocr_tasks_layout.setSpacing(15)
-        
-        # 群組標題
-        group_ocr = QGroupBox(self.trans.t("auto_tasks", "grp_ocr_folders", "資料夾 OCR 任務綁定 (Folder OCR Tasks)"))
-        group_ocr_layout = QVBoxLayout(group_ocr)
-        group_ocr_layout.setSpacing(10)
-        
-        # 頂部說明文字
-        lbl_desc = QLabel(self.trans.t("auto_tasks", "lbl_ocr_desc", "為資料夾指定背景自動辨識的語系。當系統偵測到新圖片時，將自動執行對應的文字萃取任務。"))
-        lbl_desc.setObjectName("SettingsHint")
-        group_ocr_layout.addWidget(lbl_desc)
-        
-        #  加入 QScrollArea 容器 (解決排版被撐破的核心)
-        self.ocr_scroll = QScrollArea()
-        self.ocr_scroll.setWidgetResizable(True)
-        self.ocr_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.ocr_scroll.setObjectName("OcrTaskScrollArea") # 🌟 核發身分證
-        
-        self.ocr_tasks_container = QWidget()
-        self.ocr_tasks_container.setObjectName("OcrTaskContainer") # 🌟 核發身分證
-        self.ocr_tasks_list_layout = QVBoxLayout(self.ocr_tasks_container)
-        self.ocr_tasks_list_layout.setContentsMargins(0, 5, 0, 0)
-        self.ocr_tasks_list_layout.setSpacing(5)
-        #  讓項目自動往上靠齊，避免資料夾很少時被垂直均分拉開
-        self.ocr_tasks_list_layout.setAlignment(Qt.AlignmentFlag.AlignTop) 
-        
-        self.ocr_scroll.setWidget(self.ocr_tasks_container)
-        group_ocr_layout.addWidget(self.ocr_scroll)
-        
-        ocr_tasks_layout.addWidget(group_ocr)
-        
-        # 加入分頁
-        self.auto_tabs.addTab(tab_ocr_tasks, self.trans.t("auto_tasks", "tab_ocr_mapping", "📝 OCR 任務綁定"))
-        
-        # ==========================================
-        # 分頁 2: 排程與控制
-        # ==========================================
-        tab_schedule = QWidget()
-        schedule_layout = QVBoxLayout(tab_schedule)
-        schedule_layout.setContentsMargins(20, 20, 20, 20)
-        schedule_layout.setSpacing(15)
-        
-        group_startup = QGroupBox(self.trans.t("auto_tasks", "grp_startup", "啟動行為 (Startup Behavior)"))
-        group_startup_layout = QVBoxLayout(group_startup)
-        group_startup_layout.setSpacing(10)
-        
-        self.chk_scan_on_startup = QCheckBox(self.trans.t("auto_tasks", "chk_scan_startup", "啟動軟體時，自動掃描並更新所有資料夾的圖片 (預設開啟)"))
-        ui_state = self.main_window.config.get("ui_state", {})
-        is_auto_scan = ui_state.get("auto_scan_on_startup", True)
-        self.chk_scan_on_startup.setChecked(is_auto_scan)
-        self.chk_scan_on_startup.stateChanged.connect(self.on_auto_scan_changed)
-        
-        group_startup_layout.addWidget(self.chk_scan_on_startup)
-        schedule_layout.addWidget(group_startup)
-        schedule_layout.addStretch(1)
-        
-        self.auto_tabs.addTab(tab_schedule, self.trans.t("auto_tasks", "tab_schedule", "⏳ 排程與控制"))
-        
-        # 將 TabWidget 加入主畫面
-        layout.addWidget(self.auto_tabs, stretch=1)
-        self.stack.addWidget(page)
-        
-        # 初始化載入畫面
-        self.refresh_ocr_task_list()
-
-    def on_auto_scan_changed(self, state):
-        """儲存「啟動時掃描」的設定"""
-        is_checked = (state == Qt.CheckState.Checked.value)
-        ui_state = self.main_window.config.get("ui_state", {})
-        ui_state["auto_scan_on_startup"] = is_checked
-        self.main_window.config.set("ui_state", ui_state)
-
-    def refresh_ocr_task_list(self):
-        """動態生成 OCR 任務資料夾的 UI 列表"""
-        while self.ocr_tasks_list_layout.count():
-            item = self.ocr_tasks_list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-            elif item.layout():
-                while item.layout().count():
-                    sub_item = item.layout().takeAt(0)
-                    if sub_item.widget(): sub_item.widget().deleteLater()
-                item.layout().deleteLater()
-
-        config_folders = self.main_window.config.get("source_folders", [])
-        
-        if not config_folders:
-            lbl_empty = QLabel("目前沒有任何圖片資料夾，請先前往「資料夾管理」新增。")
-            lbl_empty.setObjectName("SettingsWarning")
-            self.ocr_tasks_list_layout.addWidget(lbl_empty)
-            return
-
-        for i, f in enumerate(config_folders):
-            path = f.get("path", "")
-            icon = f.get("icon", "")
-            if not icon:
-                icon = "📁"
-                
-            enabled_langs = f.get("enabled_langs", [])
-            
-            row_widget = QWidget()
-            row_widget.setObjectName("OcrTaskRow") # 🌟 樣式全交給 QSS
-            row_widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-            row_widget.setCursor(Qt.CursorShape.PointingHandCursor)
-            
-            row = QHBoxLayout(row_widget)
-            row.setContentsMargins(10, 8, 10, 8) 
-            
-            folder_name = os.path.basename(path)
-            
-            # 🌟 核心重構：放棄 HTML 字串，改用真實的 Layout 堆疊標籤
-            text_container = QWidget()
-            text_container.setFixedWidth(260)
-            text_container.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            text_layout = QVBoxLayout(text_container)
-            text_layout.setContentsMargins(0, 0, 0, 0)
-            text_layout.setSpacing(2)
-            
-            lbl_title = QLabel(f"{icon}  {folder_name}")
-            lbl_title.setObjectName("OcrTaskTitle") # 身分證：標題
-            
-            lbl_path = QLabel(path)
-            lbl_path.setObjectName("OcrTaskPath") # 身分證：路徑
-            
-            text_layout.addWidget(lbl_title)
-            text_layout.addWidget(lbl_path)
-            
-            tags_layout = QHBoxLayout()
-            tags_layout.setSpacing(5)
-            tags_layout.setContentsMargins(10, 0, 0, 0)
-            
-            # 同時顯示多個語系標籤 (例如 [CH] [JP])
-            if enabled_langs:
-                for lang in enabled_langs:
-                    lbl_tag = QLabel(f"[{lang.upper()}]")
-                    lbl_tag.setObjectName("FolderTagLabel")
-                    lbl_tag.setProperty("active", "true") 
-                    lbl_tag.setFixedWidth(42)
-                    lbl_tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    tags_layout.addWidget(lbl_tag)
-                
-            tags_layout.addStretch(1)
-            
-            #  核心修改：直接把點擊事件綁定到這整列，並取得滑鼠游標目前的絕對座標
-            row_widget.mouseReleaseEvent = lambda event, p=path: self.show_ocr_task_menu(p, event.globalPosition().toPoint())
-            
-            row.addWidget(text_container) # 🌟 改為放入容器
-            row.addLayout(tags_layout, stretch=1)
-            # (移除 btn_action 相關程式碼)
-            
-            self.ocr_tasks_list_layout.addWidget(row_widget)
-            
-            line = QFrame()
-            line.setFrameShape(QFrame.Shape.HLine)
-            line.setObjectName("SolidLine")
-            self.ocr_tasks_list_layout.addWidget(line)
-
-    def on_precise_highlight_changed(self, state):
-        is_checked = (state == Qt.CheckState.Checked.value)
-        
-        # [防呆連動] 如果主開關被關閉，強制取消勾選子開關，並將其變為不可用
-        if not is_checked:
-            self.chk_margin_comp.setChecked(False)  # 這裡會自動觸發 on_margin_comp_changed 進行存檔
-            
-        self.chk_margin_comp.setEnabled(is_checked)
-
-        # 存入 config.json
-        ui_state = self.main_window.config.get("ui_state", {})
-        ui_state["precise_ocr_highlight"] = is_checked
-        self.main_window.config.set("ui_state", ui_state)
-
-    def on_margin_comp_changed(self, state):
-        is_checked = (state == Qt.CheckState.Checked.value)
-        
-        # 存入 config.json
-        ui_state = self.main_window.config.get("ui_state", {})
-        ui_state["margin_compensation"] = is_checked
-        self.main_window.config.set("ui_state", ui_state)
-
-    def on_dedup_changed(self, state):
-        is_checked = (state == Qt.CheckState.Checked.value)
-        
-        # 存入 config.json
-        ui_state = self.main_window.config.get("ui_state", {})
-        ui_state["ocr_deduplication"] = is_checked
-        self.main_window.config.set("ui_state", ui_state)
-
-    def on_wasd_mode_changed(self, index):
-        wasd_map = {0: "nav", 1: "close", 2: "sync"}
-        selected_mode = wasd_map.get(index, "nav")
-        
-        # 存入 config.json
-        ui_state = self.main_window.config.get("ui_state", {})
-        ui_state["preview_wasd_mode"] = selected_mode
-        self.main_window.config.set("ui_state", ui_state)
-
-    def on_ocr_mode_changed(self, index):
-        # 0 是 Hold, 1 是 Toggle
-        mode = "toggle" if index == 1 else "hold"
-        
-        # 存入 config.json
-        ui_state = self.main_window.config.get("ui_state", {})
-        ui_state["ocr_shift_mode"] = mode
-        self.main_window.config.set("ui_state", ui_state)
-
-    def on_view_mode_changed(self, index):
-        # 將 index (0,1,2) 轉回對應的字串代號
-        mode_map = {0: "xl", 1: "large", 2: "medium"}
-        selected_mode = mode_map.get(index, "large")
-        self.main_window.change_view_mode(selected_mode)
-
-    def init_page_language(self):
-        #  套用翻譯：主標題
-        page, layout = self._create_page_container(self.trans.t("language_page", "page_title", "🌍 語言與翻譯 (Language)"))
-        ui_state = self.main_window.config.get("ui_state", {})
-        current_lang = ui_state.get("language", "zh_TW") 
-
-        #  套用翻譯：群組標題
-        group_lang = QGroupBox(self.trans.t("language_page", "grp_lang_title", "顯示語言 (Display Language)"))
-        layout_lang = QVBoxLayout(group_lang)
-        layout_lang.setSpacing(10)
-
-        #  套用翻譯：說明文字
-        lbl_desc = QLabel(self.trans.t("language_page", "lbl_desc", "請選擇軟體的顯示語言。系統將會從 languages/ 資料夾讀取對應的翻譯檔。\n(變更語言後，將於下次啟動程式時生效)"))
-        lbl_desc.setObjectName("SettingsHint")
-        layout_lang.addWidget(lbl_desc)
-
-        self.combo_lang = QComboBox()
-        self.combo_lang.setFixedHeight(38)
-        
-        
-        self.lang_options = []
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        lang_dir = os.path.join(base_dir, "languages")
-
-        if os.path.exists(lang_dir):
-            for filename in os.listdir(lang_dir):
-                if filename.endswith(".json"):
-                    code = filename[:-5]
-                    file_path = os.path.join(lang_dir, filename)
-                    display_name = code
-                    try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                            display_name = data.get("metadata", {}).get("display_name", code)
-                    except Exception as e:
-                        print(f"解析 {filename} 失敗: {e}")
-                    self.lang_options.append({"name": display_name, "code": code})
-        
-        if not self.lang_options:
-            self.lang_options = [{"name": "系統預設 (zh_TW)", "code": "zh_TW"}]
-        
-        for item in self.lang_options:
-            self.combo_lang.addItem(item["name"], item["code"])
-
-        for i, item in enumerate(self.lang_options):
-            if item["code"] == current_lang:
-                self.combo_lang.setCurrentIndex(i)
-                break
-
-        self.combo_lang.currentIndexChanged.connect(self.on_language_changed)
-        layout_lang.addWidget(self.combo_lang)
-
-        #  套用翻譯：重啟提示
-        self.lbl_lang_restart_hint = QLabel(self.trans.t("language_page", "restart_hint", "⚠️ 語言已變更！請手動重新啟動程式以套用新語言。"))
-        self.lbl_lang_restart_hint.setObjectName("SettingsWarning")
-        self.lbl_lang_restart_hint.hide() 
-        layout_lang.addWidget(self.lbl_lang_restart_hint)
-
-        layout.addWidget(group_lang)
-        layout.addStretch(1)
-        self.stack.addWidget(page)
-
-    def on_language_changed(self, index):
-        # 取得隱藏的語言代碼 (例如 "zh_TW")
-        selected_code = self.combo_lang.itemData(index)
-        
-        # 存入 config.json
-        ui_state = self.main_window.config.get("ui_state", {})
-        ui_state["language"] = selected_code
-        self.main_window.config.set("ui_state", ui_state)
-        
-        # 顯示重啟提示
-        self.lbl_lang_restart_hint.show()
-
-    def init_page_about(self):
-        #  套用翻譯：主標題
-        page, layout = self._create_page_container(self.trans.t("about_page", "page_title", "ℹ️ 關於與說明 (Help & About)"))
-
-        title_label = QLabel("<h2>EyeSeeMore</h2>")
-        layout.addWidget(title_label)
-
-        #  套用翻譯：版本號
-        version_info = QLabel(self.trans.t("about_page", "version_lbl", "<b>版本號：</b> V0.5.0-alpha<br><b>建置日期：</b> 2026-03-18"))
-        layout.addWidget(version_info)
-
-        #  套用翻譯：HTML 核心技術區塊 (透過字串拼接)
-        tech_text = (
-            self.trans.t("about_page", "tech_title", "<h3>技術致敬 (Core Technologies)</h3><p>本軟體由以下優秀的開源生態系驅動：</p>") +
-            "<ul>" +
-            self.trans.t("about_page", "tech_ui", "<li><b>介面開發：</b> Python & PyQt6</li>") +
-            self.trans.t("about_page", "tech_ai", "<li><b>AI 推理引擎：</b> ONNX Runtime</li>") +
-            self.trans.t("about_page", "tech_ocr", "<li><b>文字辨識 (OCR)：</b> ONNX-OCR</li>") +
-            self.trans.t("about_page", "tech_img", "<li><b>影像與資料處理：</b> OpenCV, Pillow (PIL), NumPy</li>") +
-            self.trans.t("about_page", "tech_db", "<li><b>資料存儲：</b> SQLite3</li>") +
-            self.trans.t("about_page", "tech_perf", "<li><b>系統監控：</b> psutil (效能優化)</li>") +
-            "</ul>"
-        )
-        tech_label = QLabel(tech_text)
-        layout.addWidget(tech_label)
-
-        #  套用翻譯：連結與版權
-        link_color = self.main_window.theme_manager.current_colors.get("text_link", "#00aaff")
-        link_html = f'<a href="https://github.com/Magnesiumnuclear/EyeSeeMore" style="color: {link_color}; text-decoration: none;">🌐 專案 GitHub 主頁 (回報問題與建議)</a>'
-        link_label = QLabel(self.trans.t("about_page", "github_link", link_html))
-        link_label.setOpenExternalLinks(True) 
-        layout.addWidget(link_label)
-
-        copyright_label = QLabel(self.trans.t("about_page", "copyright", "<br><small>© 2026 HO99 Licensed under GPL v3.</small>"))
-        layout.addWidget(copyright_label)
-
-        layout.addStretch(1) 
-        self.stack.addWidget(page)
+    def _navigate_to_ai_ocr_tab(self):
+        """跨頁面跳轉：切換至 AI 引擎頁面的 OCR 分頁。"""
+        self.nav_list.setCurrentRow(1)          # AI 引擎 = index 1
+        self._ai_page.ai_tabs.setCurrentIndex(1)  # OCR 分頁 = index 1
 
 if __name__ == "__main__":
     app_config = ConfigManager()
