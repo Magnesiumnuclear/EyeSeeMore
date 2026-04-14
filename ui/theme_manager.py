@@ -1,12 +1,12 @@
 import os
 import json
 from PyQt6.QtWidgets import QApplication
+from core.paths import THEMES_DIR
 
 class ThemeManager:
     def __init__(self, config_manager):
         self.config = config_manager
-        self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.themes_dir = os.path.join(self.base_dir, "themes")
+        self.themes_dir = THEMES_DIR
         self.current_theme_id = self.config.get("ui_state", {}).get("theme", "dark")
         self.current_colors = {}
         self.current_style_logic = "flat"

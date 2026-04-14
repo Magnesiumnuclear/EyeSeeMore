@@ -1,11 +1,12 @@
 import os
 import json
+from core.paths import BASE_DIR, CONFIG_PATH, DB_PATH
 
 class ConfigManager:
     def __init__(self):
-        self.app_root = os.path.dirname(os.path.abspath(__file__))
-        self.config_path = os.path.join(self.app_root, "config.json")
-        self.db_path = os.path.join(self.app_root, "images.db")
+        self.app_root = BASE_DIR
+        self.config_path = CONFIG_PATH
+        self.db_path = DB_PATH
         
         # ==========================================
         # [升級] 在這裡把所有我們最近新增的 UI 狀態都補上預設值

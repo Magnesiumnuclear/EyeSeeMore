@@ -33,8 +33,8 @@ from core.image_action_manager import ImageActionManager
 from utils.translator import Translator
 
 # [New] 引入設定管理器
-from config_manager import ConfigManager
-from theme_manager import ThemeManager # [新增] 引入主題引擎
+from core.config_manager import ConfigManager
+from ui.theme_manager import ThemeManager
 
 # [修正] 確保所有 PyQt6 模組都已引入
 from PyQt6.QtGui import QActionGroup
