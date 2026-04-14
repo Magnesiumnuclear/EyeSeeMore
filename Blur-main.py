@@ -28,8 +28,8 @@ import cv2
 
 import faiss
 
-from search_orchestrator import SearchOrchestrator
-from image_action_manager import ImageActionManager
+from core.search_orchestrator import SearchOrchestrator
+from core.image_action_manager import ImageActionManager
 
 # [New] 引入設定管理器
 from config_manager import ConfigManager
@@ -3984,7 +3984,7 @@ class MainWindow(QMainWindow):
         self.init_ui()
 
         # NavigationManager 需要在 init_ui() 之後建立 (因為依賴 UI 元件)
-        from navigation_manager import NavigationManager
+        from ui.navigation_manager import NavigationManager
         self.nav = NavigationManager(
             state_snapshot_fn=self._nav_snapshot,
             apply_state_fn=self._nav_apply,
@@ -4011,7 +4011,7 @@ class MainWindow(QMainWindow):
         self.ai_ready.connect(self.on_ai_loaded)
         self.db_reloaded.connect(self.on_db_reloaded)
 
-        from action_handler import ActionHandler
+        from ui.action_handler import ActionHandler
         self.action_handler = ActionHandler(self)
 
         QApplication.instance().installEventFilter(self)
@@ -4048,7 +4048,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def init_ui(self):
-        from main_window_ui import Ui_MainWindow
+        from ui.main_window_ui import Ui_MainWindow
         ui = Ui_MainWindow()
         ui.setup_ui(
             self,
