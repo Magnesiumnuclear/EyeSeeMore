@@ -29,6 +29,7 @@ import cv2
 import faiss
 
 from search_orchestrator import SearchOrchestrator
+from image_action_manager import ImageActionManager
 
 # [New] 引入設定管理器
 from config_manager import ConfigManager
@@ -4003,6 +4004,8 @@ class MainWindow(QMainWindow):
         self.search_orch.results_ready.connect(self.set_base_results)
         self.search_orch.search_finished.connect(self.on_finished)
 
+        self.img_actions = ImageActionManager(self, toast_fn=self._show_toast)
+
         # [修改 2] 連接訊號：當 AI 準備好時，執行 on_ai_loaded
         self.random_data_ready.connect(self.set_base_results)
         self.ai_ready.connect(self.on_ai_loaded)
@@ -4561,15 +4564,15 @@ class MainWindow(QMainWindow):
             if not item: return
 
             action_copy = QAction("Copy Image", self)
-            action_copy.triggered.connect(lambda: self.copy_image_to_clipboard(item.path))
+            action_copy.triggered.connect(lambda: self.img_actions.copy_image(item.path))
             action_path = QAction("Copy Path", self)
-            action_path.triggered.connect(lambda: QApplication.clipboard().setText(item.path))
+            action_path.triggered.connect(lambda: self.img_actions.copy_path(item.path))
             action_search = QAction("Search Similar", self)
             action_search.triggered.connect(lambda: self.start_image_search(item.path))
             action_rename = QAction("Rename", self)
-            action_rename.triggered.connect(lambda: self.handle_rename_model(index, item))
+            action_rename.triggered.connect(lambda: self.img_actions.rename(index, item))
             action_props = QAction("Properties", self)
-            action_props.triggered.connect(lambda: self.show_properties_dialog(item))
+            action_props.triggered.connect(lambda: self.img_actions.show_properties(item))
 
             menu.addAction(action_copy)
             menu.addAction(action_path)
@@ -4679,53 +4682,22 @@ class MainWindow(QMainWindow):
         if not index.isValid(): return
         item = index.data(Qt.ItemDataRole.UserRole)
         if item:
-            try: os.startfile(item.path)
-            except: pass
+            self.img_actions.open_file(item.path)
 
-    def copy_image_to_clipboard(self, path):
-        try:
-            img = QImage(path)
-            if not img.isNull(): 
-                QApplication.clipboard().setImage(img)
-                
-                # ==========================================
-                #  [新增] 複製成功的 3 秒 Toast 視覺回饋
-                # ==========================================
-                # copy_image_to_clipboard 內的修改範例：
-                current_status = self.status.text()
-                if not getattr(self, '_is_toast_active', False):
-                    self._previous_status_text = current_status
-                    
-                self._is_toast_active = True
-                self.status.setText("已複製影像到剪貼簿")
-                
-                def restore_status():
-                    self.status.setText(getattr(self, '_previous_status_text', "System Ready"))
-                    self._is_toast_active = False
-                    
-                QTimer.singleShot(1500, restore_status)
-                
-        except Exception as e:
-            print(f"Copy image error: {e}")
+    # ------------------------------------------------------------------
+    #  Toast 回饋（供 ImageActionManager callback 使用）
+    # ------------------------------------------------------------------
+    def _show_toast(self, message: str, duration_ms: int = 1500) -> None:
+        if not getattr(self, '_is_toast_active', False):
+            self._previous_status_text = self.status.text()
+        self._is_toast_active = True
+        self.status.setText(message)
 
-    def show_properties_dialog(self, item):
-        from datetime import datetime
-        date_str = "Unknown"
-        if item.mtime > 0:
-            date_str = datetime.fromtimestamp(item.mtime).strftime('%Y-%m-%d %H:%M')
-        msg = f"<h3>{item.filename}</h3><hr><b>Path:</b> {item.path}<br><b>Score:</b> {item.score:.4f}<br><b>Date:</b> {date_str}"
-        QMessageBox.information(self, "Properties", msg)
+        def _restore():
+            self.status.setText(getattr(self, '_previous_status_text', 'System Ready'))
+            self._is_toast_active = False
 
-    def handle_rename_model(self, index, item):
-        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=item.filename)
-        if ok and new_name and new_name != item.filename:
-            success, result = self.engine.rename_file(item.path, new_name)
-            if success:
-                item.filename = new_name
-                item.path = result 
-                self.model.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole])
-            else:
-                QMessageBox.warning(self, "Error", f"Rename failed: {result}")
+        QTimer.singleShot(duration_ms, _restore)
 
     def load_history(self):
         # [修改 3] 使用 self.history_file_path
@@ -4794,7 +4766,8 @@ class MainWindow(QMainWindow):
             
             # 正確建立 Engine 實例
             self.engine = ImageSearchEngine(self.config)
-            self.search_orch.engine = self.engine  # 將引擎注入 Orchestrator
+            self.search_orch.engine = self.engine   # 將引擎注入 Orchestrator
+            self.img_actions.engine = self.engine   # 將引擎注入 ActionManager
             
             #self.status.setText("Rendering Gallery...")
             # 呼叫排序方法
