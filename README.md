@@ -118,3 +118,69 @@ This project is developed under the GPLv3 license.
 
 EyeSeeMore - 一個陪你一起找圖片的實驗性小助手。
 EyeSeeMore - Your experimental assistant for finding images.
+
+---
+
+## 🏗️ 專案結構 | Project Architecture
+
+```
+rag-image/
+├── main.py                     # 應用程式入口 (Entry Point)
+├── Blur-main.py                # 主視窗 MainWindow 及所有 Widget
+│
+├── core/                       # 核心業務邏輯 (Business Logic)
+│   ├── __init__.py
+│   ├── paths.py                # 集中管理所有專案路徑常數
+│   ├── config_manager.py       # 設定讀寫 (config.json / SQLite)
+│   ├── search_orchestrator.py  # 搜尋執行緒調度與生命週期管理
+│   └── image_action_manager.py # 圖片右鍵操作 (開啟/複製/重新命名)
+│
+├── ui/                         # 介面層 (UI Layer)
+│   ├── __init__.py
+│   ├── main_window_ui.py       # UI 版面配置 (setup_ui)
+│   ├── action_handler.py       # EventFilter + 鍵盤/滑鼠動作處理
+│   ├── navigation_manager.py   # 預覽模式的圖片切換邏輯
+│   └── theme_manager.py        # 深色/淺色主題套用
+│
+├── utils/                      # 通用工具 (Utilities)
+│   ├── __init__.py
+│   └── translator.py           # i18n 多語言翻譯 (zh_TW / en_US)
+│
+├── indexer.py                  # 圖片索引服務 (IndexerService)
+├── config_manager.py           # (已遷移至 core/ — 保留相容性)
+├── theme_manager.py            # (已遷移至 ui/  — 保留相容性)
+│
+├── models/                     # AI 模型資源
+│   ├── onnx_clip/              # CLIP ONNX 模型
+│   ├── tokenizers/             # 離線分詞器
+│   └── ocr/                    # OCR 語言包
+│
+├── languages/                  # 語系檔
+│   ├── zh_TW.json
+│   └── en_US.json
+│
+└── themes/                     # 主題檔
+    ├── dark.json
+    ├── light.json
+    └── base_style.qss
+```
+
+### 模組職責說明 | Module Responsibilities
+
+| 模組 | 職責 |
+| :--- | :--- |
+| `core/paths.py` | 單一路徑來源，所有子模組透過此檔取得 `BASE_DIR`、`MODELS_DIR` 等常數，避免路徑硬編碼 |
+| `core/config_manager.py` | 讀寫 `config.json` 使用者設定，並管理 SQLite (`eyeseemore.db`) 索引資料庫 |
+| `core/search_orchestrator.py` | 管理 `SearchWorker` QThread 的啟動、取消與結果派送；持有 `_retained` 防止 C++ 幽靈物件 |
+| `core/image_action_manager.py` | 封裝右鍵選單所有圖片操作，透過 `toast_fn` callback 回報結果 |
+| `ui/main_window_ui.py` | 純版面配置 (`setup_ui`)，不含任何業務邏輯 |
+| `ui/action_handler.py` | 事件過濾器 (`eventFilter`) 及所有鍵盤/滑鼠快捷鍵處理 |
+| `ui/navigation_manager.py` | 預覽模式的圖片前後切換，使用 callback 架構解耦 |
+| `ui/theme_manager.py` | 讀取 `themes/*.json` 並套用 QSS 樣式表 |
+| `utils/translator.py` | 解析 `languages/*.json`，提供 `t(section, key)` 翻譯函式 |
+
+### 通訊模式 | Communication Patterns
+
+* **Signals/Slots**: QThread Worker 完成後透過 PyQt6 signal 回傳結果至主執行緒
+* **Callback**: `NavigationManager`、`ImageActionManager` 等模組透過建構子傳入 callback 函式，降低耦合
+* **集中路徑**: 所有模組從 `core.paths` import 常數，變更路徑只需修改一處

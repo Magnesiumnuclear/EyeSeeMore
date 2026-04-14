@@ -13,18 +13,11 @@ from transformers import AutoTokenizer
 from datetime import datetime
 from collections import OrderedDict
 from indexer import IndexerService
-import unicodedata
 import re
 
 from indexer import IndexerService, NumpyPreprocess
 
-import urllib.request
-import tarfile
 import subprocess
-import shutil
-
-# [New] 引入 OpenCV (給 Grad-CAM 用)
-import cv2
 
 import faiss
 
