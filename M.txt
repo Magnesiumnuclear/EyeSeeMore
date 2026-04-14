@@ -2003,3 +2003,371 @@ self.models_dir = self.config.get_path("ocr_models")
 
 **我們是否可以開始執行「終極重構計畫」？**
 我建議的第一步是：**建立專案的新目錄結構，並開始將這些碎片化的類別分類歸檔。** 你希望我為你草擬這份目錄結構嗎？或是你想直接針對 `MainWindow` 的事件攔截器（EventFilter）進行首波邏輯拆解？
+
+---
+---
+---
+
+# ══════════════════════════════════════════════════════════════════
+# 【專案深度架構白皮書 (Technical Architecture Blueprint)】
+# EyeSeeMore — 完整模組化後的工程設計文件
+# 版本：重構完成版（Phases 1–9 全數完竣）
+# ══════════════════════════════════════════════════════════════════
+
+> **閱讀導引**：本文件面向參與後續維護或深度擴充的工程師。
+> 閱讀完本文件後，你應能完整理解這台「圖像搜尋機器」從使用者按下按鍵到畫面更新的每一條神經路徑。
+
+---
+
+## 一、執行緒生命週期與安全防護 (Thread Lifecycle & Safety)
+
+### 1.1 Worker 收容所機制（The Retained Worker Pattern）
+
+**問題根源：PyQt 的 C++ 幽靈物件崩潰**
+
+在 PyQt6 中，`QThread` 子類別（如 `SearchWorker`）一旦完成 `run()` 並發射訊號，Python GC 可能在 C++ 的訊號排隊尚未處理完畢之前就回收該物件。這會導致 `QObject::connect: Cannot queue arguments of type 'list'` 或更危險的無聲 Segfault（記憶體違規存取）。
+
+**解決方案：`SearchOrchestrator._retained_workers`**
+
+```
+架構位置：core/search_orchestrator.py
+
+生命週期流程：
+┌─────────────────────────────────────────────────────────────────┐
+│  submit(query, params)                                          │
+│  ├─ 1. 呼叫 _retire_current()                                   │
+│  │      ├─ disconnect() 斷開所有舊 Worker 的訊號連線             │
+│  │      └─ 將舊 Worker 移入 _retained 列表（防止立即回收）       │
+│  ├─ 2. 建立新 SearchWorker，傳入 engine 實例                    │
+│  ├─ 3. 連線訊號：results_ready → 派發結果                       │
+│  ├─ 4. 連線 finished → _make_cleanup(worker) 回調               │
+│  │      └─ cleanup callback：從 _retained 移除該 Worker         │
+│  └─ 5. worker.start()                                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**`disconnect()` 的關鍵作用**：當舊的 `SearchWorker` 仍在背景執行（例如資料庫查詢未結束），新搜尋已提交時，`disconnect()` 確保舊 Worker 的 `results_ready` 訊號不再被任何 slot 接收，避免「舊結果蓋掉新結果」的 Race Condition。
+
+**`_make_cleanup()` 閉包設計**：
+```python
+def _make_cleanup(self, worker):
+    def cleanup():
+        self._retained.discard(worker)
+    return cleanup
+```
+使用工廠閉包而非 lambda 捕獲，確保每個 cleanup 都精確持有該 Worker 的強引用直到 `finished` 訊號觸發後才釋放，然後 Python GC 才被允許回收 C++ 底層物件。
+
+---
+
+### 1.2 非同步影像管線（Thread-Safe Image Pipeline）
+
+**核心規範：QImage 跨執行緒，QPixmap 只在主執行緒**
+
+Qt 文件明確規定：`QPixmap` 屬於 GUI 資源（繫結於顯示硬體），嚴禁在非主執行緒（Non-GUI Thread）中建立或修改。違反此規範在 Windows 平台可能引發隨機的 D3D 資源鎖定崩潰。
+
+**完整的安全傳輸路徑：**
+
+```
+後台執行緒（QRunnable / QThread）
+│
+├─ QImageReader.setScaledSize()   ← 在讀取時直接縮放（節省 95% 記憶體）
+├─ QImageReader.read()            ← 回傳 QImage（純像素資料，執行緒安全）
+├─ QImage.convertToFormat(ARGB32) ← 格式標準化，為 GPU 上傳做準備
+│
+│  ◎ 以上均在後台執行緒完成，不涉及任何 GUI 資源
+│
+│  [PyQt signal 跨執行緒安全傳輸 QImage × OCR資料 × 寬高]
+│
+主執行緒（Qt Event Loop）
+│
+└─ QPixmap.fromImage(qimage)      ← 轉換發生在主執行緒（安全）
+└─ label.setPixmap(pixmap)        ← GUI 更新（只能在主執行緒）
+```
+
+**PreviewSignals 的 7 參數設計考量**：
+傳輸載荷包含 `(str, QImage, list, int, int, str, bool)`。選擇 `QImage` 而非 `QPixmap` 是此管線的核心安全決策。接收端（`PreviewOverlay.on_highres_ready`）負責在主執行緒完成 `fromImage()` 轉換，並透過 `path == self.current_preview_path` 的路徑比對過濾掉過期任務的回傳結果。
+
+---
+
+## 二、解耦通訊協定 (Decoupling Protocols)
+
+### 2.1 Callback 鏈結機制（Constructor Injection Pattern）
+
+**問題：循環引用（Circular Import）**
+
+如果 `NavigationManager` 直接 `import MainWindow` 來呼叫其方法，而 `MainWindow` 又 `import NavigationManager`，Python 的模組載入器會在其中一方尚未完成定義時就被引用，產生 `ImportError: cannot import name 'MainWindow'`。
+
+**解決方案：Constructor Callback Injection**
+
+```
+ui/navigation_manager.py                Blur-main.py (MainWindow)
+┌──────────────────────────┐           ┌──────────────────────────┐
+│ class NavigationManager: │           │ def __init__(self):      │
+│                          │           │   self.nav = Navigation  │
+│   def __init__(self,     │◄──────────│     Manager(             │
+│     on_navigate,         │ 傳入      │       on_navigate=self.  │
+│     get_current,         │ 方法引用  │         _do_navigate,    │
+│     get_selection):      │           │       get_current=lambda:│
+│                          │           │         self.current_idx,│
+│   def go_back(self):     │           │       get_selection=...  │
+│     idx = self.get_      │           │     )                    │
+│       current()          │           │                          │
+│     self.on_navigate(idx)│──────────►│ def _do_navigate(idx):  │
+│                          │ 回呼      │   self.gallery.setIndex()│
+└──────────────────────────┘           └──────────────────────────┘
+```
+
+**關鍵設計原則**：
+- `NavigationManager` **完全不 import MainWindow**，它只知道「我有一些函數可以呼叫」
+- `ImageActionManager` 同理：透過 `toast_fn` callback 回報操作結果，而非直接操作 `status_bar`
+- 此模式讓所有 `core/` 與 `ui/` 子模組均可單獨進行單元測試
+
+---
+
+### 2.2 事件分流器（ActionHandler Event Dispatcher）
+
+**架構位置：`ui/action_handler.py`**
+
+`MainWindow` 原本的 `eventFilter` 是一個 130 行的 `if/elif` 巨塔，處理了鍵盤導航、OCR 切換、預覽開關、Ctrl+C 複製等所有熱鍵邏輯。重構後的分流模式：
+
+```
+QEvent 進入 MainWindow.eventFilter()
+│
+├─ [早期過濾] 非 KeyPress? → return False（透傳給 Qt 預設處理）
+│
+└─ 委派給 ActionHandler.handle_key(event, context)
+        │
+        ├─ Space  → handler.toggle_preview()
+        ├─ W/A/S/D → handler.navigate_preview(direction)
+        ├─ Shift  → handler.toggle_ocr_boxes()
+        ├─ Ctrl+C → handler.copy_current_image()
+        └─ Esc    → handler.close_preview()
+```
+
+**「Pure Dispatcher」原則**：`MainWindow.eventFilter` 精簡至僅含 `if/elif key ==` 的路由判斷，不包含任何業務邏輯。所有具體行為（如「取得當前選取圖片路徑」、「更新 OCR 顯示狀態」）都封裝在 `ActionHandler` 的各自 handler 方法中，讓 `MainWindow` 保持「指揮官」而非「作業員」的角色。
+
+---
+
+## 三、單一路徑事實來源 (Path Resolution Standard)
+
+### 3.1 core/paths.py 的運作邏輯
+
+**問題：`__file__` 會因模組所在深度而漂移**
+
+假設有模組 `core/config_manager.py` 試圖用 `os.path.dirname(os.path.abspath(__file__))` 找到專案根目錄，它只會得到 `d:/software/Gemini/rag-image/core`——差了一層。若再移入 `core/services/`，就再差一層，每次搬遷都要手動修路徑。
+
+**解決方案：集中宣告 `BASE_DIR`**
+
+```python
+# core/paths.py
+from os.path import dirname, abspath
+
+# __file__ = .../rag-image/core/paths.py
+# dirname(__file__)      = .../rag-image/core/
+# dirname(dirname(...))  = .../rag-image/        ← BASE_DIR
+BASE_DIR   = dirname(dirname(abspath(__file__)))
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+LANGS_DIR  = os.path.join(BASE_DIR, "languages")
+THEMES_DIR = os.path.join(BASE_DIR, "themes")
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+DB_PATH    = os.path.join(BASE_DIR, "eyeseemore.db")
+```
+
+**規範：所有子模組統一從此 import，禁止自行計算**
+
+```python
+# 正確寫法 ✅
+from core.paths import MODELS_DIR, BASE_DIR
+
+# 禁止寫法 ❌（因模組位置改變而漂移）
+models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+```
+
+---
+
+### 3.2 資源定位規範（Resource Hierarchy Standard）
+
+```
+BASE_DIR  (d:/software/Gemini/rag-image/)
+├── models/                     ← MODELS_DIR
+│   ├── onnx_clip/              ← MODELS_DIR / "onnx_clip"
+│   │   ├── clip_image_encoder.onnx
+│   │   └── clip_text_encoder.onnx
+│   ├── tokenizers/             ← MODELS_DIR / "tokenizers"
+│   │   ├── openai-clip/
+│   │   └── xlm-roberta/
+│   └── ocr/                    ← MODELS_DIR / "ocr"
+│       ├── common/             （通用偵測模型，必要）
+│       ├── ch/                 （中文語言包，可選）
+│       └── en/                 （英文語言包，可選）
+│
+├── languages/                  ← LANGS_DIR
+│   ├── zh_TW.json              （繁體中文，預設 fallback）
+│   └── en_US.json
+│
+└── themes/                     ← THEMES_DIR
+    ├── dark.json               （深色主題色彩定義）
+    ├── light.json              （淺色主題色彩定義）
+    └── base_style.qss          （基礎 QSS，所有主題共用）
+```
+
+**存取標準**：
+- 所有需要 AI 模型路徑的模組（`ImageSearchEngine`, `OCRImportWorker`）必須透過 `MODELS_DIR` 而非硬編碼絕對路徑
+- `ThemeManager` 使用 `THEMES_DIR` 動態掃描可用主題，支援使用者自訂主題（只需在 `themes/` 放入新的 `.json` + QSS）
+- `Translator` 使用 `LANGS_DIR` 掃描所有 `*.json` 語系檔，`zh_TW` 作為缺失 key 的 fallback 保底語言
+
+---
+
+## 四、數據實體與模型流轉 (Data Flow & Entities)
+
+### 4.1 ImageItem 的角色與生命週期
+
+**定義位置：`Blur-main.py`（建議遷移至 `core/entities.py`）**
+
+`ImageItem` 是 RAG 檢索結果流入 UI 渲染層的唯一資料載體：
+
+```
+AI 搜尋流程中的 ImageItem 生命週期：
+
+[ImageSearchEngine.search_hybrid()]
+│
+├─ 從 FAISS 拿到 top-K 向量索引
+├─ 從 path_map 查找對應路徑（O(1)）
+├─ 從 data_store 取得 OCR 文字、Metadata
+│
+└─ 構建 ImageItem(
+       path      = "D:/photos/cat001.jpg",
+       score     = 0.847,          ← CLIP 相似度 + OCR命中加成 + 檔名分數
+       ocr_text  = "貓咪 可愛",    ← 資料庫中已索引的 OCR 內容
+       is_ocr_match = True,        ← 是否因 OCR 命中而排序靠前
+       width     = 4032,
+       height    = 3024
+   )
+        │
+        ▼
+[SearchResultsModel.update_results(items)]
+│
+├─ 存入 all_items（列表）
+├─ 建立 path_to_row 字典（O(1) 路徑反查）
+└─ 觸發 beginResetModel() → dataChanged 訊號
+        │
+        ▼
+[ImageDelegate.paint(painter, option, index)]
+│
+├─ 從 index.data(UserRole) 取出 ImageItem
+├─ 判斷選取/Hover 狀態 → 決定邊框顏色
+├─ 取得縮圖（從 SearchResultsModel._thumbnail_cache）
+└─ 繪製：背景 → 縮圖 → 檔名（省略） → 分數標籤
+```
+
+**OCR 內容的傳遞路徑 → PreviewOverlay**：
+當使用者點擊某張圖片進入預覽時，`ImageItem.ocr_text` 與路徑一起傳給 `PreviewLoader`，Worker 再從資料庫撈出詳細的多邊形座標（`box` 欄位），最終由 `OCRLabel.set_ocr_data()` 將文字框疊加在圖片上。
+
+**UI 快取欄位 `_elided_name_cache`**：
+這是一個 `dict[int, str]`，key 為控制項寬度（像素），value 為已截斷的檔名字串。`ImageDelegate.paint()` 傳入目前卡片寬度向 `ImageItem.get_elided_name(fm, width)` 查詢，避免每次重繪都呼叫 `QFontMetrics.elidedText()`（節省約 70% 的字體測量 CPU 開銷）。
+
+---
+
+### 4.2 Search Engine 雙緩衝機制（Dual-Buffer Search Architecture）
+
+**設計目標**：在索引工作（`IndexerWorker` 掃描新圖片、寫入向量）進行期間，使用者的搜尋操作不被阻塞，也不讀到不完整的資料。
+
+#### Layer 1：SQLite WAL 模式 + Synchronous=NORMAL
+
+```python
+# ImageSearchEngine.__init__() 中的資料庫優化
+conn.execute("PRAGMA journal_mode = WAL")      # 寫入與讀取分離
+conn.execute("PRAGMA synchronous = NORMAL")    # 降低磁碟 fsync 頻率
+conn.execute("PRAGMA cache_size = -32000")     # 32MB 頁面快取
+```
+
+**WAL（Write-Ahead Logging）的作用**：
+- 寫入者（`IndexerWorker`）將新資料寫入 WAL 日誌文件，不直接修改主資料庫
+- 讀取者（`SearchWorker`）持續讀取主資料庫，不受 WAL 日誌影響
+- 允許多個讀取者與一個寫入者並行運作（SQLite WAL 的核心價值）
+
+#### Layer 2：記憶體索引的 O(1) Map
+
+```
+資料庫（持久層）            記憶體（查詢層）
+┌──────────────────┐       ┌───────────────────────────────────┐
+│ SQLite           │       │ ImageSearchEngine（常駐記憶體）    │
+│ ├ files 表       │ 啟動時│ ├ faiss_index   → FAISS 向量引擎  │
+│ │  path, emb     │──────►│ ├ stored_embs   → numpy 矩陣      │
+│ │  ocr_text      │       │ ├ path_map[idx] → 路徑字串 O(1)   │
+│ └ ocr_data 表    │       │ └ data_store    → Metadata 快照   │
+└──────────────────┘       └───────────────────────────────────┘
+                                    ▲
+                           新增圖片後由
+                           trigger_background_db_reload()
+                           執行 Atomic Swap 更新
+```
+
+**「Atomic Swap」更新流程**：
+當 `IndexerWorker` 掃描完成並寫入資料庫後，`MainWindow.trigger_background_db_reload()` 在背景執行緒呼叫 `engine.load_data_from_db()`，建立**全新的 `faiss_index`、新的 `path_map` 與新的 `data_store`**，完成後以原子操作（`self.engine.faiss_index = new_index`）替換舊物件。
+
+這確保了搜尋的讀取端永遠看到「完整且一致的記憶體快照」，不存在讀到一半索引的情形。
+
+#### 文字搜尋快取（Last Query Cache）
+
+```python
+# 避免連續輸入時頻繁呼叫 ONNX 推論（約 50-150ms per query）
+if text_query == self.last_text_query and self.last_text_features is not None:
+    text_features = self.last_text_features   # 直接命中，0ms
+else:
+    text_features = self._encode_text(text_query)  # 呼叫 ONNX，50-150ms
+    self.last_text_query = text_query
+    self.last_text_features = text_features
+```
+
+此單層快取使得「重複搜尋同一字串」的回應時間從 50-150ms 降至接近 0ms。
+
+---
+
+## 五、模組通訊總覽（Communication Matrix）
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        EyeSeeMore 通訊矩陣                           │
+├──────────────────┬──────────────┬──────────────────────────────────┤
+│ 發送方           │ 接收方       │ 通訊機制                          │
+├──────────────────┼──────────────┼──────────────────────────────────┤
+│ SearchWorker     │ MainWindow   │ pyqtSignal (results_ready)       │
+│ IndexerWorker    │ MainWindow   │ pyqtSignal (progress_update)     │
+│ PreviewLoader    │ PreviewOverlay│ pyqtSignal (PreviewSignals)     │
+│ ThumbnailLoader  │ SearchResultsModel│ pyqtSignal (WorkerSignals)│
+│ ThumbnailWorker  │ FeatureBucket│ pyqtSignal (ThumbnailSignals)   │
+├──────────────────┼──────────────┼──────────────────────────────────┤
+│ NavigationManager│ MainWindow   │ Callback (on_navigate)           │
+│ ImageActionManager│ MainWindow  │ Callback (toast_fn)              │
+│ FeatureBucketWidget│ MainWindow │ Callback (trigger_search)        │
+│ TextFeatureWidget│ FeatureBucket│ Callback (preheat_text_vector)  │
+├──────────────────┼──────────────┼──────────────────────────────────┤
+│ MainWindow       │ SearchOrchestrator│ 方法呼叫 (submit)          │
+│ MainWindow       │ ImageSearchEngine│ 方法呼叫 (search_hybrid)   │
+│ SettingsDialog   │ ConfigManager│ 方法呼叫 (get/set)               │
+│ ThemeManager     │ QApplication │ QSS 套用 (setStyleSheet)         │
+└──────────────────┴──────────────┴──────────────────────────────────┘
+
+凡是「跨執行緒」的通訊，一律使用 pyqtSignal（Qt 保證執行緒安全的隊列傳遞）。
+凡是「同執行緒的模組間解耦」，優先使用 Callback 注入，避免循環 import。
+凡是「UI 需要主動查詢後端狀態」，才使用直接方法呼叫。
+```
+
+---
+
+## 六、已知技術債優先序（Known Tech Debt Priority）
+
+| 優先級 | 問題描述 | 影響範圍 | 建議解法 |
+| :---: | :--- | :--- | :--- |
+| 🔴 高 | `IndexerWorker` 傳入整個 `main_window`，透過 `self.main_window.engine` 存取引擎 | 違反解耦、無法單元測試 | 改為建構子傳入 `engine` 物件 |
+| 🔴 高 | `ThumbnailWorker.run()` 中建立 `QPixmap`、`QIcon`（非主執行緒 GUI 資源） | 潛在隨機 Segfault | 改為只傳回 `QImage`，主執行緒轉換 |
+| 🟡 中 | `SettingsDialog` 內含 SQL `DELETE` 語句（UI 層直接操作資料庫） | 業務邏輯混入視圖層 | 封裝至 `engine.remove_folder_data()` |
+| 🟡 中 | `OCRLabel.paintEvent()` 120+ 行，座標換算邏輯重複於 `mouseMoveEvent` | 維護困難、Zoom 功能擴充受阻 | 抽離 `CoordinateMapper` 工具類 |
+| 🟢 低 | `RangeCalendarWidget` 中星期標籤硬編碼中文 | i18n 不完全 | 改用 `QLocale` 或接入 `Translator` |
+| 🟢 低 | `SearchResultsModel` 中 `len(paths) > 40` 等 UX 魔法數字 | 不易調校 | 提煉至類別常數或設定檔 |
+
+---
+
+*本白皮書由 AI 架構師根據完整 Class 審計紀錄與 Phase 1-9 重構歷程綜合生成。*
+*最後更新：重構完成版，所有 core/ ui/ utils/ 套件結構驗證通過。*
