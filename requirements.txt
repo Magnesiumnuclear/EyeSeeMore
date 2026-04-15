@@ -1,18 +1,52 @@
-# GUI 框架
+# ============================================================
+#  EyeSeeMore 生產環境依賴清單
+#  目標平台：Windows + Python 3.10 Embeddable (Portable)
+#  最後審計：2026-04-15
+# ============================================================
+
+# --- GUI 框架 ---
 PyQt6==6.10.2
 
-# AI 推理與硬體加速 (核心)
+# --- AI 推理引擎 (Windows DirectML GPU 加速) ---
+# [警告] onnxruntime-directml 與 onnxruntime 二擇一，不可同時安裝
+# [警告] Embeddable 環境需確保 DirectML.dll 存在於 %SystemRoot%\System32
+#         若目標機器缺少 DirectX 12，改用 onnxruntime>=1.17.0
 onnxruntime-directml==1.23.0
 
-# 影像處理
-opencv-python==4.6.0.66
-Pillow==12.0.0
-numpy==1.26.4
+# --- 向量檢索引擎 ---
+# [警告] faiss-cpu 在 Embeddable 環境安裝後需確認 _faiss.pyd 的
+#         相依 DLL (msvcp140.dll / vcruntime140.dll) 已納入可攜包
+faiss-cpu>=1.7.4
 
-# 自然語言處理 (用於 Tokenizer)
-transformers==5.3.0
-huggingface_hub==1.4.0
+# --- 影像與數學處理 ---
+# [警告] 使用 opencv-python-headless 避免與 PyQt6 的 Qt DLL 衝突
+#         禁止使用 opencv-python (完整版帶有獨立 Qt 視窗函式庫)
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0,<2.0
 
-# 系統工具
-psutil==7.2.2
-requests==2.32.5
+# --- NLP / Tokenizer 支援 (CLIP 文字編碼) ---
+# [警告] transformers 在 Embeddable 環境須設定 HF_HUB_OFFLINE=1
+#         並確保 tokenizers (Rust 擴充) 的 msvcp140.dll 已加入可攜包
+#         模型必須預先下載至本地目錄，搭配 local_files_only=True 使用
+transformers>=4.35.0
+
+# --- OCR 幾何運算 ---
+# pyclipper 與 shapely 為 onnx_ocr.py 的硬性依賴，缺少任一則 OCR 功能崩潰
+pyclipper>=1.3.0
+shapely>=2.0.0
+
+# --- 系統資源監控 ---
+psutil>=5.9.0
+
+# ============================================================
+#  已排除套件 (僅限開發/實驗環境)
+# ============================================================
+# torch         → 僅 dev_model_exporter.py 使用 (ONNX 轉換開發工具)
+# open_clip     → 僅 dev_model_exporter.py 使用
+# pandas        → 僅 visualize_space.py 使用 (向量空間視覺化工具)
+# umap-learn    → 僅 visualize_space.py 使用
+# plotly        → 僅 visualize_space.py 使用
+# requests      → 源碼中無任何 import requests 語句，可移除
+# huggingface_hub → transformers 的間接依賴，無需單獨釘版
+# ============================================================
