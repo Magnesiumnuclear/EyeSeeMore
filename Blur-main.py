@@ -2295,20 +2295,7 @@ class PreviewOverlay(QWidget):
     def mousePressEvent(self, event):
         self.hide()
 
-class HistoryItemWidget(QWidget):
-    def __init__(self, text, search_callback, delete_callback):
-        super().__init__(); self.text = text; self.search_callback = search_callback; self.delete_callback = delete_callback
-        layout = QHBoxLayout(self); layout.setContentsMargins(10, 0, 5, 0)
-        self.label = QLabel(text); self.label.setStyleSheet("background: transparent;"); self.label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor)); self.label.mousePressEvent = self.on_label_clicked
-        layout.addWidget(self.label, stretch=1)
-        self.del_btn = QPushButton("x")
-        self.del_btn.setObjectName("HistoryDelBtn") #  換成專屬身分證
-        self.del_btn.setFixedSize(28, 28)
-        self.del_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.del_btn.clicked.connect(self.on_delete_clicked); layout.addWidget(self.del_btn)
-    def on_label_clicked(self, event):
-        if event.button() == Qt.MouseButton.LeftButton: self.search_callback(self.text)
-    def on_delete_clicked(self): self.delete_callback(self.text)
+# HistoryItemWidget 已遷移至 ui/widgets/search_capsule.py
 
 class StatsMenuWidget(QFrame):
     def __init__(self, parent=None):
@@ -4038,6 +4025,23 @@ class MainWindow(QMainWindow):
         from ui.action_handler import ActionHandler
         self.action_handler = ActionHandler(self)
 
+        # [Signal Relay] ActionHandler 訊號接線
+        ah = self.action_handler
+        ah.requestEscapeClear.connect(self._on_escape_clear)
+        ah.requestOCRShow.connect(self._on_ocr_show)
+        ah.requestOCRToggleLock.connect(self._on_ocr_toggle_lock)
+        ah.requestNavigate.connect(self._on_navigate)
+        ah.requestClosePreview.connect(self._on_close_preview)
+        ah.requestPreview.connect(self.toggle_preview)
+        ah.requestCopy.connect(self._on_copy_toast)
+        ah.requestHistoryToggle.connect(self._on_history_toggle)
+        ah.requestFocusGallery.connect(lambda: self.list_view.setFocus())
+
+        # [Signal Relay] SearchCapsule 訊號接線
+        self.search_capsule.searchRequested.connect(self._on_search_requested)
+        self.search_capsule.errorOccurred.connect(self.status.setText)
+        self.search_capsule.set_history(self.search_history)
+
         QApplication.instance().installEventFilter(self)
         
         # 啟動背景載入 (這裡才會去建立 ImageSearchEngine)
@@ -4108,6 +4112,52 @@ class MainWindow(QMainWindow):
                 self.start_image_search(self.current_image_search_path)
             else:
                 self.start_search(triggered_by_slider=True)
+
+    # ------------------------------------------------------------------
+    #  ActionHandler 訊號接收器 (Signal Relay)
+    # ------------------------------------------------------------------
+    def _on_escape_clear(self):
+        self.input.clearFocus()
+        self.list_view.clearSelection()
+
+    def _on_ocr_show(self, visible):
+        self.preview_overlay.set_ocr_visible(visible)
+
+    def _on_ocr_toggle_lock(self):
+        self.is_ocr_locked = not self.is_ocr_locked
+        self.preview_overlay.set_ocr_visible(self.is_ocr_locked)
+
+    def _on_navigate(self, key_code):
+        from ui.action_handler import ActionHandler
+        ActionHandler.send_nav_key(self.list_view, key_code)
+
+    def _on_close_preview(self):
+        self.preview_overlay.hide()
+        self.is_ocr_locked = False
+
+    def _on_copy_toast(self, count):
+        if count == 1:
+            self._show_toast("已複製 1 個檔案到剪貼簿")
+        else:
+            self._show_toast(f"已複製 {count} 個檔案到剪貼簿")
+
+    def _on_history_toggle(self, show):
+        if show:
+            self.search_capsule.show_history_popup()
+        else:
+            self.history_list.hide()
+
+    # ------------------------------------------------------------------
+    #  SearchCapsule 訊號接收器 (Signal Relay)
+    # ------------------------------------------------------------------
+    def _on_search_requested(self, payload: dict):
+        """接收 SearchCapsule.searchRequested 訊號並轉發至 start_search"""
+        q = payload.get("query", "").strip()
+        if not q:
+            return
+        # 將 payload 中的 use_ocr 暫存，供 start_search 使用
+        self._pending_use_ocr = payload.get("use_ocr", True)
+        self.start_search()
 
     # ------------------------------------------------------------------
     #  導航回呼 (供 NavigationManager 呼叫)
@@ -4756,42 +4806,20 @@ class MainWindow(QMainWindow):
         self.search_history.insert(0, query); 
         if len(self.search_history) > 10: self.search_history = self.search_history[:10]
         self.save_history_to_file()
+        # 同步更新 SearchCapsule 內部歷史快取
+        self.search_capsule.set_history(self.search_history)
 
     def delete_history_item(self, text):
-        if text in self.search_history: self.search_history.remove(text); self.save_history_to_file(); self.show_history_popup()
+        if text in self.search_history: self.search_history.remove(text); self.save_history_to_file()
+        self.search_capsule.set_history(self.search_history)
+        self.search_capsule.show_history_popup()
     
     def trigger_history_search(self, text): 
         self.input.setText(text); self.start_search()
 
     def show_history_popup(self):
-        if not self.search_history: self.history_list.hide(); return
-        self.history_list.clear()
-        
-        # --- 修正 1: 標題項目空間 ---
-        title_item = QListWidgetItem()
-        title_widget = QLabel(" Recent Searches")
-        # 移除內層多餘的 padding，稍微加大字體並設為粗體，確保乾淨清晰
-        title_widget.setStyleSheet("color: #888888; font-size: 13px; font-weight: bold; background: transparent;")
-        title_item.setFlags(Qt.ItemFlag.NoItemFlags)
-        # 給予足夠的高度 (36px)，才不會被外層的 padding 擠壓切斷
-        title_item.setSizeHint(QSize(0, 36))
-        self.history_list.addItem(title_item)
-        self.history_list.setItemWidget(title_item, title_widget)
-        
-        for text in self.search_history:
-            item = QListWidgetItem()
-            item.setSizeHint(QSize(0, 44))
-            widget = HistoryItemWidget(text, search_callback=self.trigger_history_search, delete_callback=self.delete_history_item)
-            self.history_list.addItem(item); self.history_list.setItemWidget(item, widget)
-            
-        # --- 修正 2: 精準計算選單展開高度 ---
-        input_pos = self.input.mapTo(self, QPoint(0, 0))
-        # 標題高度(36) + (歷史紀錄數量 * 每個項目高度44) + 底部邊距緩衝(10)
-        list_height = min(320, 36 + (len(self.search_history) * 44) + 10)
-        
-        self.history_list.setGeometry(input_pos.x(), input_pos.y() + self.input.height() + 8, self.input.width(), list_height)
-        self.history_list.show()
-        self.history_list.raise_()
+        """委派給 SearchCapsule 元件處理"""
+        self.search_capsule.show_history_popup()
     
     def load_engine(self):
         try:
@@ -4827,11 +4855,6 @@ class MainWindow(QMainWindow):
             print(f"Engine Load Error: {e}")
             import traceback
             traceback.print_exc()
-        
-    def on_weights_changed(self, weight_config):
-        q = self.input.text().strip()
-        if q and not q.startswith("[Image]"):
-            self.start_search(triggered_by_slider=True)
 
     def start_search(self, *args, triggered_by_slider=False):
         #  新增：如果是使用者手動按 Enter 搜尋，立刻交出焦點釋放 WASD 快捷鍵
@@ -4854,7 +4877,7 @@ class MainWindow(QMainWindow):
 
             self.current_image_search_path = None
             self.add_to_history(q)
-            self.history_list.hide()
+            self.search_capsule.hide_history()
             self.progress.show()
             self.progress.setRange(0, 0)
             self.status.setText("Searching...")
@@ -4865,12 +4888,16 @@ class MainWindow(QMainWindow):
             self.inspector_panel.btn_sort_order.setText("↓")
             self.inspector_panel.combo_sort.blockSignals(False)
 
+        # 從 SearchCapsule payload 或按鈕狀態取得 use_ocr
+        use_ocr = getattr(self, '_pending_use_ocr', self.btn_ocr_toggle.isChecked())
+        self._pending_use_ocr = None  # 消費後清除
+
         fetch_k, target_folder = self.search_orch.resolve_search_params(
             self.inspector_panel, self.current_folder_path)
 
         self.search_orch.submit(
             q, search_mode="text",
-            use_ocr=self.btn_ocr_toggle.isChecked(),
+            use_ocr=use_ocr,
             weight_config=self.inspector_panel.get_weight_config(),
             folder_path=target_folder, fetch_k=fetch_k,
         )

@@ -1,35 +1,52 @@
 # ==========================================
 #  action_handler.py
-#  EyeSeeMore - 事件處理與熱鍵動作層
-#  從 MainWindow.eventFilter 中提取的所有具體動作邏輯。
-#  MainWindow 的 eventFilter 僅負責分流，此處負責執行。
+#  EyeSeeMore - 事件處理與熱鍵動作層 (Signal Relay 版)
+#  所有 handle_xxx 方法在邏輯成立時發射訊號，
+#  由 MainWindow 負責最終調度與 UI 副作用。
 # ==========================================
 
 from PyQt6.QtWidgets import QApplication, QLineEdit
-from PyQt6.QtCore import Qt, QEvent, QPoint, QRect, QUrl, QMimeData, QTimer
+from PyQt6.QtCore import Qt, QObject, QEvent, QPoint, QRect, QUrl, QMimeData, QTimer, pyqtSignal
 from PyQt6.QtGui import QKeyEvent
 
 
-class ActionHandler:
+class ActionHandler(QObject):
     """
-    MainWindow 的熱鍵與事件動作執行器。
+    MainWindow 的熱鍵與事件動作執行器 (訊號中繼版)。
 
-    【外部依賴】
-    初始化時需傳入 MainWindow 實例 (self.w)，以存取下列屬性：
-      - self.w.config            : ConfigManager
-      - self.w.input             : QLineEdit (搜尋框)
-      - self.w.list_view         : GalleryListView (畫廊)
-      - self.w.preview_overlay   : PreviewOverlay
-      - self.w.inspector_panel   : InspectorPanel
-      - self.w.history_list      : QListWidget (歷史浮動面板)
-      - self.w.status            : QLabel (狀態列)
-      - self.w.model             : SearchResultsModel
-      - self.w.is_ocr_locked     : bool
-      - self.w.toggle_preview()  : method
-      - self.w.show_history_popup() : method
+    【發射訊號】
+    - requestEscapeClear()        : Esc 鍵且搜尋框有焦點時
+    - requestOCRShow(bool)        : Shift 按下/放開，True=顯示 False=隱藏
+    - requestOCRToggleLock()      : Shift 按下 (toggle 模式) 切換鎖定
+    - requestNavigate(int)        : WASD 鍵，傳入對應的 Qt.Key (Up/Down/Left/Right)
+    - requestClosePreview()       : WASD close 模式下關閉預覽
+    - requestPreview()            : Space 鍵
+    - requestCopy(int)            : Ctrl+C 且已完成剪貼簿寫入，傳入複製的檔案數量
+    - requestHistoryToggle(bool)  : True=顯示歷史 False=隱藏歷史
+    - requestFocusGallery()       : WASD 後需要讓畫廊取得焦點
+
+    【外部依賴 (唯讀)】
+    初始化時需傳入 MainWindow 實例 (self.w)，用於：
+      - self.w.config            : 讀取設定 (唯讀)
+      - self.w.input             : 判斷焦點狀態 (唯讀)
+      - self.w.list_view         : 發送模擬按鍵 + 讀取選取狀態 (唯讀)
+      - self.w.preview_overlay   : 判斷是否可見 (唯讀)
+      - self.w.history_list      : 判斷是否可見 + 幾何碰撞測試 (唯讀)
     """
+
+    # --- 請求訊號 ---
+    requestEscapeClear = pyqtSignal()
+    requestOCRShow = pyqtSignal(bool)
+    requestOCRToggleLock = pyqtSignal()
+    requestNavigate = pyqtSignal(int)
+    requestClosePreview = pyqtSignal()
+    requestPreview = pyqtSignal()
+    requestCopy = pyqtSignal(int)
+    requestHistoryToggle = pyqtSignal(bool)
+    requestFocusGallery = pyqtSignal()
 
     def __init__(self, main_window):
+        super().__init__(main_window)
         self.w = main_window
 
     # ------------------------------------------------------------------
@@ -48,8 +65,7 @@ class ActionHandler:
     def handle_escape(self):
         """回傳 True 表示已攔截事件"""
         if self.w.input.hasFocus():
-            self.w.input.clearFocus()
-            self.w.list_view.clearSelection()
+            self.requestEscapeClear.emit()
             return True
         return False
 
@@ -59,10 +75,9 @@ class ActionHandler:
     def handle_shift_press(self, ocr_mode):
         if self.w.preview_overlay.isVisible():
             if ocr_mode == "toggle":
-                self.w.is_ocr_locked = not self.w.is_ocr_locked
-                self.w.preview_overlay.set_ocr_visible(self.w.is_ocr_locked)
+                self.requestOCRToggleLock.emit()
             else:
-                self.w.preview_overlay.set_ocr_visible(True)
+                self.requestOCRShow.emit(True)
         return True
 
     # ------------------------------------------------------------------
@@ -71,7 +86,7 @@ class ActionHandler:
     def handle_shift_release(self, ocr_mode):
         if self.w.preview_overlay.isVisible():
             if ocr_mode != "toggle":
-                self.w.preview_overlay.set_ocr_visible(False)
+                self.requestOCRShow.emit(False)
         return True
 
     # ------------------------------------------------------------------
@@ -82,10 +97,9 @@ class ActionHandler:
 
         # 模式 1：按 WASD 時關閉預覽
         if is_preview_active and nav_mode == "close":
-            self.w.preview_overlay.hide()
-            self.w.is_ocr_locked = False
+            self.requestClosePreview.emit()
 
-        self.w.list_view.setFocus()
+        self.requestFocusGallery.emit()
 
         key_map = {
             Qt.Key.Key_W: Qt.Key.Key_Up,
@@ -95,18 +109,18 @@ class ActionHandler:
         }
         nav_key = key_map.get(key)
         if nav_key is not None:
-            self._send_nav_key(nav_key)
+            self.requestNavigate.emit(nav_key)
         return True
 
     # ------------------------------------------------------------------
     #  Space：切換預覽
     # ------------------------------------------------------------------
     def handle_space(self):
-        self.w.toggle_preview()
+        self.requestPreview.emit()
         return True
 
     # ------------------------------------------------------------------
-    #  Ctrl+C：智慧檔案路徑複製 + Toast
+    #  Ctrl+C：智慧檔案路徑複製 + Toast 訊號
     # ------------------------------------------------------------------
     def handle_copy(self):
         if self.w.input.hasFocus():
@@ -118,13 +132,7 @@ class ActionHandler:
         if not selected_indexes:
             return False
 
-        # 記住狀態文字 (用於 Toast 還原)
-        current_status = self.w.status.text()
-        if not getattr(self.w, '_is_toast_active', False):
-            self.w._previous_status_text = current_status
-        self.w._is_toast_active = True
-
-        # 打包成實體檔案路徑
+        # 打包成實體檔案路徑 (剪貼簿操作由 ActionHandler 負責)
         mime_data = QMimeData()
         urls = []
         for idx in selected_indexes:
@@ -135,18 +143,8 @@ class ActionHandler:
         mime_data.setUrls(urls)
         QApplication.clipboard().setMimeData(mime_data)
 
-        # Toast 提示
-        count = len(urls)
-        if count == 1:
-            self.w.status.setText("已複製 1 個檔案到剪貼簿")
-        else:
-            self.w.status.setText(f"已複製 {count} 個檔案到剪貼簿")
-
-        def restore_status():
-            self.w.status.setText(getattr(self.w, '_previous_status_text', "System Ready"))
-            self.w._is_toast_active = False
-
-        QTimer.singleShot(1500, restore_status)
+        # 發射訊號，由 MainWindow 負責 Toast 顯示
+        self.requestCopy.emit(len(urls))
         return True
 
     # ------------------------------------------------------------------
@@ -160,17 +158,19 @@ class ActionHandler:
             input_rect = QRect(self.w.input.mapToGlobal(QPoint(0, 0)), self.w.input.size())
             list_rect = QRect(self.w.history_list.mapToGlobal(QPoint(0, 0)), self.w.history_list.size())
             if not input_rect.contains(click_pos) and not list_rect.contains(click_pos):
-                self.w.history_list.hide()
+                self.requestHistoryToggle.emit(False)
 
         # 點擊搜尋框 → 彈出歷史紀錄
         if obj == self.w.input:
-            self.w.show_history_popup()
+            self.requestHistoryToggle.emit(True)
 
     # ------------------------------------------------------------------
     #  內部輔助：發送模擬按鍵給 ListView
     # ------------------------------------------------------------------
-    def _send_nav_key(self, key_code):
+    @staticmethod
+    def send_nav_key(list_view, key_code):
+        """對指定的 QListView 發送模擬方向鍵"""
         press = QKeyEvent(QEvent.Type.KeyPress, key_code, Qt.KeyboardModifier.NoModifier)
         release = QKeyEvent(QEvent.Type.KeyRelease, key_code, Qt.KeyboardModifier.NoModifier)
-        QApplication.sendEvent(self.w.list_view, press)
-        QApplication.sendEvent(self.w.list_view, release)
+        QApplication.sendEvent(list_view, press)
+        QApplication.sendEvent(list_view, release)

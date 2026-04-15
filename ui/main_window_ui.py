@@ -5,12 +5,13 @@
 # ==========================================
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QProgressBar, QFrame, QListView, QListWidget,
-    QAbstractItemView, QGraphicsDropShadowEffect, QSplitter
+    QAbstractItemView, QSplitter
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QColor
+
+from ui.widgets.search_capsule import SearchCapsule
 
 
 # 從 Blur-main.py 搬入的全域 UI 常數
@@ -110,33 +111,13 @@ class Ui_MainWindow:
         header_layout.addWidget(MainWindow.breadcrumb_lbl)
         header_layout.addStretch(1)
 
-        # --- 膠囊式搜尋樞紐 ---
-        search_capsule = QFrame()
-        search_capsule.setMaximumWidth(550)
-        search_capsule.setMinimumWidth(300)
-        search_capsule.setFixedHeight(38)
-        search_capsule.setObjectName("SearchCapsule")
-        capsule_layout = QHBoxLayout(search_capsule)
-        capsule_layout.setContentsMargins(15, 0, 5, 0)
-        capsule_layout.setSpacing(5)
+        # --- 膠囊式搜尋樞紐 (SearchCapsule 組件) ---
+        MainWindow.search_capsule = SearchCapsule()
+        # 向後相容別名：讓現有程式碼中 self.input / self.btn_ocr_toggle 繼續運作
+        MainWindow.input = MainWindow.search_capsule.input
+        MainWindow.btn_ocr_toggle = MainWindow.search_capsule.btn_ocr_toggle
 
-        MainWindow.input = QLineEdit()
-        MainWindow.input.setPlaceholderText("Search images...")
-        MainWindow.input.setStyleSheet("QLineEdit { background: transparent; border: none; font-size: 14px; }")
-        MainWindow.input.returnPressed.connect(MainWindow.start_search)
-        capsule_layout.addWidget(MainWindow.input, stretch=1)
-
-        # OCR 開關
-        MainWindow.btn_ocr_toggle = QPushButton("[T]")
-        MainWindow.btn_ocr_toggle.setCheckable(True)
-        MainWindow.btn_ocr_toggle.setChecked(True)
-        MainWindow.btn_ocr_toggle.setFixedSize(30, 30)
-        MainWindow.btn_ocr_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        MainWindow.btn_ocr_toggle.setToolTip("啟用/停用 OCR 文字檢索")
-        MainWindow.btn_ocr_toggle.setObjectName("OcrToggle")
-        capsule_layout.addWidget(MainWindow.btn_ocr_toggle)
-
-        header_layout.addWidget(search_capsule)
+        header_layout.addWidget(MainWindow.search_capsule)
         header_layout.addStretch(1)
 
         # --- 右側動作列 ---
@@ -236,14 +217,7 @@ class Ui_MainWindow:
         # ==========================================
         #  浮動元件
         # ==========================================
-        MainWindow.history_list = QListWidget(MainWindow)
-        MainWindow.history_list.setObjectName("HistoryList")
-        MainWindow.history_list.hide()
-        MainWindow.history_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(20)
-        shadow.setColor(QColor(0, 0, 0, 100))
-        shadow.setOffset(0, 4)
-        MainWindow.history_list.setGraphicsEffect(shadow)
+        # 歷史清單由 SearchCapsule 內部管理，這裡建立別名供外部相容
+        MainWindow.history_list = MainWindow.search_capsule.get_history_list_widget()
 
         MainWindow.preview_overlay = PreviewOverlay(MainWindow)
