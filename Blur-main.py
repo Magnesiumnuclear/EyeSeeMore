@@ -1498,6 +1498,65 @@ class ImageSearchEngine:
     # ==========================================
     #  [NEW] 虛擬資料夾 (Collections) 管理 API
     # ==========================================
+
+    def _ensure_icon_column(self, conn):
+        """冪等遷移：若 collections 尚無 icon 欄位則自動新增。"""
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(collections)").fetchall()]
+        if "icon" not in cols:
+            conn.execute("ALTER TABLE collections ADD COLUMN icon TEXT DEFAULT '🏷️'")
+            conn.commit()
+
+    def add_collection(self, name: str, icon: str = "🏷️") -> bool:
+        """新增一個虛擬資料夾（含 icon 欄位自動遷移）。"""
+        try:
+            with self.get_db_conn() as conn:
+                self._ensure_icon_column(conn)
+                conn.execute(
+                    "INSERT INTO collections (name, icon, created_at) VALUES (?, ?, ?)",
+                    (name, icon, __import__("time").time()),
+                )
+            return True
+        except Exception as e:
+            print(f"[Engine] add_collection error: {e}")
+            return False
+
+    def get_collections(self) -> list:
+        """回傳 [(id, name, icon, count), ...]，供 UI 載入。"""
+        try:
+            conn = self.get_db_conn()
+            try:
+                self._ensure_icon_column(conn)
+                rows = conn.execute("""
+                    SELECT c.id,
+                           c.name,
+                           COALESCE(c.icon, '🏷️') AS icon,
+                           COUNT(ci.file_path)       AS cnt
+                    FROM collections c
+                    LEFT JOIN collection_items ci ON c.id = ci.collection_id
+                    GROUP BY c.id
+                    ORDER BY c.created_at ASC
+                """).fetchall()
+                return rows
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[Engine] get_collections error: {e}")
+            return []
+
+    def remove_collection(self, collection_id: int) -> bool:
+        """刪除虛擬資料夾（CASCADE 會同步清除 collection_items）。"""
+        try:
+            conn = self.get_db_conn()
+            try:
+                conn.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[Engine] remove_collection error: {e}")
+            return False
+
     def create_virtual_folder(self, name):
         """建立新的虛擬資料夾"""
         conn = self.get_db_conn()
@@ -2582,6 +2641,26 @@ class SidebarWidget(QFrame):
 
         self.hover_menu.mouse_entered.connect(self.hover_timer.stop)
         self.hover_menu.mouse_left.connect(lambda: self.hover_timer.start(150))
+
+        # ─── Collections 容器（Phase 13）───────────────────────────────
+        self._col_separator = QFrame()
+        self._col_separator.setFrameShape(QFrame.Shape.HLine)
+        self._col_separator.setObjectName("SidebarSeparator")
+        self._col_separator.hide()
+        self.layout.addWidget(self._col_separator)
+
+        self._col_label = QLabel("  🏷️ Collections")
+        self._col_label.setObjectName("SidebarSectionLabel")
+        self._col_label.hide()
+        self.layout.addWidget(self._col_label)
+
+        self._col_container = QWidget()
+        self._col_layout = QVBoxLayout(self._col_container)
+        self._col_layout.setContentsMargins(0, 0, 0, 0)
+        self._col_layout.setSpacing(0)
+        self._col_container.hide()
+        self.layout.addWidget(self._col_container)
+        # ────────────────────────────────────────────────────────────────
         
         # ==========================================
         # [新增] 側邊欄底部的設定入口
@@ -2637,7 +2716,25 @@ class SidebarWidget(QFrame):
         else:
             self.btn_all_images.setText("")
             self.btn_settings.setText("")
-        
+
+        # Collections label 隨展開狀態顯示/隱藏
+        self._col_label.setVisible(self.is_expanded and self._col_container.isVisible())
+
+        # 同步更新所有 collection 按鈕的文字與 expanded 屬性
+        for i in range(self._col_layout.count()):
+            btn = self._col_layout.itemAt(i).widget()
+            if btn is None:
+                continue
+            # 按鈕 toolTip 存了名稱與 count，從 text 反推太脆，改用 userData (property)
+            col_data = btn.property("col_data")
+            if col_data and self.is_expanded:
+                btn.setText(f"  {col_data[0]}  ({col_data[1]})")
+            else:
+                btn.setText("")
+            btn.setProperty("expanded", self.is_expanded)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
         #  終極重構：用屬性 (Property) 驅動 QSS，消滅硬寫的 StyleSheet
         # 通知這兩顆按鈕目前的狀態，QSS 檔裡的 [expanded="true"] 就會自動生效！
         for btn in [self.btn_all_images, self.btn_settings]:
@@ -2706,6 +2803,52 @@ class SidebarWidget(QFrame):
 
     def on_sub_folder_clicked(self, path):
         self.folder_selected.emit(path)
+
+    def reload_collections(self, collections: list):
+        """重新渲染 Collections 按鈕列。
+        collections: [(id, name, icon, count), ...]
+        選取訊號格式: folder_selected.emit('col:N')
+        """
+        # 清除舊按鈕
+        while self._col_layout.count():
+            child = self._col_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        if not collections:
+            self._col_separator.hide()
+            self._col_label.hide()
+            self._col_container.hide()
+            return
+
+        self._col_separator.show()
+        self._col_label.setVisible(self.is_expanded)
+        self._col_container.show()
+
+        for col_id, name, icon, count in collections:
+            btn = QPushButton()
+            btn.setObjectName("Row1")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(54)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            btn.setProperty("expanded", self.is_expanded)
+
+            # 渲染 emoji icon
+            px = QPixmap(28, 28)
+            px.fill(Qt.GlobalColor.transparent)
+            p = QPainter(px)
+            p.setFont(QFont("Segoe UI Emoji", 16))
+            p.drawText(px.rect(), Qt.AlignmentFlag.AlignCenter, icon)
+            p.end()
+            btn.setIcon(QIcon(px))
+            btn.setIconSize(QSize(22, 22))
+
+            if self.is_expanded:
+                btn.setText(f"  {name}  ({count})")
+            btn.setProperty("col_data", (name, count))
+            signal_val = f"col:{col_id}"
+            btn.clicked.connect(lambda checked=False, v=signal_val: self.folder_selected.emit(v))
+            self._col_layout.addWidget(btn)
 
 # ==========================================
 #  [升級] CLIP 專用特徵選取桶 (SolidWorks 風格)
@@ -3125,7 +3268,34 @@ class MainWindow(QMainWindow):
     def show_settings_dialog(self):
         dialog = SettingsDialog(self)
         dialog.clip_model_changed.connect(self._on_clip_model_switched)
+
+        # Phase 13: Collections 訊號 Lambda 接線
+        fp = dialog._folders_page
+        fp.addCollectionRequested.connect(
+            lambda name, icon: self._on_add_collection_requested(fp, name, icon)
+        )
+        fp.removeCollectionRequested.connect(
+            lambda col_id: self._on_remove_collection_requested(fp, col_id)
+        )
+
         dialog.exec()
+
+    def _on_add_collection_requested(self, folders_page, name: str, icon: str):
+        if not self.engine:
+            return
+        ok = self.engine.add_collection(name, icon)
+        if ok:
+            folders_page.refresh_collections()
+            self.sidebar.reload_collections(self.engine.get_collections())
+        else:
+            QMessageBox.warning(self, "新增失敗", f"「{name}」可能名稱重複或資料庫發生錯誤。")
+
+    def _on_remove_collection_requested(self, folders_page, col_id: int):
+        if not self.engine:
+            return
+        self.engine.remove_collection(col_id)
+        folders_page.refresh_collections()
+        self.sidebar.reload_collections(self.engine.get_collections())
 
     def _on_clip_model_switched(self, model_id: str):
         """接收 SettingsDialog.clip_model_changed 訊號，顯示友善提示後安全關閉。"""

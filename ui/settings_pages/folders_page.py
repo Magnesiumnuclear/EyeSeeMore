@@ -19,13 +19,16 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QListWidgetItem, QMenu, QMessageBox,
     QPushButton, QInputDialog,
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QAction
 
 from ui.widgets.drag_list import TransparentDragListWidget
 
 
 class FoldersPage(QWidget):
+    addCollectionRequested    = pyqtSignal(str, str)  # name, icon
+    removeCollectionRequested = pyqtSignal(int)        # collection_id
+
     def __init__(self, ctx: dict):
         super().__init__()
         self.ctx = ctx
@@ -69,6 +72,42 @@ class FoldersPage(QWidget):
         layout.addLayout(btn_layout)
 
         self.refresh_folder_list()
+
+        # ── Collections 區段 ──────────────────────────────────────────────
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine); sep2.setObjectName("PageHLine")
+        layout.addWidget(sep2)
+
+        lbl_col = QLabel(trans.t("folders", "collections_title", "🏷️ 虛擬資料夾 (Collections)"))
+        lbl_col.setObjectName("PageTitle")
+        lbl_col.setStyleSheet("font-size: 15px;")
+        layout.addWidget(lbl_col)
+
+        lbl_col_hint = QLabel(trans.t(
+            "folders", "collections_hint",
+            "虛擬資料夾讓您跨磁碟整理圖片，不移動實體檔案。"
+        ))
+        lbl_col_hint.setObjectName("SettingsHint")
+        layout.addWidget(lbl_col_hint)
+
+        self.collection_list = TransparentDragListWidget()
+        self.collection_list.setObjectName("FolderSettingsList")
+        self.collection_list.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        self.collection_list.setMaximumHeight(160)
+        layout.addWidget(self.collection_list)
+
+        col_btn_layout = QHBoxLayout()
+        self.btn_add_col = QPushButton(trans.t("folders", "btn_add_collection", "+ 新增收藏夾"))
+        self.btn_del_col = QPushButton(trans.t("folders", "btn_remove_collection", "- 刪除選取"))
+        self.btn_add_col.setProperty("cssClass", "ActionBtn")
+        self.btn_del_col.setProperty("cssClass", "DangerBtn")
+        self.btn_add_col.clicked.connect(self._on_add_collection)
+        self.btn_del_col.clicked.connect(self._on_remove_collection)
+        col_btn_layout.addWidget(self.btn_add_col)
+        col_btn_layout.addWidget(self.btn_del_col)
+        col_btn_layout.addStretch(1)
+        layout.addLayout(col_btn_layout)
+
+        self.refresh_collections()
 
     # ------------------------------------------------------------------ refresh
     def refresh_folder_list(self):
@@ -175,3 +214,50 @@ class FoldersPage(QWidget):
             self.ctx["config"].update_folder_icon(path, icon)
             self.refresh_folder_list()
             self.ctx["refresh_sidebar"]()
+
+    # ------------------------------------------------------------------ collections
+    def refresh_collections(self):
+        """從 engine 重新載入 collections 列表。"""
+        self.collection_list.clear()
+        engine = self.ctx.get("engine")
+        if not engine:
+            return
+        for col_id, name, icon, count in engine.get_collections():
+            item = QListWidgetItem(f"{icon}  {name}  ({count})")
+            item.setData(Qt.ItemDataRole.UserRole, col_id)
+            item.setSizeHint(QSize(0, 40))
+            self.collection_list.addItem(item)
+
+    def _on_add_collection(self):
+        name, ok = QInputDialog.getText(
+            self, "新增收藏夾", "收藏夾名稱："
+        )
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(self, "名稱無效", "名稱不能為空。")
+            return
+        # 本地重複檢查
+        existing = [
+            self.collection_list.item(i).text().split("  ")[1].strip()
+            for i in range(self.collection_list.count())
+        ]
+        if name in existing:
+            QMessageBox.warning(self, "重複名稱", f"「{name}」已存在，請使用其他名稱。")
+            return
+        self.addCollectionRequested.emit(name, "🏷️")
+
+    def _on_remove_collection(self):
+        item = self.collection_list.currentItem()
+        if not item:
+            return
+        col_id = item.data(Qt.ItemDataRole.UserRole)
+        name_text = item.text()
+        reply = QMessageBox.question(
+            self, "確認刪除",
+            f"確定要刪除此收藏夾嗎？\n\n{name_text}\n\n(收藏夾內的圖片不會被刪除)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.removeCollectionRequested.emit(col_id)
