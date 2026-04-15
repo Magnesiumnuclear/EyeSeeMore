@@ -3694,48 +3694,14 @@ class MainWindow(QMainWindow):
     # 右鍵選單邏輯
     def show_context_menu(self, pos):
         index = self.list_view.indexAt(pos)
-        menu = QMenu(self)
-        
         if index.isValid():
             item = index.data(Qt.ItemDataRole.UserRole)
             if not item: return
-
-            action_copy = QAction("Copy Image", self)
-            action_copy.triggered.connect(lambda: self.img_actions.copy_image(item.path))
-            action_path = QAction("Copy Path", self)
-            action_path.triggered.connect(lambda: self.img_actions.copy_path(item.path))
-            action_search = QAction("Search Similar", self)
-            action_search.triggered.connect(lambda: self.start_image_search(item.path))
-            action_rename = QAction("Rename", self)
-            action_rename.triggered.connect(lambda: self.img_actions.rename(index, item))
-            action_props = QAction("Properties", self)
-            action_props.triggered.connect(lambda: self.img_actions.show_properties(item))
-
-            menu.addAction(action_copy)
-            menu.addAction(action_path)
-            menu.addAction(action_search)
-            menu.addSeparator()
-            menu.addAction(action_rename)
-            menu.addAction(action_props)
+            menu = self.img_actions.build_item_menu(
+                index, item, on_search_similar=self.start_image_search)
         else:
-            view_menu = menu.addMenu("檢視 (View)")
-            
-            action_xl = QAction("超大圖示 (Extra Large)", self); action_xl.setCheckable(True)
-            action_xl.setChecked(self.current_view_mode == "xl")
-            action_xl.triggered.connect(lambda: self.change_view_mode("xl"))
-            
-            action_l = QAction("大圖示 (Large)", self); action_l.setCheckable(True)
-            action_l.setChecked(self.current_view_mode == "large")
-            action_l.triggered.connect(lambda: self.change_view_mode("large"))
-            
-            action_m = QAction("中圖示 (Medium)", self); action_m.setCheckable(True)
-            action_m.setChecked(self.current_view_mode == "medium")
-            action_m.triggered.connect(lambda: self.change_view_mode("medium"))
-            
-            group = QActionGroup(self)
-            group.addAction(action_xl); group.addAction(action_l); group.addAction(action_m)
-            view_menu.addAction(action_xl); view_menu.addAction(action_l); view_menu.addAction(action_m)
-
+            menu = self.img_actions.build_view_menu(
+                self, self.current_view_mode, on_change_mode=self.change_view_mode)
         menu.exec(self.list_view.mapToGlobal(pos))
 
     def change_view_mode(self, mode):
@@ -3967,16 +3933,9 @@ class MainWindow(QMainWindow):
             self.nav.push()
         self.current_image_search_path = image_path
 
-        self.history_list.hide(); self.progress.show(); self.progress.setRange(0, 0)
-        self.status.setText("Searching by Image...")
+        self.history_list.hide()
         self.input.setText(f"[Image] {os.path.basename(image_path)}")
-        
-        self.breadcrumb_lbl.setText("Similar Images")
-        
-        self.inspector_panel.combo_sort.blockSignals(True)
-        self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
-        self.inspector_panel.btn_sort_order.setText("↓")
-        self.inspector_panel.combo_sort.blockSignals(False)
+        self._prepare_search_ui("Searching by Image...", "Similar Images")
 
         fetch_k, target_folder = self.search_orch.resolve_search_params(
             self.inspector_panel.combo_limit_panel.currentText(),
@@ -3993,17 +3952,8 @@ class MainWindow(QMainWindow):
         if not self.nav.is_navigating: self.nav.push()
 
         self.history_list.hide()
-        self.progress.show()
-        self.progress.setRange(0, 0)
-        self.status.setText("Calculating Vector Math...")
-        
         self.input.setText(f"[Multi-Vector] Pos:{len(pos_features)} Neg:{len(neg_features)}")
-        self.breadcrumb_lbl.setText("Vector Arithmetic Results")
-        
-        self.inspector_panel.combo_sort.blockSignals(True)
-        self.inspector_panel.combo_sort.setCurrentText("搜尋相關度")
-        self.inspector_panel.btn_sort_order.setText("↓")
-        self.inspector_panel.combo_sort.blockSignals(False)
+        self._prepare_search_ui("Calculating Vector Math...", "Vector Arithmetic Results")
 
         fetch_k, target_folder = self.search_orch.resolve_search_params(
             self.inspector_panel.combo_limit_panel.currentText(),
