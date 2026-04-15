@@ -78,19 +78,30 @@ class SearchOrchestrator(QObject):
         worker.start()
 
     @staticmethod
-    def resolve_search_params(inspector_panel, current_folder_path) -> tuple[int, Optional[str]]:
-        """從 InspectorPanel 解析 fetch_k 與 target_folder。
+    def resolve_search_params(
+        limit_text: str,
+        scope_index: int,
+        current_folder_path: str,
+    ) -> tuple[int, Optional[str]]:
+        """從純資料參數解析 fetch_k 與 target_folder。
+
+        Parameters
+        ----------
+        limit_text : str
+            InspectorPanel combo_limit_panel 的 currentText（如 "All" / "2000"）
+        scope_index : int
+            InspectorPanel combo_search_scope 的 currentIndex（0 = 本地）
+        current_folder_path : str
+            當前資料夾路徑，"ALL" 表示全域
 
         Returns
         -------
         (fetch_k, target_folder)
         """
-        limit = inspector_panel.combo_limit_panel.currentText()
-        fetch_k = 100000 if limit == "All" else 2000
+        fetch_k = 100000 if limit_text == "All" else 2000
 
         target_folder = None
-        is_local_mode = (inspector_panel.combo_search_scope.currentIndex() == 0)
-        if is_local_mode and current_folder_path != "ALL":
+        if scope_index == 0 and current_folder_path != "ALL":
             target_folder = current_folder_path
 
         return fetch_k, target_folder

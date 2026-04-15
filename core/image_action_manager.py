@@ -17,13 +17,14 @@ ImageActionManager  –  單張影像的動作執行器
 from __future__ import annotations
 
 import os
+import subprocess
 from datetime import datetime
 from typing import Callable, Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage
+from PyQt6.QtGui import QAction, QActionGroup, QImage
 from PyQt6.QtWidgets import (
-    QApplication, QInputDialog, QMessageBox, QWidget,
+    QApplication, QInputDialog, QMenu, QMessageBox, QWidget,
 )
 
 
@@ -114,3 +115,87 @@ class ImageActionManager:
             f"<b>Date:</b> {date_str}"
         )
         QMessageBox.information(self._parent, "Properties", msg)
+
+    # ------------------------------------------------------------------
+    #  在檔案總管中定位檔案
+    # ------------------------------------------------------------------
+    @staticmethod
+    def open_in_explorer(path: str) -> None:
+        if os.name == 'nt':
+            subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+
+    # ------------------------------------------------------------------
+    #  構建圖片右鍵選單
+    # ------------------------------------------------------------------
+    def build_item_menu(
+        self,
+        index,
+        item,
+        *,
+        on_search_similar: Optional[Callable] = None,
+    ) -> QMenu:
+        """構建圖片右鍵子選單 (Copy Image / Copy Path / Search Similar / Rename / Properties)。
+
+        Parameters
+        ----------
+        index : QModelIndex
+        item  : ImageItem
+        on_search_similar : callback(path) -> None，觸發以圖搜圖
+        """
+        menu = QMenu(self._parent)
+
+        act_copy = QAction("Copy Image", self._parent)
+        act_copy.triggered.connect(lambda: self.copy_image(item.path))
+        menu.addAction(act_copy)
+
+        act_path = QAction("Copy Path", self._parent)
+        act_path.triggered.connect(lambda: self.copy_path(item.path))
+        menu.addAction(act_path)
+
+        if on_search_similar is not None:
+            act_search = QAction("Search Similar", self._parent)
+            act_search.triggered.connect(lambda: on_search_similar(item.path))
+            menu.addAction(act_search)
+
+        menu.addSeparator()
+
+        act_rename = QAction("Rename", self._parent)
+        act_rename.triggered.connect(lambda: self.rename(index, item))
+        menu.addAction(act_rename)
+
+        act_props = QAction("Properties", self._parent)
+        act_props.triggered.connect(lambda: self.show_properties(item))
+        menu.addAction(act_props)
+
+        return menu
+
+    # ------------------------------------------------------------------
+    #  構建空白區域檢視模式選單
+    # ------------------------------------------------------------------
+    @staticmethod
+    def build_view_menu(
+        parent: QWidget,
+        current_view_mode: str,
+        *,
+        on_change_mode: Optional[Callable] = None,
+    ) -> QMenu:
+        """構建空白區域右鍵子選單 (Extra Large / Large / Medium)。"""
+        menu = QMenu(parent)
+        view_sub = menu.addMenu("檢視 (View)")
+
+        modes = [
+            ("xl", "超大圖示 (Extra Large)"),
+            ("large", "大圖示 (Large)"),
+            ("medium", "中圖示 (Medium)"),
+        ]
+        group = QActionGroup(parent)
+        for mode_key, label in modes:
+            act = QAction(label, parent)
+            act.setCheckable(True)
+            act.setChecked(current_view_mode == mode_key)
+            if on_change_mode is not None:
+                act.triggered.connect(lambda _checked, m=mode_key: on_change_mode(m))
+            group.addAction(act)
+            view_sub.addAction(act)
+
+        return menu
