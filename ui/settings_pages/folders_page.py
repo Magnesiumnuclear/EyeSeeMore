@@ -17,7 +17,7 @@ import copy
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QAbstractItemView, QListWidgetItem, QMenu, QMessageBox,
-    QPushButton, QInputDialog,
+    QPushButton, QInputDialog, QTabWidget,
 )
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QAction
@@ -35,21 +35,31 @@ class FoldersPage(QWidget):
         trans = ctx["translator"]
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
         title = QLabel(trans.t("folders", "page_title", "📁 資料夾管理 (Folders)"))
         title.setObjectName("PageTitle")
         layout.addWidget(title)
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setObjectName("PageHLine")
-        layout.addWidget(sep)
+
+        # ── Tab widget ────────────────────────────────────────────────
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("AITabs")  # 共用 AITabs QSS 樣式
+        layout.addWidget(self.tabs, stretch=1)
+
+        # ══ Tab 1：實體資料夾 ════════════════════════════════
+        tab_physical = QWidget()
+        tab_phys_layout = QVBoxLayout(tab_physical)
+        tab_phys_layout.setContentsMargins(20, 20, 20, 20)
+        tab_phys_layout.setSpacing(15)
 
         lbl_hint = QLabel(trans.t(
             "folders", "hint",
             "提示：拖曳列表項目可改變排序。在項目上「點擊右鍵」可設定語系標記與圖示。"
         ))
         lbl_hint.setObjectName("SettingsHint")
-        layout.addWidget(lbl_hint)
+        lbl_hint.setWordWrap(True)
+        tab_phys_layout.addWidget(lbl_hint)
 
         self.folder_list = TransparentDragListWidget()
         self.folder_list.setObjectName("FolderSettingsList")
@@ -57,7 +67,7 @@ class FoldersPage(QWidget):
         self.folder_list.model().rowsMoved.connect(self._on_folder_order_changed)
         self.folder_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.folder_list.customContextMenuRequested.connect(self._show_folder_context_menu)
-        layout.addWidget(self.folder_list)
+        tab_phys_layout.addWidget(self.folder_list)
 
         btn_layout = QHBoxLayout()
         self.btn_add = QPushButton(trans.t("folders", "btn_add", "+ 新增資料夾"))
@@ -69,31 +79,31 @@ class FoldersPage(QWidget):
         btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(self.btn_del)
         btn_layout.addStretch(1)
-        layout.addLayout(btn_layout)
+        tab_phys_layout.addLayout(btn_layout)
 
+        tab_phys_layout.addStretch(1)
+        self.tabs.addTab(tab_physical, trans.t("folders", "tab_physical", "📂 實體資料夾"))
         self.refresh_folder_list()
 
-        # ── Collections 區段 ──────────────────────────────────────────────
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine); sep2.setObjectName("PageHLine")
-        layout.addWidget(sep2)
-
-        lbl_col = QLabel(trans.t("folders", "collections_title", "🏷️ 虛擬資料夾 (Collections)"))
-        lbl_col.setObjectName("PageTitle")
-        lbl_col.setStyleSheet("font-size: 15px;")
-        layout.addWidget(lbl_col)
+        # ══ Tab 2：虛擬收藏夾 ════════════════════════════════
+        tab_collections = QWidget()
+        tab_col_layout = QVBoxLayout(tab_collections)
+        tab_col_layout.setContentsMargins(20, 20, 20, 20)
+        tab_col_layout.setSpacing(15)
 
         lbl_col_hint = QLabel(trans.t(
             "folders", "collections_hint",
-            "虛擬資料夾讓您跨磁碟整理圖片，不移動實體檔案。"
+            "虛擬收藏夾讓您跨磁碟整理圖片，不移動實體檔案。"
         ))
         lbl_col_hint.setObjectName("SettingsHint")
-        layout.addWidget(lbl_col_hint)
+        lbl_col_hint.setWordWrap(True)
+        tab_col_layout.addWidget(lbl_col_hint)
 
         self.collection_list = TransparentDragListWidget()
         self.collection_list.setObjectName("FolderSettingsList")
         self.collection_list.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
-        self.collection_list.setMaximumHeight(160)
-        layout.addWidget(self.collection_list)
+        self.collection_list.setMinimumHeight(80)
+        tab_col_layout.addWidget(self.collection_list)
 
         col_btn_layout = QHBoxLayout()
         self.btn_add_col = QPushButton(trans.t("folders", "btn_add_collection", "+ 新增收藏夾"))
@@ -105,8 +115,10 @@ class FoldersPage(QWidget):
         col_btn_layout.addWidget(self.btn_add_col)
         col_btn_layout.addWidget(self.btn_del_col)
         col_btn_layout.addStretch(1)
-        layout.addLayout(col_btn_layout)
+        tab_col_layout.addLayout(col_btn_layout)
 
+        tab_col_layout.addStretch(1)
+        self.tabs.addTab(tab_collections, trans.t("folders", "tab_collections", "🏷️ 虛擬收藏夾"))
         self.refresh_collections()
 
     # ------------------------------------------------------------------ refresh
