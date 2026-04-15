@@ -132,8 +132,8 @@ QSlider::handle:horizontal { background: @primary; width: 14px; margin: -5px 0; 
 
 /* --- 頂部搜尋欄 (TopBar) --- */
 QFrame#TopBar { background-color: @bg_app; border-bottom: 1px solid @border_main; }
-QFrame#SearchCapsule { background-color: @bg_input; border: 1px solid @border_main; border-radius: 19px; }
-QFrame#SearchCapsule:focus-within { border: 1px solid @primary; }
+#SearchCapsule { background-color: @bg_input; border: 1px solid @border_main; border-radius: 19px; }
+#SearchCapsule:focus-within { border: 1px solid @primary; }
 QLabel#Breadcrumb { color: @text_main; font-family: 'Segoe UI', sans-serif; font-size: 18px; font-weight: bold; border: none; background: transparent; }
 
 QPushButton#OcrToggle { background: transparent; border: none; color: @text_muted; font-weight: bold; font-size: 13px; border-radius: 15px; }
@@ -529,7 +529,7 @@ QPushButton#NavBtn:disabled {
     color: @border_light;  /* 使用邊框的暗灰色來呈現不可用的狀態 */
 }
 
-QFrame#SearchCapsule { background-color: @bg_input; border: 1px solid @border_main; border-radius: 19px; }
+#SearchCapsule { background-color: @bg_input; border: 1px solid @border_main; border-radius: 19px; }
 
 /* 設定畫廊的框選遮罩樣式 (Rubber Band) */
 QListView#GalleryList {

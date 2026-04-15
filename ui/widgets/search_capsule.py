@@ -75,6 +75,7 @@ class SearchCapsule(BaseToggleWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
 
         self.search_history: list[str] = []
 
