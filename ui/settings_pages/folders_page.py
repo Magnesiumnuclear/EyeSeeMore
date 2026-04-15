@@ -67,7 +67,7 @@ class FoldersPage(QWidget):
         self.folder_list.model().rowsMoved.connect(self._on_folder_order_changed)
         self.folder_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.folder_list.customContextMenuRequested.connect(self._show_folder_context_menu)
-        tab_phys_layout.addWidget(self.folder_list)
+        tab_phys_layout.addWidget(self.folder_list, stretch=1)
 
         btn_layout = QHBoxLayout()
         self.btn_add = QPushButton(trans.t("folders", "btn_add", "+ 新增資料夾"))
@@ -81,7 +81,6 @@ class FoldersPage(QWidget):
         btn_layout.addStretch(1)
         tab_phys_layout.addLayout(btn_layout)
 
-        tab_phys_layout.addStretch(1)
         self.tabs.addTab(tab_physical, trans.t("folders", "tab_physical", "📂 實體資料夾"))
         self.refresh_folder_list()
 
@@ -103,7 +102,7 @@ class FoldersPage(QWidget):
         self.collection_list.setObjectName("FolderSettingsList")
         self.collection_list.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
         self.collection_list.setMinimumHeight(80)
-        tab_col_layout.addWidget(self.collection_list)
+        tab_col_layout.addWidget(self.collection_list, stretch=1)
 
         col_btn_layout = QHBoxLayout()
         self.btn_add_col = QPushButton(trans.t("folders", "btn_add_collection", "+ 新增收藏夾"))
@@ -117,7 +116,6 @@ class FoldersPage(QWidget):
         col_btn_layout.addStretch(1)
         tab_col_layout.addLayout(col_btn_layout)
 
-        tab_col_layout.addStretch(1)
         self.tabs.addTab(tab_collections, trans.t("folders", "tab_collections", "🏷️ 虛擬收藏夾"))
         self.refresh_collections()
 
