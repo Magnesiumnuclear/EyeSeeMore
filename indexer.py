@@ -67,10 +67,10 @@ class NumpyPreprocess:
         # 🌟 1. 智慧縮放 (短邊對齊 224)
         if w < h:
             new_w = self.size
-            new_h = int(h * (self.size / w))
+            new_h = max(self.size, int(h * (self.size / w)))
         else:
             new_h = self.size
-            new_w = int(w * (self.size / h))
+            new_w = max(self.size, int(w * (self.size / h)))
             
         # 使用 OpenCV 的 C++ 底層 SIMD 指令集進行極速縮放
         # INTER_CUBIC 能保持與原本 CLIP 模型訓練時相同的像素採樣品質
@@ -384,7 +384,7 @@ class IndexerService:
         # 🌟 [新增] 延遲寫入計數器 (Lazy Commit)
         # ==========================================
         commit_counter = 0
-        COMMIT_THRESHOLD = 200 # 累積滿 200 張圖片才呼叫硬碟寫入一次
+        COMMIT_THRESHOLD = 24 # 累積滿 24 張圖片才呼叫硬碟寫入一次
         
         import gc
         
