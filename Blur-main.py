@@ -2733,10 +2733,14 @@ class SidebarWidget(QFrame):
         self._col_separator.hide()
         self.layout.addWidget(self._col_separator)
 
-        self._col_label = QLabel("  🏷️ Collections")
-        self._col_label.setObjectName("SidebarSectionLabel")
-        self._col_label.hide()
-        self.layout.addWidget(self._col_label)
+        self.btn_col_header = QPushButton("  🏷️ 收資料夾 (Collections)")
+        self.btn_col_header.setObjectName("SidebarSectionHeader")
+        self.btn_col_header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_col_header.setFixedHeight(36)
+        self.btn_col_header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_col_header.clicked.connect(self._toggle_col_container)
+        self.btn_col_header.setVisible(False)
+        self.layout.addWidget(self.btn_col_header)
 
         self._col_container = QWidget()
         self._col_layout = QVBoxLayout(self._col_container)
@@ -2839,6 +2843,7 @@ class SidebarWidget(QFrame):
         if not self.is_expanded:
             self.btn_entity_header.setVisible(False)
             self.sub_folders_container.setVisible(False)
+            self.btn_col_header.setVisible(False)
         self.update_ui_text()
         self.toggled.emit(self.is_expanded)
 
@@ -2854,8 +2859,8 @@ class SidebarWidget(QFrame):
             self.btn_settings.setText("")
             self.btn_entity_header.setVisible(False)
 
-        # Collections label 隨展開狀態顯示/隱藏
-        self._col_label.setVisible(self.is_expanded and self._col_container.isVisible())
+        # Collections header 隨展開狀態顯示/隱藏
+        self.btn_col_header.setVisible(self.is_expanded and self._col_container.isVisible())
 
         # 同步更新所有 collection 按鈕的文字與 expanded 屬性
         for i in range(self._col_layout.count()):
@@ -2929,6 +2934,10 @@ class SidebarWidget(QFrame):
         """btn_entity_header 點擊事件：切換手風琴區塊的顯示/隱藏。"""
         self.sub_folders_container.setVisible(not self.sub_folders_container.isVisible())
 
+    def _toggle_col_container(self):
+        """btn_col_header 點擊事件：切換 Collections 區塊的顯示/隱藏。"""
+        self._col_container.setVisible(not self._col_container.isVisible())
+
     def on_row1_clicked(self):
         # 只負責發出 ALL 訊號，手風琴切換由上方的分類標題負責
         self.folder_selected.emit("ALL")
@@ -2947,12 +2956,12 @@ class SidebarWidget(QFrame):
 
         if not collections:
             self._col_separator.hide()
-            self._col_label.hide()
+            self.btn_col_header.hide()
             self._col_container.hide()
             return
 
         self._col_separator.show()
-        self._col_label.setVisible(self.is_expanded)
+        self.btn_col_header.setVisible(self.is_expanded)
         self._col_container.show()
 
         for col_id, name, icon, count in collections:
