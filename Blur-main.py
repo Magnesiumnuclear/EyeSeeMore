@@ -2699,6 +2699,16 @@ class SidebarWidget(QFrame):
         self.row1_layout.addWidget(self.btn_all_images)
         self.layout.addWidget(self.row1_container)
 
+        # [新建] 實體資料夾分類標題按鈕 (預設隱藏，僅展開模式顯示)
+        self.btn_entity_header = QPushButton("  📁 實體資料夾 (Folders)")
+        self.btn_entity_header.setObjectName("SidebarSectionHeader")
+        self.btn_entity_header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_entity_header.setFixedHeight(36)
+        self.btn_entity_header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_entity_header.clicked.connect(self._toggle_sub_folders)
+        self.btn_entity_header.setVisible(False)  # 收合時隱藏
+        self.layout.addWidget(self.btn_entity_header)
+
         # [新建] 手風琴展開區塊：實體資料夾按鈕列表 (預設隱藏)
         self.sub_folders_container = QFrame()
         self.sub_folders_container.setObjectName("SubFoldersContainer")
@@ -2792,7 +2802,8 @@ class SidebarWidget(QFrame):
 
         for i, f_obj in enumerate(config_folders, 1):
             path = f_obj["path"]
-            icon = f_obj.get("icon", "")
+            # [防呆] icon 為空字串或 None 時強制給予預設圖示
+            icon = f_obj.get("icon", "") or "📁"
             count = stats_dict.get(os.path.normpath(path), 0)
 
             btn = QPushButton()
@@ -2824,8 +2835,9 @@ class SidebarWidget(QFrame):
         self.setFixedWidth(self.expanded_width if self.is_expanded else self.collapsed_width)
         # [修正] 切換時清除殘留的懸浮選單
         self.hide_hover_menu()
-        # 收合時同步關閉手風琴展開區
+        # 收合時同步關閉手風琴展開區與標題
         if not self.is_expanded:
+            self.btn_entity_header.setVisible(False)
             self.sub_folders_container.setVisible(False)
         self.update_ui_text()
         self.toggled.emit(self.is_expanded)
@@ -2834,9 +2846,13 @@ class SidebarWidget(QFrame):
         if self.is_expanded:
             self.btn_all_images.setText(getattr(self, 'all_images_text', "  All Images"))
             self.btn_settings.setText("  設定 (Settings)")
+            # 標題在有實體資料夾時才顯示
+            has_folders = self._sub_folders_layout.count() > 0
+            self.btn_entity_header.setVisible(has_folders)
         else:
             self.btn_all_images.setText("")
             self.btn_settings.setText("")
+            self.btn_entity_header.setVisible(False)
 
         # Collections label 隨展開狀態顯示/隱藏
         self._col_label.setVisible(self.is_expanded and self._col_container.isVisible())
@@ -2909,16 +2925,15 @@ class SidebarWidget(QFrame):
         # 3. 確定滑鼠離開了戰區，收起選單
         self.hide_hover_menu()
 
+    def _toggle_sub_folders(self):
+        """btn_entity_header 點擊事件：切換手風琴區塊的顯示/隱藏。"""
+        self.sub_folders_container.setVisible(not self.sub_folders_container.isVisible())
+
     def on_row1_clicked(self):
-        if self.is_expanded:
-            # [展開模式] 手風琴切換：顯示/隱藏實體資料夾列表
-            is_open = self.sub_folders_container.isVisible()
-            self.sub_folders_container.setVisible(not is_open)
-            # 發出 ALL 訊號，讓畫庸展示全部圖片
-            self.folder_selected.emit("ALL")
-        else:
-            # [收合模式] 只發出訊號， HoverMenu 由 eventFilter 的 hover 觸發
-            self.folder_selected.emit("ALL")
+        # 只負責發出 ALL 訊號，手風琴切換由上方的分類標題負責
+        self.folder_selected.emit("ALL")
+        if not self.is_expanded:
+            # 收合模式才需要關閉懸浮選單
             self.hide_hover_menu()
 
     def on_sub_folder_clicked(self, path):

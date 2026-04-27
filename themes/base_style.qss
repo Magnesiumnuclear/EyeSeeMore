@@ -64,6 +64,15 @@ QPushButton#SidebarRow1:hover {
 QPushButton#SidebarRow1[expanded="true"] { text-align: left; padding-left: 18px; font-size: 15px;}
 QPushButton#SidebarRow1[expanded="false"] { text-align: center; padding-left: 0px; font-size: 22px;}
 
+/* 實體資料夾分類標題按鈕：扁平化，視覺如 Label，可點擊展開手風琴 */
+QPushButton#SidebarSectionHeader {
+    background: transparent; border: none;
+    color: @text_muted; font-size: 12px; font-weight: bold;
+    text-align: left; padding-left: 14px;
+    letter-spacing: 0.5px;
+}
+QPushButton#SidebarSectionHeader:hover { color: @text_sec; background-color: @bg_hover; }
+
 /* 拖曳懸停視覺回饋：邊框高亮 + 背景加亮 */
 DroppableFolderButton#Row1[drag_hover="true"] {
     background-color: @bg_hover;
