@@ -1544,11 +1544,15 @@ class ImageSearchEngine:
             return []
 
     def remove_collection(self, collection_id: int) -> bool:
-        """刪除虛擬資料夾（CASCADE 會同步清除 collection_items）。"""
+        """刪除虛擬資料夾，並清除所有關聯的 collection_items。"""
         try:
             conn = self.get_db_conn()
             try:
+                # 啟用外鍵約束，確保 ON DELETE CASCADE 生效
+                conn.execute("PRAGMA foreign_keys = ON")
                 conn.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+                # 儀式防呆：若 PRAGMA 未生效，手動清理子表
+                conn.execute("DELETE FROM collection_items WHERE collection_id = ?", (collection_id,))
                 conn.commit()
                 return True
             finally:
@@ -3895,6 +3899,7 @@ class MainWindow(QMainWindow):
         # 這裡會去抓取資料夾統計，並建立二級選單的按鈕
         if self.engine:
             self.refresh_sidebar()
+            self.sidebar.reload_collections(self.engine.get_collections())
 
             self.on_folder_filter(self.current_folder_path)
     
