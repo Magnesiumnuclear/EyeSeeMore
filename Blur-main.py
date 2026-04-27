@@ -2859,8 +2859,9 @@ class SidebarWidget(QFrame):
             self.btn_settings.setText("")
             self.btn_entity_header.setVisible(False)
 
-        # Collections header 隨展開狀態顯示/隱藏
-        self.btn_col_header.setVisible(self.is_expanded and self._col_container.isVisible())
+        # Collections header 隨展開狀態顯示/隱藏（有資料才顯示，不依賴容器是否展開）
+        has_collections = self._col_layout.count() > 0
+        self.btn_col_header.setVisible(self.is_expanded and has_collections)
 
         # 同步更新所有 collection 按鈕的文字與 expanded 屬性
         for i in range(self._col_layout.count()):
