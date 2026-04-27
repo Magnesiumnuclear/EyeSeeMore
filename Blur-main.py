@@ -2678,7 +2678,7 @@ class SidebarWidget(QFrame):
         self.row1_layout.setSpacing(0)
         
         self.btn_all_images = QPushButton()
-        self.btn_all_images.setObjectName("SidebarRow1")
+        # [修正] 移除重複的 setObjectName，只保留有效的 "Row1"
         self.btn_all_images.setObjectName("Row1")
         self.btn_all_images.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_all_images.setFixedHeight(60)
@@ -2699,7 +2699,16 @@ class SidebarWidget(QFrame):
         self.row1_layout.addWidget(self.btn_all_images)
         self.layout.addWidget(self.row1_container)
 
-        # 3. 初始化二級選單
+        # [新建] 手風琴展開區塊：實體資料夾按鈕列表 (預設隱藏)
+        self.sub_folders_container = QFrame()
+        self.sub_folders_container.setObjectName("SubFoldersContainer")
+        self._sub_folders_layout = QVBoxLayout(self.sub_folders_container)
+        self._sub_folders_layout.setContentsMargins(0, 0, 0, 0)
+        self._sub_folders_layout.setSpacing(0)
+        self.sub_folders_container.setVisible(False)
+        self.layout.addWidget(self.sub_folders_container)
+
+        # 3. 初始化二級懸浮選單 (收合模式專用)
         self.hover_menu = FolderHoverMenu(self)
         self.hover_menu.folder_clicked.connect(self.on_sub_folder_clicked)
         self.hover_menu.add_clicked.connect(self.add_folder_requested.emit)
@@ -2761,16 +2770,63 @@ class SidebarWidget(QFrame):
         self.update_ui_text()
         self.setFixedWidth(self.expanded_width)
 
-    def update_folders(self, stats, config_folders): # [修改]
+    def update_folders(self, stats, config_folders):
         self.stats_cache = stats
-        self.hover_menu.update_menu(stats, config_folders) # 把 config 傳遞下去
+        # [不變] 懸浮選單持續同步更新，收合模式依然可用
+        self.hover_menu.update_menu(stats, config_folders)
+        # [新增] 同步更新手風琴區塊中的按鈕
+        self._rebuild_sub_folders(stats, config_folders)
         total = sum(c for _, c in stats)
         self.all_images_text = f"  All Images ({total})"
         self.update_ui_text()
 
+    def _rebuild_sub_folders(self, stats, config_folders):
+        """重建手風琴區塊內的實體資料夾按鈕。"""
+        # 清空舊按鈕
+        while self._sub_folders_layout.count():
+            child = self._sub_folders_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        stats_dict = {os.path.normpath(p): c for p, c in stats}
+
+        for i, f_obj in enumerate(config_folders, 1):
+            path = f_obj["path"]
+            icon = f_obj.get("icon", "")
+            count = stats_dict.get(os.path.normpath(path), 0)
+
+            btn = QPushButton()
+            btn.setObjectName("Row1")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(54)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            btn.setProperty("expanded", True)  # 手風琴區塊永遠為展開狀態
+
+            # 圖示
+            if icon:
+                px = QPixmap(28, 28)
+                px.fill(Qt.GlobalColor.transparent)
+                p = QPainter(px)
+                p.setFont(QFont("Segoe UI Emoji", 16))
+                p.drawText(px.rect(), Qt.AlignmentFlag.AlignCenter, icon)
+                p.end()
+                btn.setIcon(QIcon(px))
+                btn.setIconSize(QSize(22, 22))
+
+            display_name = os.path.basename(path) or path
+            btn.setText(f"  {display_name}  ({count})")
+            btn.setToolTip(f"<div style='font-family: \"Segoe UI\", sans-serif; font-size: 14px;'>{path}<br>({count} 張圖片)</div>")
+            btn.clicked.connect(lambda checked=False, p=path: self.folder_selected.emit(p))
+            self._sub_folders_layout.addWidget(btn)
+
     def toggle_sidebar(self):
         self.is_expanded = not self.is_expanded
         self.setFixedWidth(self.expanded_width if self.is_expanded else self.collapsed_width)
+        # [修正] 切換時清除殘留的懸浮選單
+        self.hide_hover_menu()
+        # 收合時同步關閉手風琴展開區
+        if not self.is_expanded:
+            self.sub_folders_container.setVisible(False)
         self.update_ui_text()
         self.toggled.emit(self.is_expanded)
 
@@ -2808,31 +2864,23 @@ class SidebarWidget(QFrame):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
-    def on_row1_clicked(self):
-        self.folder_selected.emit("ALL")
-        if self.hover_menu.isVisible():
-            self.hover_menu.close()
-        else:
-            sidebar_global_pos = self.mapToGlobal(QPoint(0, 0))
-            row1_y = self.btn_toggle.height()
-            target_x = sidebar_global_pos.x() + self.width()
-            target_y = sidebar_global_pos.y() + row1_y
-            self.hover_menu.show_at(QPoint(target_x, target_y), 60)
-
     def on_sub_folder_clicked(self, path):
         self.folder_selected.emit(path)
 
-    #  [新增] 事件過濾器：攔截主按鈕的進出
     def eventFilter(self, obj, event):
         if obj == self.btn_all_images:
             if event.type() == QEvent.Type.Enter:
-                self.hover_timer.stop()
-                self.show_hover_menu()
+                # [邏輯分流] 只有在「收合狀態」下才允許懸停觸發 HoverMenu
+                if not self.is_expanded:
+                    self.hover_timer.stop()
+                    self.show_hover_menu()
             elif event.type() == QEvent.Type.Leave:
-                self.hover_timer.start(150)
+                # 收合模式才起動關閉計時，展開模式下不需要
+                if not self.is_expanded:
+                    self.hover_timer.start(150)
         return super().eventFilter(obj, event)
-    
-    #  [新增] 顯示、隱藏與檢查邏輯
+
+    #  顯示、隱藏與檢查邏輯
     def show_hover_menu(self):
         sidebar_global_pos = self.mapToGlobal(QPoint(0, 0))
         row1_y = self.btn_toggle.height()
@@ -2861,20 +2909,22 @@ class SidebarWidget(QFrame):
         # 3. 確定滑鼠離開了戰區，收起選單
         self.hide_hover_menu()
 
-    #  [修改] 純粹派發訊號，關閉交由 Hover 邏輯處理
     def on_row1_clicked(self):
-        self.folder_selected.emit("ALL")
-        self.hide_hover_menu()
+        if self.is_expanded:
+            # [展開模式] 手風琴切換：顯示/隱藏實體資料夾列表
+            is_open = self.sub_folders_container.isVisible()
+            self.sub_folders_container.setVisible(not is_open)
+            # 發出 ALL 訊號，讓畫庸展示全部圖片
+            self.folder_selected.emit("ALL")
+        else:
+            # [收合模式] 只發出訊號， HoverMenu 由 eventFilter 的 hover 觸發
+            self.folder_selected.emit("ALL")
+            self.hide_hover_menu()
 
     def on_sub_folder_clicked(self, path):
         self.folder_selected.emit(path)
 
     def reload_collections(self, collections: list):
-        """重新渲染 Collections 按鈕列。
-        collections: [(id, name, icon, count), ...]
-        選取訊號格式: folder_selected.emit('col:N')
-        """
-        # 清除舊按鈕
         while self._col_layout.count():
             child = self._col_layout.takeAt(0)
             if child.widget():
