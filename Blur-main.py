@@ -1598,7 +1598,9 @@ class ImageSearchEngine:
         conn = self.get_db_conn()
         try:
             cursor = conn.cursor()
-            data = [(collection_id, p) for p in file_paths]
+            # [防禦] 寫入前統一正規化路徑：os.path.normpath 修正斜線，os.path.abspath 統一大小寫磁碟代號
+            normalized = [os.path.normpath(os.path.abspath(p)) for p in file_paths]
+            data = [(collection_id, p) for p in normalized]
             # 使用 INSERT OR IGNORE，重複把同一張圖丟進同一個資料夾也不會報錯
             cursor.executemany("INSERT OR IGNORE INTO collection_items (collection_id, file_path) VALUES (?, ?)", data)
             conn.commit()
@@ -1615,12 +1617,19 @@ class ImageSearchEngine:
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT file_path FROM collection_items WHERE collection_id = ?", (collection_id,))
-            paths = set(row[0] for row in cursor.fetchall())
-            
+            raw_paths = [row[0] for row in cursor.fetchall()]
+            # [防禦] 建立正規化查詢表：同時收錄原始路徑與正規化路徑，相容歷史舊資料
+            paths = set()
+            for p in raw_paths:
+                paths.add(p)
+                paths.add(os.path.normpath(os.path.abspath(p)))
+
             # 直接從 O(1) 的記憶體 data_store 中把圖片資訊抽出來！極度快速！
             results = []
             for item in self.data_store:
-                if item["path"] in paths:
+                item_path = item["path"]
+                item_path_norm = os.path.normpath(os.path.abspath(item_path))
+                if item_path in paths or item_path_norm in paths:
                     results.append({
                         "score": 0.0, "clip_score": 0.0, "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
                         "path": item["path"], "filename": item["filename"],
@@ -2580,13 +2589,20 @@ class FolderHoverMenu(QWidget):
 class DroppableFolderButton(QPushButton):
     """繼承自 QPushButton，具備接收 GalleryListView 拖曳的能力。
     當圖片路徑被拖入並釋放時，透過 files_dropped 訊號往外拋出。
+    點擊時透過 collection_selected 訊號向外傳遞 'col:{id}' 格式字串。
     """
-    files_dropped = pyqtSignal(int, list)  # (collection_id, [file_paths])
+    files_dropped = pyqtSignal(int, list)     # (collection_id, [file_paths])
+    collection_selected = pyqtSignal(str)     # 'col:{collection_id}'
 
     def __init__(self, collection_id: int, parent=None):
         super().__init__(parent)
         self._collection_id = collection_id
         self.setAcceptDrops(True)
+        # 在此直接連接，self._collection_id 是實例屬性，無閉包問題
+        self.clicked.connect(self._on_clicked)
+
+    def _on_clicked(self, checked=False):
+        self.collection_selected.emit(f"col:{self._collection_id}")
 
     def _set_drag_hover(self, state: bool):
         self.setProperty("drag_hover", state)
@@ -2891,8 +2907,7 @@ class SidebarWidget(QFrame):
             if self.is_expanded:
                 btn.setText(f"  {name}  ({count})")
             btn.setProperty("col_data", (name, count))
-            signal_val = f"col:{col_id}"
-            btn.clicked.connect(lambda checked=False, v=signal_val: self.folder_selected.emit(v))
+            btn.collection_selected.connect(self.folder_selected.emit)
             btn.files_dropped.connect(self.files_dropped_to_collection)
             self._col_layout.addWidget(btn)
 
@@ -3556,7 +3571,22 @@ class MainWindow(QMainWindow):
             self.status.setText(f"Showing all {len(all_imgs)} images")
             return
 
-        # 2. 篩選特定資料夾
+        # 2. 如果是虛擬資料夾 (格式: "col:{id}")
+        if path.startswith("col:"):
+            try:
+                col_id = int(path.split(":", 1)[1])
+            except (IndexError, ValueError):
+                return
+            results = self.engine.get_virtual_folder_images(col_id)
+            # 從 collections 取得名稱作為麵包屑
+            collections = self.engine.get_collections()
+            col_name = next((name for cid, name, *_ in collections if cid == col_id), f"Collection {col_id}")
+            self.breadcrumb_lbl.setText(f"Collection: {col_name}")
+            self.set_base_results(results)
+            self.status.setText(f"Collection: {col_name} ({len(results)} 張圖片)")
+            return
+
+        # 3. 篩選特定資料夾
         self.breadcrumb_lbl.setText(f"Folder: {os.path.basename(path)}")
         
         # 這邊簡單用 Python list comprehension 過濾 (高效能做法建議在 Engine 寫 SQL)
