@@ -2574,12 +2574,57 @@ class FolderHoverMenu(QWidget):
         self.move(global_pos)
         self.show()
 
+# ==========================================
+#  可接收拖曳的虛擬資料夾按鈕
+# ==========================================
+class DroppableFolderButton(QPushButton):
+    """繼承自 QPushButton，具備接收 GalleryListView 拖曳的能力。
+    當圖片路徑被拖入並釋放時，透過 files_dropped 訊號往外拋出。
+    """
+    files_dropped = pyqtSignal(int, list)  # (collection_id, [file_paths])
+
+    def __init__(self, collection_id: int, parent=None):
+        super().__init__(parent)
+        self._collection_id = collection_id
+        self.setAcceptDrops(True)
+
+    def _set_drag_hover(self, state: bool):
+        self.setProperty("drag_hover", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            self._set_drag_hover(True)
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._set_drag_hover(False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self._set_drag_hover(False)
+        urls = event.mimeData().urls()
+        if not urls:
+            event.ignore()
+            return
+        file_paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
+        if file_paths:
+            event.acceptProposedAction()
+            self.files_dropped.emit(self._collection_id, file_paths)
+        else:
+            event.ignore()
+
+
 class SidebarWidget(QFrame):
     folder_selected = pyqtSignal(str) 
     toggled = pyqtSignal(bool)
     add_folder_requested = pyqtSignal()
     refresh_requested = pyqtSignal()
     settings_requested = pyqtSignal()
+    files_dropped_to_collection = pyqtSignal(int, list)  # (collection_id, [file_paths])
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2826,7 +2871,7 @@ class SidebarWidget(QFrame):
         self._col_container.show()
 
         for col_id, name, icon, count in collections:
-            btn = QPushButton()
+            btn = DroppableFolderButton(col_id)
             btn.setObjectName("Row1")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFixedHeight(54)
@@ -2848,6 +2893,7 @@ class SidebarWidget(QFrame):
             btn.setProperty("col_data", (name, count))
             signal_val = f"col:{col_id}"
             btn.clicked.connect(lambda checked=False, v=signal_val: self.folder_selected.emit(v))
+            btn.files_dropped.connect(self.files_dropped_to_collection)
             self._col_layout.addWidget(btn)
 
 # ==========================================
@@ -3361,6 +3407,18 @@ class MainWindow(QMainWindow):
             self._show_toast("已複製 1 個檔案到剪貼簿")
         else:
             self._show_toast(f"已複製 {count} 個檔案到剪貼簿")
+
+    def _on_files_dropped_to_collection(self, collection_id: int, file_paths: list):
+        """接收 SidebarWidget.files_dropped_to_collection，將圖片寫入虛擬資料夾。"""
+        if not self.engine:
+            return
+        ok = self.engine.add_to_virtual_folder(collection_id, file_paths)
+        if ok:
+            count = len(file_paths)
+            self.sidebar.reload_collections(self.engine.get_collections())
+            self._show_toast(f"已加入 {count} 張圖片至虛擬資料夾")
+        else:
+            self._show_toast("加入失敗，請稍後再試")
 
     def _on_history_toggle(self, show):
         if show:

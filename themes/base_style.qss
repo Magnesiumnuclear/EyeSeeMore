@@ -64,6 +64,17 @@ QPushButton#SidebarRow1:hover {
 QPushButton#SidebarRow1[expanded="true"] { text-align: left; padding-left: 18px; font-size: 15px;}
 QPushButton#SidebarRow1[expanded="false"] { text-align: center; padding-left: 0px; font-size: 22px;}
 
+/* 拖曳懸停視覺回饋：邊框高亮 + 背景加亮 */
+DroppableFolderButton#Row1[drag_hover="true"] {
+    background-color: @bg_hover;
+    border-left: 3px solid @primary;
+    border-top: 1px solid @primary;
+    border-bottom: 1px solid @primary;
+    border-right: 1px solid @primary;
+    border-radius: 4px;
+    color: @text_main;
+}
+
 
 /* --- 修復：AI 引擎與自動任務設定分頁 (AITabs & AutoTabs) --- */
 QTabWidget#AITabs::pane, QTabWidget#AutoTabs::pane { border: 1px solid @border_main; border-radius: 4px; top: -1px; background-color: @bg_card; }

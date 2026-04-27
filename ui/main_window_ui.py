@@ -67,6 +67,7 @@ class Ui_MainWindow:
         MainWindow.sidebar.add_folder_requested.connect(MainWindow.on_add_folder_clicked)
         MainWindow.sidebar.refresh_requested.connect(MainWindow.on_refresh_clicked)
         MainWindow.sidebar.settings_requested.connect(MainWindow.show_settings_dialog)
+        MainWindow.sidebar.files_dropped_to_collection.connect(MainWindow._on_files_dropped_to_collection)
         main_layout.addWidget(MainWindow.sidebar)
 
         # ==========================================
