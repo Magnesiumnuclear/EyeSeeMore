@@ -187,7 +187,8 @@ class ImageItem:
         self.mtime = mtime
         self.width = width
         self.height = height
-        self.is_ocr_match = False 
+        self.is_ocr_match = False
+        self.is_pinned = False
 
         self.score_val = float(score)
         self.score_str = f"{self.score_val:.4f}" if self.score_val > 0.0001 else ""
@@ -486,6 +487,8 @@ class SearchResultsModel(QAbstractListModel):
             )
             if res.get('is_ocr_match', False):
                 item.is_ocr_match = True
+            if res.get('is_pinned', False):
+                item.is_pinned = True
             self.all_items.append(item)
             self.path_to_row[item.path] = idx
             
@@ -676,11 +679,23 @@ class ImageDelegate(QStyledItemDelegate):
         is_selected = option.state & QStyle.StateFlag.State_Selected
         is_hover = option.state & QStyle.StateFlag.State_MouseOver
 
+        # 境框預設值
+        border_color = QColor(colors.get("border_main", "#3e3e3e"))
+        border_width = 1
+        dual_border = False  # 釘選 + OCR 雙色虛線邊框旗標
+
         if is_selected:
             border_color = QColor(colors.get("primary", "#60cdff"))
             border_width = 2
+        elif item.is_pinned and item.is_ocr_match:
+            dual_border = True  # 底層藍實線 + 頂層綠虛線
+            border_color = QColor(colors.get("accent", colors.get("primary", "#60cdff")))
+            border_width = 2
+        elif item.is_pinned:
+            border_color = QColor(colors.get("accent", colors.get("primary", "#60cdff")))
+            border_width = 2
         elif item.is_ocr_match:
-            border_color = QColor(colors.get("text_success", "#4caf50")) # 這裡借用綠色
+            border_color = QColor(colors.get("text_success", "#4caf50"))
             border_width = 1
         elif is_hover:
             bg_color = QColor(colors.get("bg_hover", "#383838"))
@@ -689,10 +704,22 @@ class ImageDelegate(QStyledItemDelegate):
         # 1. 繪製背景
         path = QPainterPath()
         path.addRoundedRect(QRectF(card_rect), self.radius, self.radius)
-        
+
         painter.setBrush(QBrush(bg_color))
-        painter.setPen(QPen(border_color, border_width))
-        painter.drawPath(path)
+        if dual_border:
+            # 底層：2px 藍色實線
+            pin_color = QColor(colors.get("accent", colors.get("primary", "#60cdff")))
+            painter.setPen(QPen(pin_color, 2, Qt.PenStyle.SolidLine))
+            painter.drawPath(path)
+            # 頂層：2px 綠色虛線（疊加到相同路徑上）
+            ocr_color = QColor(colors.get("text_success", "#4caf50"))
+            painter.setPen(QPen(ocr_color, 2, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path)
+            painter.setBrush(QBrush(bg_color))
+        else:
+            painter.setPen(QPen(border_color, border_width))
+            painter.drawPath(path)
 
         # --- 版面計算 ---
         bottom_margin = self.padding
@@ -724,9 +751,6 @@ class ImageDelegate(QStyledItemDelegate):
         painter.setClipPath(path) 
         
         if pixmap and not pixmap.isNull():
-            #  [Opt 1] 移除高耗能的 pixmap.scaled(...)
-            # 因為 ThumbnailLoader 已經在背景幫我們縮放到完美尺寸了
-            # 我們只要做簡單的置中數學運算，然後直接畫上去！
             x_off = (img_rect.width() - pixmap.width()) / 2
             y_off = (img_rect.height() - pixmap.height()) / 2
             
@@ -736,25 +760,14 @@ class ImageDelegate(QStyledItemDelegate):
                 pixmap
             )
         else:
-            # ==========================================
-            #  [回歸原生] 使用 QIcon.paint() 讓 Qt 底層接管排版與 DPI 縮放
-            # ==========================================
-            # 1. 取得最短邊，決定圖示比例 (這裡設為 60% 視覺上最剛好)
             min_dim = min(img_rect.width(), img_rect.height())
             icon_size = max(48, int(min_dim * 0.60))
             
-            # 2. 打造一個精確的正方形模具 (QRect)
             icon_rect = QRect(0, 0, icon_size, icon_size)
-            
-            # 3. 將模具的中心點，完美對準圖片區域的中心點
             icon_rect.moveCenter(img_rect.center())
             
-            # 4. 設定透明度並繪製
             painter.setOpacity(0.2)
-            
-            #  核心魔法：把模具交給 QIcon，它會自動偵測螢幕 DPI 並完美填滿且置中！
             self.placeholder_icon.paint(painter, icon_rect)
-            
             painter.setOpacity(1.0)
 
         painter.setClipping(False)
@@ -763,48 +776,67 @@ class ImageDelegate(QStyledItemDelegate):
         painter.setFont(self.font_name)
         painter.setPen(text_color)
         elided_name = item.get_elided_name(self.fm_name, text_rect.width())
-        
-        
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, elided_name)
 
         # 4. 繪製分數
         painter.setFont(self.font_score)
         
-        #  [Opt 6] 直接使用預先處理好的 float 數值與 string 字串
         if item.score_val > 0.0001:
             if item.score_val > 0.3:
-                #  高分：使用主題的 primary 顏色 (深/淺模式會自動適應)
                 score_color = colors.get("primary", "#60cdff")
             else:
-                #  低分：使用主題的 muted 顏色 (柔和的灰色)
                 score_color = colors.get("text_muted", "#999999")
                 
             painter.setPen(QColor(score_color))
             painter.drawText(score_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, item.score_str)
-        else:
-            # 如果分數是 0 (例如剛啟動顯示全部圖片時)，顯示日期可能比較實用，或者留白
-            pass
 
-        # 5. OCR 標籤
-        if item.is_ocr_match:
-            tag_text = "TEXT"
-            tag_width = 36
-            tag_rect = QRect(
-                card_rect.right() - self.padding - tag_width,
-                score_rect.top() + 2,
-                tag_width, 16
-            )
-            #  標籤背景：使用我們在 JSON 裡新增的 text_success (綠色)
-            tag_bg = colors.get("text_success", "#4caf50")
-            painter.setBrush(QBrush(QColor(tag_bg)))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(tag_rect, 3, 3)
-            
-            painter.setFont(self.font_tag)
-            #  這裡刻意保留純白色 。
-            # 因為無論在深色還是淺色模式，標籤底色都是綠色，白字在綠底上的對比度與閱讀性永遠是最好的。
+        # 5. 右下角並列標籤 (PINNED + TEXT)
+        tag_h = 16
+        tag_y = score_rect.top() + 2
+        tag_gap = 4
+        pin_tag_w = 45
+        ocr_tag_w = 36
+        right_edge = card_rect.right() - self.padding
+
+        painter.setFont(self.font_tag)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        if item.is_pinned and item.is_ocr_match:
+            # 兩者並列：[PINNED] [TEXT]，TEXT 靠右
+            ocr_x = right_edge - ocr_tag_w
+            pin_x = ocr_x - tag_gap - pin_tag_w
+
+            pin_rect = QRect(pin_x, tag_y, pin_tag_w, tag_h)
+            ocr_rect = QRect(ocr_x, tag_y, ocr_tag_w, tag_h)
+
+            pin_bg = colors.get("accent", colors.get("primary", "#60cdff"))
+            painter.setBrush(QBrush(QColor(pin_bg)))
+            painter.drawRoundedRect(pin_rect, 3, 3)
             painter.setPen(QColor("#ffffff"))
-            painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter, tag_text)
+            painter.drawText(pin_rect, Qt.AlignmentFlag.AlignCenter, "PIN")
+
+            ocr_bg = colors.get("text_success", "#4caf50")
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(ocr_bg)))
+            painter.drawRoundedRect(ocr_rect, 3, 3)
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(ocr_rect, Qt.AlignmentFlag.AlignCenter, "TEXT")
+
+        elif item.is_pinned:
+            pin_rect = QRect(right_edge - pin_tag_w, tag_y, pin_tag_w, tag_h)
+            pin_bg = colors.get("accent", colors.get("primary", "#60cdff"))
+            painter.setBrush(QBrush(QColor(pin_bg)))
+            painter.drawRoundedRect(pin_rect, 3, 3)
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(pin_rect, Qt.AlignmentFlag.AlignCenter, "PIN")
+
+        elif item.is_ocr_match:
+            ocr_rect = QRect(right_edge - ocr_tag_w, tag_y, ocr_tag_w, tag_h)
+            ocr_bg = colors.get("text_success", "#4caf50")
+            painter.setBrush(QBrush(QColor(ocr_bg)))
+            painter.drawRoundedRect(ocr_rect, 3, 3)
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(ocr_rect, Qt.AlignmentFlag.AlignCenter, "TEXT")
 
         painter.restore()
 
@@ -1032,7 +1064,7 @@ class ImageSearchEngine:
                 "width": item.get("width", 0),   
                 "height": item.get("height", 0)  
             })
-        return results
+        return self._merge_pinned(results)
 
     def load_data_from_db(self):
         print(f"[Engine] Connecting to database: {self.config.db_path}...")
@@ -1083,17 +1115,91 @@ class ImageSearchEngine:
                 self.stored_embeddings = temp_emb_matrix
                 self.data_store = temp_data_store
                 self.path_map = temp_path_map
-                self.build_faiss_index(temp_emb_matrix) 
+                self.build_faiss_index(temp_emb_matrix)
+                self._reload_pinned_cache()
                 print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
             else:
                 self.stored_embeddings = None
                 self.data_store = []
                 self.path_map = {}
+                self.pinned_paths = set()
                 
         except sqlite3.Error as e:
             print(f"[Error] Database query failed: {e}")
         finally:
             if conn: conn.close()
+
+    # ==========================================
+    # 釘選 (Pinning) 功能
+    # ==========================================
+    def _reload_pinned_cache(self):
+        """從 pinned 資料表重新載入所有釘選路徑到記憶體集合。"""
+        self.pinned_paths = set()
+        if not os.path.exists(self.config.db_path):
+            return
+        try:
+            conn = self.get_db_conn()
+            rows = conn.execute("SELECT file_path FROM pinned").fetchall()
+            conn.close()
+            for (fp,) in rows:
+                self.pinned_paths.add(os.path.normpath(fp))
+        except Exception as e:
+            print(f"[Engine] _reload_pinned_cache error: {e}")
+
+    def toggle_pin(self, file_path: str) -> bool:
+        """切換圖片釘選狀態。回傳 True 表示現在已釘選，False 表示已取消。"""
+        if not hasattr(self, 'pinned_paths'):
+            self._reload_pinned_cache()
+        norm = os.path.normpath(file_path)
+        try:
+            conn = self.get_db_conn()
+            if norm in self.pinned_paths:
+                conn.execute("DELETE FROM pinned WHERE file_path = ?", (file_path,))
+                conn.commit()
+                conn.close()
+                self.pinned_paths.discard(norm)
+                return False
+            else:
+                conn.execute("INSERT OR IGNORE INTO pinned (file_path) VALUES (?)", (file_path,))
+                conn.commit()
+                conn.close()
+                self.pinned_paths.add(norm)
+                return True
+        except Exception as e:
+            print(f"[Engine] toggle_pin error: {e}")
+            return norm in self.pinned_paths
+
+    def is_pinned(self, file_path: str) -> bool:
+        """回傳指定路徑是否處於釘選狀態。"""
+        if not hasattr(self, 'pinned_paths'):
+            self._reload_pinned_cache()
+        return os.path.normpath(file_path) in self.pinned_paths
+
+    def _get_pinned_results(self) -> list:
+        """將所有釘選圖片轉換為搜尋結果格式（無視資料夾範圍）。"""
+        if not hasattr(self, 'pinned_paths') or not self.pinned_paths:
+            return []
+        results = []
+        for item in self.data_store:
+            if os.path.normpath(item["path"]) in self.pinned_paths:
+                results.append({
+                    "score": 0.0, "clip_score": 0.0, "ocr_bonus": 0.0, "name_bonus": 0.0,
+                    "is_ocr_match": False, "is_pinned": True,
+                    "path": item["path"], "filename": item["filename"],
+                    "mtime": item.get("mtime", 0),
+                    "width": item.get("width", 0),
+                    "height": item.get("height", 0),
+                })
+        return results
+
+    def _merge_pinned(self, results: list) -> list:
+        """將釘選圖片置頂，與搜尋結果合併去重。"""
+        pinned = self._get_pinned_results()
+        if not pinned:
+            return results
+        pinned_paths_set = {r["path"] for r in pinned}
+        deduped = [r for r in results if r["path"] not in pinned_paths_set]
+        return pinned + deduped
 
     def get_folder_stats(self):
         if not os.path.exists(self.config.db_path): return []
@@ -1320,7 +1426,7 @@ class ImageSearchEngine:
 
         results = [r for r in raw_results if r["score"] >= actual_thresh]
         results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:top_k]
+        return self._merge_pinned(results[:top_k])
 
     #  [修改] 新增 folder_path 參數 (上一階段已加)，並導入「O(1) 快取命中」邏輯
     def search_image(self, image_path, top_k=50, folder_path=None):
@@ -1394,7 +1500,7 @@ class ImageSearchEngine:
                 if len(results) >= top_k:
                     break
                     
-            return results
+            return self._merge_pinned(results)
         except Exception as e:
             print(f"[Error] Image search failed: {e}"); return []
         
@@ -1493,7 +1599,7 @@ class ImageSearchEngine:
                 "width": item.get("width", 0), "height": item.get("height", 0)
             })
             if len(results) >= top_k: break
-        return results
+        return self._merge_pinned(results)
     
     # ==========================================
     #  [NEW] 虛擬資料夾 (Collections) 管理 API
@@ -3690,6 +3796,9 @@ class MainWindow(QMainWindow):
             # 按時間排序
             results.sort(key=lambda x: x["mtime"], reverse=True)
             
+            # 釘選圖無視資料夾範圍：合併至頂端
+            results = self.engine._merge_pinned(results)
+
             self.set_base_results(results)
             self.status.setText(f"Folder: {os.path.basename(path)} ({len(results)} items)")
 
@@ -3814,26 +3923,24 @@ class MainWindow(QMainWindow):
         import os
 
         # 2. 根據不同的條件，定義 Python list sort 的 key 函數
+        # is_pinned 作為所有排序模式的第一優先鍵，確保釘選圖永遠置頂
         if sort_by == "搜尋相關度":
-            #  複合鍵排序：第一優先比 is_ocr_match (True=1, False=0)，第二優先比 AI 分數
-            key_func = lambda item: (item.is_ocr_match, item.score)
+            key_func = lambda item: (item.is_pinned, item.is_ocr_match, item.score)
         elif sort_by == "日期":
-            key_func = lambda item: item.mtime
+            key_func = lambda item: (item.is_pinned, item.mtime)
         elif sort_by == "名稱":
-            key_func = lambda item: item.filename.lower() # 轉小寫讓 a 和 A 視為相同
+            key_func = lambda item: (item.is_pinned, item.filename.lower())
         elif sort_by == "類型":
-            # 取得副檔名並轉小寫，例如 '.png', '.jpg'
-            key_func = lambda item: os.path.splitext(item.filename)[1].lower()
+            key_func = lambda item: (item.is_pinned, os.path.splitext(item.filename)[1].lower())
         elif sort_by == "大小":
-            # 動態取得檔案大小 (加上 try-except 防呆，以防檔案剛好被刪除)
             def get_size(item):
                 try:
-                    return os.path.getsize(item.path)
+                    return item.is_pinned, os.path.getsize(item.path)
                 except:
-                    return 0
+                    return item.is_pinned, 0
             key_func = get_size
         else:
-            key_func = lambda item: item.mtime # 防呆預設
+            key_func = lambda item: (item.is_pinned, item.mtime)
 
         # 3. 呼叫 Model 的排序方法
         self.model.sort_items(key_func, reverse=is_descending)
@@ -4035,12 +4142,28 @@ class MainWindow(QMainWindow):
         if index.isValid():
             item = index.data(Qt.ItemDataRole.UserRole)
             if not item: return
+            engine = self.engine
+            is_pinned = engine.is_pinned(item.path) if engine else False
             menu = self.img_actions.build_item_menu(
-                index, item, on_search_similar=self.start_image_search)
+                index, item,
+                on_search_similar=self.start_image_search,
+                on_toggle_pin=self._on_toggle_pin if engine else None,
+                is_pinned=is_pinned,
+            )
         else:
             menu = self.img_actions.build_view_menu(
                 self, self.current_view_mode, on_change_mode=self.change_view_mode)
         menu.exec(self.list_view.mapToGlobal(pos))
+
+    def _on_toggle_pin(self, file_path: str):
+        """切換釘選後，直接在現有結果中重新合併釘選圖，無需重跑完整搜尋。"""
+        if not self.engine:
+            return
+        self.engine.toggle_pin(file_path)
+        # 把舊的 is_pinned 旗標清除，重新以最新 pinned_paths 做合併
+        stripped = [{**r, 'is_pinned': False} for r in self.last_search_results]
+        merged = self.engine._merge_pinned(stripped)
+        self.set_base_results(merged)
 
     def change_view_mode(self, mode):
         if mode == self.current_view_mode: return

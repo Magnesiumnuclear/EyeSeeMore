@@ -230,6 +230,11 @@ class IndexerService:
             PRIMARY KEY (collection_id, file_path), 
             FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
         )''')
+
+        # 7. 釘選圖(Pinned) — 只存需要釘選的圖片路徑，不對每張圖片建立欄位
+        cursor.execute('''CREATE TABLE IF NOT EXISTS pinned (
+            file_path TEXT PRIMARY KEY
+        )''')
         
         conn.commit()
         return conn

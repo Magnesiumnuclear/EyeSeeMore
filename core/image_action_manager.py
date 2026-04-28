@@ -133,14 +133,18 @@ class ImageActionManager:
         item,
         *,
         on_search_similar: Optional[Callable] = None,
+        on_toggle_pin: Optional[Callable] = None,
+        is_pinned: bool = False,
     ) -> QMenu:
-        """構建圖片右鍵子選單 (Copy Image / Copy Path / Search Similar / Rename / Properties)。
+        """構建圖片右鍵子選單。
 
         Parameters
         ----------
         index : QModelIndex
         item  : ImageItem
         on_search_similar : callback(path) -> None，觸發以圖搜圖
+        on_toggle_pin     : callback(path) -> None，切換釘選狀態
+        is_pinned         : 當前是否已釘選
         """
         menu = QMenu(self._parent)
 
@@ -158,6 +162,13 @@ class ImageActionManager:
             menu.addAction(act_search)
 
         menu.addSeparator()
+
+        if on_toggle_pin is not None:
+            pin_label = "Unpin" if is_pinned else "Pin"
+            act_pin = QAction(pin_label, self._parent)
+            act_pin.triggered.connect(lambda: on_toggle_pin(item.path))
+            menu.addAction(act_pin)
+            menu.addSeparator()
 
         act_rename = QAction("Rename", self._parent)
         act_rename.triggered.connect(lambda: self.rename(index, item))
