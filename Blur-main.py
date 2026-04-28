@@ -3777,9 +3777,12 @@ class MainWindow(QMainWindow):
         
         # 這邊簡單用 Python list comprehension 過濾 (高效能做法建議在 Engine 寫 SQL)
         if self.engine.data_store:
+            # 正規化路徑並加上分隔符，防止 D:\img 誤匹配 D:\img-backup
+            norm_path = os.path.normpath(path)
+            prefix = norm_path + os.sep
             filtered = [
-                item for item in self.engine.data_store 
-                if item["path"].startswith(path)
+                item for item in self.engine.data_store
+                if os.path.normpath(item["path"]).startswith(prefix)
             ]
             
             # 轉換格式給 Model
