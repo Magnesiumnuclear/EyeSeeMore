@@ -498,6 +498,8 @@ class SearchResultsModel(QAbstractListModel):
         """排序時直接對 all_items 排序，不再需要洗牌第一批"""
         self.beginResetModel()
         self.all_items.sort(key=key_func, reverse=reverse)
+        # 排序後必須重建 path_to_row，否則索引與實際位置脫節
+        self.path_to_row = {item.path: i for i, item in enumerate(self.all_items)}
         self.endResetModel()
 
     def rowCount(self, parent=QModelIndex()):
@@ -4156,14 +4158,21 @@ class MainWindow(QMainWindow):
         menu.exec(self.list_view.mapToGlobal(pos))
 
     def _on_toggle_pin(self, file_path: str):
-        """切換釘選後，直接在現有結果中重新合併釘選圖，無需重跑完整搜尋。"""
+        """切換釘選狀態：僅更新該卡片的 is_pinned 旗標並局部重繪，不重建列表亦不跳頂。"""
         if not self.engine:
             return
-        self.engine.toggle_pin(file_path)
-        # 把舊的 is_pinned 旗標清除，重新以最新 pinned_paths 做合併
-        stripped = [{**r, 'is_pinned': False} for r in self.last_search_results]
-        merged = self.engine._merge_pinned(stripped)
-        self.set_base_results(merged)
+        new_state = self.engine.toggle_pin(file_path)
+        # 在 model 中找到對應 row，就地更新旗標並發射局部 dataChanged
+        row = self.model.path_to_row.get(file_path)
+        if row is not None and 0 <= row < len(self.model.all_items):
+            self.model.all_items[row].is_pinned = new_state
+            idx = self.model.index(row, 0)
+            self.model.dataChanged.emit(idx, idx, [Qt.ItemDataRole.UserRole])
+        # 同步更新 last_search_results，維持後續過濾/合併操作的一致性
+        for r in self.last_search_results:
+            if r.get('path') == file_path:
+                r['is_pinned'] = new_state
+                break
 
     def change_view_mode(self, mode):
         if mode == self.current_view_mode: return
