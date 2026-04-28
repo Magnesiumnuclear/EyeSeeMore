@@ -63,3 +63,6 @@ Thumbs.db
 # --- [7] 快取資料夾 ---
 .cache/
 thumbnails/
+
+# --- [8] python 3.10 的 embeddable package (64-bit) ---
+User_Environment

@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFrame, QComboBox, QGroupBox
 )
 
-from core.paths import LANGS_DIR
+from core.paths import LANGS_DIR, USER_CONFIG_PATH
 
 
 class LanguagePage(QWidget):
@@ -87,4 +87,17 @@ class LanguagePage(QWidget):
         ui_state = self.ctx["config"].get("ui_state", {})
         ui_state["language"] = selected_code
         self.ctx["config"].set("ui_state", ui_state)
+
+        # 同步寫入 user_config.json，供 C++ Launcher 下次啟動讀取
+        try:
+            ucfg = {}
+            if os.path.exists(USER_CONFIG_PATH):
+                with open(USER_CONFIG_PATH, 'r', encoding='utf-8') as f:
+                    ucfg = json.load(f)
+            ucfg["language"] = selected_code
+            with open(USER_CONFIG_PATH, 'w', encoding='utf-8') as f:
+                json.dump(ucfg, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"[LanguagePage] 同步 user_config.json 失敗: {e}")
+
         self.lbl_restart_hint.show()
