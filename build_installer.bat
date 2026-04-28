@@ -20,6 +20,9 @@ echo.
 echo =====================================================
 echo  [EyeSeeMore Build Pipeline]
 echo =====================================================
+echo.
+call :DrawBar 0  "初始化..."
+echo.
 
 :: ── 建立 build 暫存資料夾 ──────────────────────────────
 if not exist "%BUILD_DIR%" (
@@ -27,20 +30,20 @@ if not exist "%BUILD_DIR%" (
     mkdir "%BUILD_DIR%"
 )
 
-:: ── Stage 0: 編譯圖示資源 ──────────────────────────────
+:: ── Stage 0: 編譯圖示資源 (0 %% → 25 %%) ──────────────
 echo.
-echo [0/3] 正在編譯程式圖示資源 (resource.rc) ...
+echo [1/4] 正在編譯程式圖示資源 (resource.rc) ...
 windres "%RESOURCE_RC%" -O coff -o "%BUILD_DIR%\app_icon.res"
 if %errorlevel% neq 0 (
     echo.
     echo [錯誤] 圖示資源編譯失敗！請確認 src_cpp/resources/ 有 .ico 圖片且 windres 在 PATH 中。
     goto :fail
 )
-echo   ^> app_icon.res 編譯成功
+call :DrawBar 25 "resource.rc  → app_icon.res [OK]"
 
-:: ── Stage 1: 編譯 Launcher ─────────────────────────────
+:: ── Stage 1: 編譯 Launcher (25 %% → 50 %%) ────────────
 echo.
-echo [1/3] 正在編譯啟動器 (EyeSeeMore_Launcher.exe) ...
+echo [2/4] 正在編譯啟動器 (EyeSeeMore_Launcher.exe) ...
 g++ "%LAUNCHER_SRC%" "%BUILD_DIR%\app_icon.res" ^
     -o "%BUILD_DIR%\EyeSeeMore_Launcher.exe" ^
     -static -static-libgcc -static-libstdc++ ^
@@ -50,11 +53,11 @@ if %errorlevel% neq 0 (
     echo [錯誤] Launcher 編譯失敗！
     goto :fail
 )
-echo   ^> EyeSeeMore_Launcher.exe 編譯成功
+call :DrawBar 50 "main_launcher.cpp → Launcher.exe [OK]"
 
-:: ── Stage 2: 編譯 Installer ────────────────────────────
+:: ── Stage 2: 編譯 Installer (50 %% → 75 %%) ───────────
 echo.
-echo [2/3] 正在編譯安裝程式 (EyeSeeMore_Setup.exe) ...
+echo [3/4] 正在編譯安裝程式 (EyeSeeMore_Setup.exe) ...
 g++ "%INSTALLER_SRC%" "%BUILD_DIR%\app_icon.res" ^
     -o "%BUILD_DIR%\EyeSeeMore_Setup.exe" ^
     -static -static-libgcc -static-libstdc++ ^
@@ -64,11 +67,11 @@ if %errorlevel% neq 0 (
     echo [錯誤] Setup 編譯失敗！
     goto :fail
 )
-echo   ^> EyeSeeMore_Setup.exe 編譯成功
+call :DrawBar 75 "main_installer.cpp → Setup.exe  [OK]"
 
-:: ── Stage 3: 打包發佈套件 ──────────────────────────────
+:: ── Stage 3: 打包發佈套件 (75 %% → 100 %%) ────────────
 echo.
-echo [3/3] 正在執行發佈打包腳本 (pack_release.py) ...
+echo [4/4] 正在執行發佈打包腳本 (pack_release.py) ...
 echo.
 
 :: 搜尋可用的 Python 直譯器（優先使用 .venv\Scripts\python.exe）
@@ -105,6 +108,7 @@ if %errorlevel% neq 0 (
     echo [錯誤] 發佈打包失敗！請查看上方的錯誤訊息。
     goto :fail
 )
+call :DrawBar 100 "Runtime / App / Models 打包完成  [OK]"
 
 :: ── 成功結尾 ───────────────────────────────────────────
 echo.
@@ -122,3 +126,34 @@ echo  ^>^> Build Pipeline 中止（見上方錯誤）
 echo =====================================================
 pause
 exit /b 1
+
+:: =====================================================
+:: :DrawBar  pct  "label"
+::   pct   = 0~100 整數
+::   label = 步驟說明（可含空白）
+::
+::   輸出範例：
+::   [##########----------]  50%  main_launcher.cpp → Launcher.exe [OK]
+::
+::   修復說明：
+::   1. set "_pct=%%" → 將 % 號存入變數，避免 %% 在非 for 迴圈內
+::      被 CMD percent-expansion 階段吃掉，導致 echo 變成 cho
+::   2. if !_f! gtr 0 / if !_e! gtr 0 → 防止 CMD for /l 零端點 bug
+::      (Windows CMD 對 for /l %%i in (1,1,0) 會多跑一次)
+::   3. 改用 !_label! 取代 %~2，避免含特殊字元的標籤被重複展開
+:: =====================================================
+:DrawBar
+setlocal EnableDelayedExpansion
+set "_pct=%%"
+set "_label=%~2"
+set /a "_f=(%~1 * 20) / 100"
+set /a "_e=20 - _f"
+set "_b="
+if !_f! gtr 0 for /l %%i in (1,1,!_f!) do set "_b=!_b!#"
+if !_e! gtr 0 for /l %%i in (1,1,!_e!) do set "_b=!_b!-"
+set "_p=%~1"
+if %~1 lss  10 set "_p=  %~1"
+if %~1 geq 10 if %~1 lss 100 set "_p= %~1"
+echo   [!_b!] !_p!!_pct!  !_label!
+endlocal
+exit /b 0
