@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <iostream>
+#include <iomanip>
 #include <string>
 #include <thread>
 #include <atomic>
@@ -39,41 +40,65 @@ bool CreateDesktopShortcut(const std::wstring& targetExePath, const std::wstring
 }
 
 // ==========================================
-// 2. 模組化的解壓縮與進度條繪製函數
+// 2. 模組化的解壓縮與百分比進度條函數
 // ==========================================
-bool ExtractZipWithProgress(const std::wstring& zipPath, const std::wstring& installDir, const std::string& stageMessage) {
+
+// 依照已耗時預估進度（0~99%），最後完成時固定跳到 100%
+static int EstimateProgress(int elapsedMs, int estimatedMs) {
+    if (estimatedMs <= 0) return 0;
+    int pct = (elapsedMs * 100) / estimatedMs;
+    return (pct > 99) ? 99 : pct;
+}
+
+// 在同一行繪製：[########~~~~~~~~~~] 50%  已耗時: 5 秒
+static void DrawProgressBar(const std::string& label, int pct, int elapsedMs) {
+    const int BAR_WIDTH = 30;
+    int filled = (pct * BAR_WIDTH) / 100;
+    std::string bar(filled, '#');
+    bar += std::string(BAR_WIDTH - filled, '-');
+    std::cout << "\r  " << label
+              << " [" << bar << "] "
+              << std::setw(3) << pct << "%"
+              << "  已耗時: " << elapsedMs / 1000 << " 秒   "
+              << std::flush;
+}
+
+bool ExtractZipWithProgress(const std::wstring& zipPath, const std::wstring& installDir,
+                             const std::string& stageLabel, int estimatedSecs) {
     SetCurrentDirectoryW(installDir.c_str());
     std::wstring tarCmd = L"tar -xf \"" + zipPath + L"\"";
 
     std::atomic<bool> isExtracting(true);
-    std::atomic<int> extractResult(-1);
+    std::atomic<int>  extractResult(-1);
 
     // [背景執行緒] 負責解壓縮
     std::thread extractThread([&]() {
         extractResult = _wsystem(tarCmd.c_str());
-        isExtracting = false; 
+        isExtracting  = false;
     });
 
-    // [主執行緒] 負責畫進度條
-    const char* spinner = "|/-\\";
-    int spinIdx = 0;
-    int secondsElapsed = 0;
-    
+    // [主執行緒] 負責繪製進度條
+    int elapsedMs    = 0;
+    int estimatedMs  = estimatedSecs * 1000;
+
     while (isExtracting) {
-        std::cout << "\r" << stageMessage << " " << spinner[spinIdx++ % 4] 
-                  << " (已耗時: " << secondsElapsed / 10 << " 秒)   " << std::flush;
-        Sleep(100);
-        secondsElapsed++;
+        int pct = EstimateProgress(elapsedMs, estimatedMs);
+        DrawProgressBar(stageLabel, pct, elapsedMs);
+        Sleep(200);
+        elapsedMs += 200;
     }
-    
+
     extractThread.join();
-    std::cout << "\n"; // 換行保留歷史紀錄
+
+    // 完成後固定顯示 100%
+    DrawProgressBar(stageLabel, 100, elapsedMs);
+    std::cout << std::endl;
 
     if (extractResult == 0) {
-        std::cout << " -> 佈署成功！\n" << std::endl;
+        std::cout << "  -> 佈署成功！\n" << std::endl;
         return true;
     } else {
-        std::cerr << " -> [錯誤] 解壓縮失敗！錯誤碼: " << extractResult << std::endl;
+        std::cerr << "  -> [錯誤] 解壓縮失敗！錯誤碼: " << extractResult << std::endl;
         return false;
     }
 }
@@ -132,16 +157,18 @@ int main() {
 
     // ==========================================
     // D. 依序執行多段式解壓縮
+    //    第三個參數為「預估完成秒數」，用來計算進度百分比
+    //    實際時間因機器而異，僅為視覺效果估算
     // ==========================================
-    if (!ExtractZipWithProgress(appZip, installDir, "[Step 1/3] 正在佈署主程式核心...")) {
+    if (!ExtractZipWithProgress(appZip,     installDir, "Step 1/3 主程式核心",   30)) {
         std::cin.get(); return 1;
     }
     
-    if (!ExtractZipWithProgress(runtimeZip, installDir, "[Step 2/3] 正在準備執行環境...")) {
+    if (!ExtractZipWithProgress(runtimeZip, installDir, "Step 2/3 執行環境  ",   60)) {
         std::cin.get(); return 1;
     }
     
-    if (!ExtractZipWithProgress(modelsZip, installDir, "[Step 3/3] 正在安裝 AI 大腦 (檔案極大，請耐心等候)...")) {
+    if (!ExtractZipWithProgress(modelsZip,  installDir, "Step 3/3 AI 模型   ",  180)) {
         std::cin.get(); return 1;
     }
 
