@@ -3664,7 +3664,7 @@ class MainWindow(QMainWindow):
             self.start_search(triggered_by_slider=False)
         else:
             self.input.setText("")
-            self.on_folder_filter(state["folder_path"])
+            self._apply_folder_filter(state["folder_path"])
 
     def navigate_back(self):
         self.nav.go_back()
@@ -3722,10 +3722,14 @@ class MainWindow(QMainWindow):
 
     # [修正] 實作資料夾篩選邏輯
     def on_folder_filter(self, path):
+        """用戶主動點擊側邊欄時觸發：記錄導航歷史並顯示"""
         if not self.engine: return
+        self.nav.push()
+        self._apply_folder_filter(path)
 
-        if not self.nav.is_navigating:
-            self.nav.push()
+    def _apply_folder_filter(self, path):
+        """純顯示邏輯，不操作導航堆疊，供 nav_apply 與 on_folder_filter 共用"""
+        if not self.engine: return
 
         self.current_folder_path = path
         
@@ -4091,7 +4095,7 @@ class MainWindow(QMainWindow):
             self.refresh_sidebar()
             self.sidebar.reload_collections(self.engine.get_collections())
 
-            self.on_folder_filter(self.current_folder_path)
+            self._apply_folder_filter(self.current_folder_path)
     
     def update_status(self, text):
         self.status.setText(text)
@@ -4141,7 +4145,7 @@ class MainWindow(QMainWindow):
         if not self.engine: return
         
         #  [修正] 不要強制切回 ALL，而是維持目前所在的資料夾並重新整理！
-        self.on_folder_filter(self.current_folder_path)
+        self._apply_folder_filter(self.current_folder_path)
         self.refresh_sidebar()
 
     # 右鍵選單邏輯
@@ -4465,7 +4469,6 @@ class MainWindow(QMainWindow):
         # 延遲觸發，確保 Qt 的幾何運算已經完成
         QTimer.singleShot(10, self.adjust_layout)
 
-    # [新增] 攔截視窗關閉事件，儲存 UI 狀態
     def closeEvent(self, event):
         ui_state = self.config.get("ui_state", {})
 
