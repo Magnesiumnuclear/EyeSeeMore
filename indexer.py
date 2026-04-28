@@ -51,6 +51,21 @@ def rotate_ocr_box(box, orientation, raw_w, raw_h):
     return new_box
 
 # ==========================================
+# [新增] 透明度安全的 RGB 轉換：將 RGBA/LA/P 合成至白色背景，避免透明像素變黑
+# ==========================================
+def pil_to_rgb_safe(pil_img, bg=(255, 255, 255)):
+    mode = pil_img.mode
+    if mode == 'P':
+        pil_img = pil_img.convert('RGBA')
+        mode = 'RGBA'
+    if mode in ('RGBA', 'LA'):
+        background = Image.new('RGB', pil_img.size, bg)
+        alpha = pil_img.split()[-1]
+        background.paste(pil_img.convert('RGB'), mask=alpha)
+        return background
+    return pil_img.convert('RGB')
+
+# ==========================================
 # [極速版] 純 Numpy + OpenCV 的圖片預處理 (完全取代 PIL)
 # ==========================================
 class NumpyPreprocess:
@@ -92,8 +107,8 @@ class NumpyPreprocess:
 # ==========================================
 # [新增] L2 磁碟縮圖快取生成器
 # ==========================================
-def generate_l2_cache(img_rgb, original_path):
-    """將記憶體中的 RGB 圖片縮小並存入 .cache/thumbnails"""
+def generate_l2_cache(img, original_path):
+    """將記憶體中的圖片縮小並存入 .cache/thumbnails（保留透明通道）"""
     try:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         cache_dir = os.path.join(base_dir, ".cache", "thumbnails")
@@ -105,8 +120,11 @@ def generate_l2_cache(img_rgb, original_path):
         
         if not os.path.exists(cache_path):
             # 複製一份影像進行縮放 (256x256 足夠涵蓋各種卡片比例)
-            thumb = img_rgb.copy()
+            thumb = img.copy()
             thumb.thumbnail((256, 256), Image.Resampling.BICUBIC)
+            # 保留透明通道：RGBA/LA/P 統一轉為 RGBA 存入 WebP
+            if thumb.mode in ('RGBA', 'LA', 'P'):
+                thumb = thumb.convert('RGBA')
             thumb.save(cache_path, format="WEBP", quality=80)
     except Exception as e:
         perf_print(f"L2 快取生成失敗: {e}")
@@ -454,16 +472,18 @@ class IndexerService:
                                     orientation = v
                                     break
                                     
-                        # 轉正並強制轉為 RGB 空間
-                        img_rgb = ImageOps.exif_transpose(pil_img).convert('RGB')
+                        # 轉正 (保留原始模式，含透明通道)
+                        img_transposed = ImageOps.exif_transpose(pil_img)
+                        # 轉為 RGB (用於 CLIP 向量與 OCR，透明像素合成至白色背景)
+                        img_rgb = pil_to_rgb_safe(img_transposed)
                         
                     # 計算視覺上正確的長寬
                     w, h = raw_w, raw_h
                     if orientation in [5, 6, 7, 8]:
                         w, h = raw_h, raw_w
 
-                    # 1. 派發給 L2 快取 (直接用記憶體的 img_rgb)
-                    generate_l2_cache(img_rgb, path)
+                    # 1. 派發給 L2 快取 (傳入含透明通道的原始轉正圖)
+                    generate_l2_cache(img_transposed, path)
                         
                     # 2. 派發給 CLIP 預處理
                     batch_images.append(np.expand_dims(preprocess(img_rgb), axis=0))
@@ -548,10 +568,12 @@ class IndexerService:
             for path in batch_paths:
                 try:
                     with Image.open(path) as pil_img:
-                        # 🌟 [AI 準確度升級] 轉正送給 CLIP
-                        img_rgb = ImageOps.exif_transpose(pil_img).convert('RGB')
-                        # 🌟 [新增] 軌道 B 也搭便車
-                        generate_l2_cache(img_rgb, path)
+                        # 轉正 (保留原始模式，含透明通道)
+                        img_transposed = ImageOps.exif_transpose(pil_img)
+                        # 🌟 [新增] 軌道 B 也搭便車 (保留透明通道)
+                        generate_l2_cache(img_transposed, path)
+                        # 🌟 [AI 準確度升級] 轉正送給 CLIP (透明像素合成至白色背景)
+                        img_rgb = pil_to_rgb_safe(img_transposed)
                     batch_images.append(np.expand_dims(preprocess(img_rgb), axis=0)); valid_paths.append(path)
                 except Exception: continue
 
@@ -595,7 +617,7 @@ class IndexerService:
                                 if ExifTags.TAGS.get(k) == 'Orientation':
                                     orientation = v
                                     break
-                        img_rgb = ImageOps.exif_transpose(pil_img).convert('RGB')
+                        img_rgb = pil_to_rgb_safe(ImageOps.exif_transpose(pil_img))
                         
                     # 轉換為 OCR 需要的 BGR 陣列
                     img_bgr = cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR)
