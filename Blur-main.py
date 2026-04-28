@@ -2450,13 +2450,6 @@ class PreviewOverlay(QWidget):
     def set_ocr_visible(self, visible):
         self.image_label.set_draw_boxes(visible)
 
-    def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Escape):
-            self.hide()
-
-    def mousePressEvent(self, event):
-        self.hide()
-
     def hideEvent(self, event):
         if self.current_preview_worker:
             self.current_preview_worker.is_cancelled = True
@@ -2465,10 +2458,12 @@ class PreviewOverlay(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Escape):
-            self.hide() # 這裡只要單純 hide，上面的 hideEvent 就會自動幫我們清垃圾了
+            self.hide()
 
     def mousePressEvent(self, event):
-        self.hide()
+        # 只有點擊圖片以外的區域才關閉
+        if not self.image_label.geometry().contains(event.position().toPoint()):
+            self.hide()
 
 # HistoryItemWidget 已遷移至 ui/widgets/search_capsule.py
 
