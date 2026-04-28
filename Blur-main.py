@@ -654,74 +654,30 @@ class ImageDelegate(QStyledItemDelegate):
         rect = option.rect
         card_rect = rect.adjusted(4, 4, -4, -4)
 
-        # 狀態判斷
-        is_selected = option.state & QStyle.StateFlag.State_Selected
-        is_hover = option.state & QStyle.StateFlag.State_MouseOver
-        
-        bg_color = QColor("#2b2b2b")
-        border_color = QColor("#3b3b3b")
-        border_width = 1
-
-        # ---  動態取得主題顏色 ---
+        # ── 取得主題顏色 ──
         if hasattr(self.main_window, 'theme_manager'):
             colors = self.main_window.theme_manager.current_colors
         else:
-            colors = {} # 防呆
+            colors = {}
 
-        bg_color = QColor(colors.get("bg_card", "#2b2b2b"))
-        border_color = QColor(colors.get("border_main", "#3e3e3e"))
+        # ── 狀態旗標 ──
+        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        is_hover    = bool(option.state & QStyle.StateFlag.State_MouseOver)
+
+        # ── 背景色（hover 時換底色，不影響邊框） ──
+        bg_color   = QColor(colors.get("bg_card", "#2b2b2b"))
         text_color = QColor(colors.get("text_main", "#ffffff"))
-        
-        #  核心視覺優化：避免在畫廊大面積使用純白 (255, 255, 255)
-        # 如果主題文字是純白，我們將它柔化為  (淡淡的灰白)，減輕刺眼感
         if text_color.name().lower() == "#ffffff":
             text_color = QColor("#e0e0e0")
-
-        # 狀態判斷
-        is_selected = option.state & QStyle.StateFlag.State_Selected
-        is_hover = option.state & QStyle.StateFlag.State_MouseOver
-
-        # 境框預設值
-        border_color = QColor(colors.get("border_main", "#3e3e3e"))
-        border_width = 1
-        dual_border = False  # 釘選 + OCR 雙色虛線邊框旗標
-
-        if is_selected:
-            border_color = QColor(colors.get("primary", "#60cdff"))
-            border_width = 2
-        elif item.is_pinned and item.is_ocr_match:
-            dual_border = True  # 底層藍實線 + 頂層綠虛線
-            border_color = QColor(colors.get("accent", colors.get("primary", "#60cdff")))
-            border_width = 2
-        elif item.is_pinned:
-            border_color = QColor(colors.get("accent", colors.get("primary", "#60cdff")))
-            border_width = 2
-        elif item.is_ocr_match:
-            border_color = QColor(colors.get("text_success", "#4caf50"))
-            border_width = 1
-        elif is_hover:
+        if is_hover and not is_selected:
             bg_color = QColor(colors.get("bg_hover", "#383838"))
-            border_color = QColor(colors.get("primary_hover", "#7ce0ff"))
 
-        # 1. 繪製背景
+        # 1. 只填充背景，不畫邊框（邊框統一在最後繪製）
         path = QPainterPath()
         path.addRoundedRect(QRectF(card_rect), self.radius, self.radius)
-
         painter.setBrush(QBrush(bg_color))
-        if dual_border:
-            # 底層：2px 藍色實線
-            pin_color = QColor(colors.get("accent", colors.get("primary", "#60cdff")))
-            painter.setPen(QPen(pin_color, 2, Qt.PenStyle.SolidLine))
-            painter.drawPath(path)
-            # 頂層：2px 綠色虛線（疊加到相同路徑上）
-            ocr_color = QColor(colors.get("text_success", "#4caf50"))
-            painter.setPen(QPen(ocr_color, 2, Qt.PenStyle.DashLine))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPath(path)
-            painter.setBrush(QBrush(bg_color))
-        else:
-            painter.setPen(QPen(border_color, border_width))
-            painter.drawPath(path)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(path)
 
         # --- 版面計算 ---
         bottom_margin = self.padding
@@ -839,6 +795,45 @@ class ImageDelegate(QStyledItemDelegate):
             painter.drawRoundedRect(ocr_rect, 3, 3)
             painter.setPen(QColor("#ffffff"))
             painter.drawText(ocr_rect, Qt.AlignmentFlag.AlignCenter, "TEXT")
+
+        # ── 邊框層（由內而外疊加，選取框永遠最頂層） ──
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # 層 A：預設細邊框或 hover 邊框（無任何特殊狀態時）
+        if not item.is_pinned and not item.is_ocr_match and not is_selected:
+            border_c = colors.get("primary_hover", "#7ce0ff") if is_hover else colors.get("border_main", "#3e3e3e")
+            painter.setPen(QPen(QColor(border_c), 1))
+            painter.drawPath(path)
+
+        # 層 B：OCR 綠色虛線環
+        # 畫在比 card_rect 外擴 2px 的路徑，確保與釘選藍色(Layer C)完全不重疊，兩層同時可見
+        if item.is_ocr_match:
+            ocr_path = QPainterPath()
+            ocr_path.addRoundedRect(
+                QRectF(card_rect.adjusted(-2, -2, 2, 2)),
+                self.radius + 1, self.radius + 1,
+            )
+            pen_ocr = QPen(QColor(colors.get("text_success", "#4caf50")), 1.5, Qt.PenStyle.DashLine)
+            pen_ocr.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen_ocr)
+            painter.drawPath(ocr_path)
+
+        # 層 C：釘選藍色實線（2px，畫在 card_rect 位置）
+        if item.is_pinned:
+            pen_pin = QPen(
+                QColor(colors.get("accent", colors.get("primary", "#60cdff"))),
+                2, Qt.PenStyle.SolidLine,
+            )
+            pen_pin.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen_pin)
+            painter.drawPath(path)
+
+        # 層 D：WASD / 滑鼠選取框（3px，永遠最頂層；比釘選線粗一格，差異明顯）
+        if is_selected:
+            pen_sel = QPen(QColor(colors.get("primary", "#60cdff")), 3, Qt.PenStyle.SolidLine)
+            pen_sel.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen_sel)
+            painter.drawPath(path)
 
         painter.restore()
 
