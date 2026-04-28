@@ -65,4 +65,7 @@ Thumbs.db
 thumbnails/
 
 # --- [8] python 3.10 的 embeddable package (64-bit) ---
-User_Environment
+User_Environment/
+
+#  --- [9] C++ 啟動器專用資料夾 (包含打包後的安裝器) ---
+EyeSeeMore_installer/
