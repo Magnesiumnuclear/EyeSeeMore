@@ -3418,6 +3418,7 @@ class MainWindow(QMainWindow):
         self.active_time_range = None # 目前選取的時間區間 (start_ts, end_ts)
 
         self.current_image_search_path = None
+        self.current_multi_vector_features = None  # (pos_features, neg_features)
         
         # 設定歷史紀錄檔路徑
         self.history_file_path = os.path.join(self.config.app_root, "search_history.json")
@@ -3643,7 +3644,8 @@ class MainWindow(QMainWindow):
             "folder_path": self.current_folder_path,
             "breadcrumb": self.breadcrumb_lbl.text(),
             "scroll_pos": self.list_view.verticalScrollBar().value(),
-            "image_path": getattr(self, "current_image_search_path", None)
+            "image_path": getattr(self, "current_image_search_path", None),
+            "multi_vector_features": getattr(self, "current_multi_vector_features", None),
         }
 
     def _nav_apply(self, state):
@@ -3651,7 +3653,11 @@ class MainWindow(QMainWindow):
         self.current_folder_path = state["folder_path"]
         self.breadcrumb_lbl.setText(state["breadcrumb"])
 
-        if state["image_path"]:
+        mv = state.get("multi_vector_features")
+        if mv:
+            pos_features, neg_features = mv
+            self.start_multi_vector_search(pos_features, neg_features)
+        elif state["image_path"]:
             self.start_image_search(state["image_path"])
         elif state["query"]:
             self.input.setText(state["query"])
@@ -3940,8 +3946,8 @@ class MainWindow(QMainWindow):
         # 3. 呼叫 Model 的排序方法
         self.model.sort_items(key_func, reverse=is_descending)
         
-        #  4. 防禦：只有在「沒有」等待還原的歷史滾輪位置時，才自動滾回最上方
-        if self.nav.pending_scroll_pos is None:
+        #  4. 防禦：還原滾輪期間不回頂，其他情況才自動滾回最上方
+        if not getattr(self, '_nav_restoring_scroll', False) and self.nav.pending_scroll_pos is None:
             self.list_view.scrollToTop()
 
     # ==========================================
@@ -3992,14 +3998,18 @@ class MainWindow(QMainWindow):
         # 4. 丟給畫面更新
         self.model.set_search_results(filtered)
         
-        # 5. 順便套用目前的排序設定
-        self.apply_gallery_sort() 
-
+        # 5. 如果有滾輪還原需求，先預先排程（在 sort 之前），避免被 scrollToTop 覆蓋
         if self.nav.pending_scroll_pos is not None:
             pos = self.nav.pending_scroll_pos
             self.nav.pending_scroll_pos = None
-            # 等待極短時間讓 Grid 佈局計算完成後定位
-            QTimer.singleShot(50, lambda: self.list_view.verticalScrollBar().setValue(pos))
+            self._nav_restoring_scroll = True
+            def _do_restore():
+                self.list_view.verticalScrollBar().setValue(pos)
+                self._nav_restoring_scroll = False
+            QTimer.singleShot(80, _do_restore)
+
+        # 6. 順便套用目前的排序設定
+        self.apply_gallery_sort()
 
         return len(filtered)
 
@@ -4369,6 +4379,7 @@ class MainWindow(QMainWindow):
                 self.nav.push()
 
             self.current_image_search_path = None
+            self.current_multi_vector_features = None
             self.add_to_history(q)
             self.search_capsule.hide_history()
             self._prepare_search_ui("Searching...", "Search Results")
@@ -4395,6 +4406,7 @@ class MainWindow(QMainWindow):
         if not self.nav.is_navigating:
             self.nav.push()
         self.current_image_search_path = image_path
+        self.current_multi_vector_features = None
 
         self.history_list.hide()
         self.input.setText(f"[Image] {os.path.basename(image_path)}")
@@ -4413,6 +4425,9 @@ class MainWindow(QMainWindow):
     def start_multi_vector_search(self, pos_features, neg_features):
         if not self.engine: return
         if not self.nav.is_navigating: self.nav.push()
+
+        self.current_image_search_path = None
+        self.current_multi_vector_features = (pos_features, neg_features)
 
         self.history_list.hide()
         self.input.setText(f"[Multi-Vector] Pos:{len(pos_features)} Neg:{len(neg_features)}")
