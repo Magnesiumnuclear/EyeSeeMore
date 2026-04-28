@@ -3480,21 +3480,23 @@ class MainWindow(QMainWindow):
         # 啟動背景載入 (這裡才會去建立 ImageSearchEngine)
         threading.Thread(target=self.load_engine, daemon=True).start()
 
-        #  讀取設定，決定是否要在啟動時自動掃描
         #  原生視窗記憶：精準還原大小、座標與最大化狀態
         from PyQt6.QtCore import QByteArray
         ui_state = self.config.get("ui_state", {})
-        
+
+        # 先設定合理預設尺寸，確保 normalGeometry 在 restoreGeometry() 前不為零值
+        # 這樣即使還原為最大化狀態，unmaximize 時也能正確縮回
+        self.resize(1280, 900)
+
         if "geometry" in ui_state and "window_state" in ui_state:
             try:
-                self.restoreGeometry(QByteArray.fromHex(ui_state["geometry"].encode('ascii')))
-                self.restoreState(QByteArray.fromHex(ui_state["window_state"].encode('ascii')))
+                ok = self.restoreGeometry(QByteArray.fromHex(ui_state["geometry"].encode('ascii')))
+                if ok:
+                    self.restoreState(QByteArray.fromHex(ui_state["window_state"].encode('ascii')))
+                else:
+                    print("[UI] restoreGeometry 回傳 False，使用預設大小")
             except Exception as e:
                 print(f"[UI] 視窗狀態還原失敗: {e}")
-                self.resize(1280, 900) # 失敗時的防呆預設值
-        else:
-            # 第一次開啟程式時的預設大小
-            self.resize(1280, 900)
 
         if ui_state.get("auto_scan_on_startup", True):
             self.indexer_worker.start()
@@ -4446,41 +4448,22 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(10, self.adjust_layout)
 
     # [新增] 攔截視窗關閉事件，儲存 UI 狀態
-    # [新增] 攔截視窗關閉事件，儲存 UI 狀態
     def closeEvent(self, event):
-        is_max = self.isMaximized()
-        
-        # 如果視窗被最大化，我們存 normalGeometry 的大小，這樣下次打開縮小時才不會變成 0x0
-        if is_max:
-            rect = self.normalGeometry()
-            w, h = rect.width(), rect.height()
-        else:
-            w, h = self.width(), self.height()
-            
-        #  原生視窗記憶：將幾何資訊與狀態轉為字串儲存
         ui_state = self.config.get("ui_state", {})
-        
-        # 使用 PyQt 原生方法取得精確資訊，並轉換為 JSON 相容的 ASCII 字串
+
+        # 視窗幾何（含最大化 + normalGeometry）統一交由 saveGeometry() 處理
         ui_state["geometry"] = self.saveGeometry().toHex().data().decode('ascii')
         ui_state["window_state"] = self.saveState().toHex().data().decode('ascii')
-        
-        # 順手清掉舊的無用參數 (避免 config.json 越來越肥)
+
+        # 其餘 UI 狀態
+        ui_state["sidebar_expanded"] = self.sidebar.is_expanded
+        ui_state["view_mode"] = getattr(self, 'current_view_mode', 'large')
+
+        # 清除已被 saveGeometry() 取代的舊欄位，避免 config.json 殘留臟資料
         for old_key in ["window_width", "window_height", "is_maximized"]:
             ui_state.pop(old_key, None)
-            
-        # ... (其他 ui_state 的紀錄，例如 sidebar_expanded 等，請維持不變) ...
-        self.config.set("ui_state", ui_state)
-        
-        # 使用 dict.update() 只更新視窗相關的欄位，保留其他所有設定
-        ui_state.update({
-            "window_width": w,
-            "window_height": h,
-            "is_maximized": is_max,
-            "sidebar_expanded": self.sidebar.is_expanded,
-            "view_mode": getattr(self, 'current_view_mode', 'large')
-        })
-        
-        # 寫入設定檔
+
+        # 一次性原子寫入，避免兩次 set 之間的狀態不一致
         self.config.set("ui_state", ui_state)
         super().closeEvent(event)
 

@@ -202,9 +202,7 @@ class Ui_MainWindow:
         if not saved_expanded:
             MainWindow.sidebar.toggle_sidebar()
 
-        MainWindow.resize(ui_state.get("window_width", 1280), ui_state.get("window_height", 900))
-        if ui_state.get("is_maximized", False):
-            MainWindow.showMaximized()
+        # 視窗大小與位置由 init_ui 中的 restoreGeometry() 統一處理，不在此處重複設定
 
         # --- ListView 事件綁定 ---
         MainWindow.list_view.clicked.connect(MainWindow.on_item_clicked)
