@@ -1775,7 +1775,8 @@ class IndexerWorker(QThread):
             db_path=config.db_path,
             model_name=config.get("model_name"),
             pretrained_name=config.get("pretrained"),
-            use_gpu_ocr=config.get("use_gpu_ocr") # <--- [新增] 將 GPU 設定傳遞給底層引擎
+            use_gpu_ocr=config.get("use_gpu_ocr"),
+            perf_config=config.get("performance", {})
         )
         #直接傳遞包含 use_ocr 屬性的完整字典列表！
         self.folders = config.get("source_folders")

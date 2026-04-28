@@ -153,22 +153,29 @@ import psutil
 # ==========================================
 
 class IndexerService:
-    def __init__(self, db_path, model_name='xlm-roberta-large-ViT-H-14', pretrained_name='frozen_laion5b_s13b_b90k', use_gpu_ocr=False):
+    def __init__(self, db_path, model_name='xlm-roberta-large-ViT-H-14', pretrained_name='frozen_laion5b_s13b_b90k', use_gpu_ocr=False, perf_config=None):
         self.db_path = db_path
         self.model_name = model_name
         self.pretrained_name = pretrained_name
-        self.use_gpu_ocr = bool(use_gpu_ocr) 
+        self.use_gpu_ocr = bool(use_gpu_ocr)
         self.device = "dml" if 'DmlExecutionProvider' in ort.get_available_providers() else "cpu"
-        
+
+        # ==========================================
+        # 效能參數：從 perf_config 讀取，未設定時用安全預設值
+        # ==========================================
+        cfg = perf_config or {}
+        self.batch_size       = int(cfg.get("indexing_batch_size",  4))
+        self.commit_threshold = int(cfg.get("db_commit_threshold",  24))
+
         # [修改] 使用 perf_print 取代一般的 print
         perf_print(f"\n{'='*50}")
         perf_print(f"[系統硬體] AI 初始化檢查")
         perf_print(f"{'='*50}")
-        
+
         # ONNX Runtime 設備狀態印出
         perf_print(f"[OCR  設備] 使用者設定: {'GPU' if self.use_gpu_ocr else 'CPU'} (ONNX Runtime)")
-
         perf_print(f"[CLIP 設備] 系統支援最高硬體: {self.device.upper()}")
+        perf_print(f"[效能參數] batch_size={self.batch_size}  commit_threshold={self.commit_threshold}")
         perf_print(f"{'='*50}\n")
 
         logging.getLogger("ppocr").setLevel(logging.ERROR)
@@ -407,7 +414,6 @@ class IndexerService:
         # 🌟 [新增] 延遲寫入計數器 (Lazy Commit)
         # ==========================================
         commit_counter = 0
-        COMMIT_THRESHOLD = 24 # 累積滿 24 張圖片才呼叫硬碟寫入一次
         
         import gc
         
@@ -441,11 +447,9 @@ class IndexerService:
         except Exception as e:
             print(f"Model Load Failed: {e}"); conn.close(); return
 
-        BATCH_SIZE = 4
-        
         # --- 軌道 A: 全新圖片 (OCR + CLIP) ---
-        for i in range(0, len(files_full), BATCH_SIZE):
-            batch_paths = files_full[i : i + BATCH_SIZE]
+        for i in range(0, len(files_full), self.batch_size):
+            batch_paths = files_full[i : i + self.batch_size]
             batch_images = []
             batch_meta = [] 
             
@@ -556,13 +560,13 @@ class IndexerService:
             current_progress += len(batch_paths)
 
             commit_counter += len(batch_paths)
-            if commit_counter >= COMMIT_THRESHOLD:
+            if commit_counter >= self.commit_threshold:
                 conn.commit()
                 commit_counter = 0
 
         # --- 軌道 B: 切換模型補算 (光速 CLIP) ---
-        for i in range(0, len(files_emb_only), BATCH_SIZE):
-            batch_paths = files_emb_only[i : i + BATCH_SIZE]
+        for i in range(0, len(files_emb_only), self.batch_size):
+            batch_paths = files_emb_only[i : i + self.batch_size]
             batch_images = []; valid_paths = []
             if progress_callback: progress_callback(current_progress, total_files, f"Fast CLIP: {current_progress}/{total_files}...")
             for path in batch_paths:
@@ -590,13 +594,13 @@ class IndexerService:
             current_progress += len(batch_paths)
 
             commit_counter += len(batch_paths)
-            if commit_counter >= COMMIT_THRESHOLD:
+            if commit_counter >= self.commit_threshold:
                 conn.commit()
                 commit_counter = 0
 
         # --- 軌道 C: 精準補算文字 (缺哪國補哪國) ---
-        for i in range(0, len(files_ocr_only), BATCH_SIZE):
-            batch_paths = files_ocr_only[i : i + BATCH_SIZE]
+        for i in range(0, len(files_ocr_only), self.batch_size):
+            batch_paths = files_ocr_only[i : i + self.batch_size]
             if progress_callback: progress_callback(current_progress, total_files, f"Backfill OCR: {current_progress}/{total_files}...")
             
             ocr_insert_data = []
@@ -661,7 +665,7 @@ class IndexerService:
             current_progress += len(batch_paths)
 
             commit_counter += len(batch_paths)
-            if commit_counter >= COMMIT_THRESHOLD:
+            if commit_counter >= self.commit_threshold:
                 conn.commit()
                 commit_counter = 0
 
