@@ -4230,13 +4230,17 @@ class MainWindow(QMainWindow):
 
         # 3. 滑鼠點擊 (MouseButtonPress)
         if event.type() == QEvent.Type.MouseButtonPress:
-            # 狀態列點擊：切換空狀態診斷覆蓋層 (僅在搜尋模式下有效)
+            # 狀態列點擊：顯示漏斗統計預覽 (僅在搜尋模式下有效)
             if obj is self.status and getattr(self, 'is_in_search_mode', False):
-                if hasattr(self, '_empty_state_overlay'):
-                    if self._empty_state_overlay.isVisible():
-                        self._empty_state_overlay.hide()
-                    else:
-                        self._update_search_diagnostics()
+                stats = getattr(self, 'last_search_stats', {})
+                if stats:
+                    fi = FunnelCardItem(
+                        raw_count=stats.get('raw_count', 0),
+                        after_date=stats.get('after_date', 0),
+                        after_aspect=stats.get('after_aspect', 0),
+                        final_count=stats.get('final_count', 0),
+                    )
+                    self.preview_overlay.show_funnel_card(fi)
                 return True
             ah.handle_mouse_press(obj, event)
 
@@ -4414,24 +4418,7 @@ class MainWindow(QMainWindow):
             return final_count
 
         # 4. 丟給畫面更新
-        # 僅在搜尋模式下，在結果列表最前方插入漏斗統計卡片
-        display_list = list(filtered)
-        if getattr(self, 'is_in_search_mode', False):
-            funnel_card = {
-                '__funnel_card__': True,
-                'path': FunnelCardItem.VIRTUAL_PATH,
-                'filename': 'Search Funnel',
-                'score': 0.0,
-                'raw_count': raw_count,
-                'after_date': after_date,
-                'after_aspect': after_aspect,
-                'final_count': final_count,
-                'mtime': 0,
-                'width': 0,
-                'height': 0,
-            }
-            display_list = [funnel_card] + display_list
-        self.model.set_search_results(display_list)
+        self.model.set_search_results(filtered)
 
         # 5. 如果有滾輪還原需求，先預先排程（在 sort 之前），避免被 scrollToTop 覆蓋
         if self.nav.pending_scroll_pos is not None:
