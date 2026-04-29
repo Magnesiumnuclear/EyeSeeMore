@@ -167,7 +167,7 @@ def pack_models(project_root: Path, out_dir: Path) -> bool:
         return True
 
     out_zip  = out_dir / "AI_Models.zip"
-    pairs    = _collect_dir(src)
+    pairs    = _collect_dir(src, arc_root=project_root)
     total_mb = sum(p.stat().st_size for p, _ in pairs) / 1024 / 1024
     print(f"  準備打包 AI_Models.zip（{len(pairs)} 個檔案，{total_mb:.1f} MB）...")
     print("  [模式] ZIP_STORED（模型檔已壓縮，跳過再壓縮以加速打包）")
