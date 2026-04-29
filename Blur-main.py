@@ -4525,6 +4525,7 @@ class MainWindow(QMainWindow):
         
         if count > 0:
             # 成功！正式更新畫面
+            self.is_in_search_mode = True  # 進入搜尋結果模式，啟用漏斗卡片
             self.input.setText("") # 清空關鍵字搜尋框
             self.apply_current_filters_and_show(test_mode=False)
             
