@@ -189,6 +189,7 @@ class ImageItem:
         self.height = height
         self.is_ocr_match = False
         self.is_pinned = False
+        self.is_funnel_card = False   # 漏斗統計卡片旗標
 
         self.score_val = float(score)
         self.score_str = f"{self.score_val:.4f}" if self.score_val > 0.0001 else ""
@@ -199,6 +200,41 @@ class ImageItem:
         if width not in self._elided_name_cache:
             self._elided_name_cache[width] = fm.elidedText(self.filename, Qt.TextElideMode.ElideRight, width)
         return self._elided_name_cache[width]
+
+
+class FunnelCardItem:
+    """漏斗統計卡片的虛擬項目 (僅供展示，不對應真實圖檔)"""
+    VIRTUAL_PATH = "__FUNNEL_CARD__"
+
+    def __init__(self, raw_count: int, after_date: int, after_aspect: int, final_count: int):
+        self.path = self.VIRTUAL_PATH
+        self.filename = "Search Funnel"
+        self.score = 0.0
+        self.score_val = 0.0
+        self.score_str = ""
+        self.ocr_text = ""
+        self.mtime = float("inf")   # 排序鍵：比所有圖片更早，確保排在最前面（後面用特殊處理）
+        self.width = 0
+        self.height = 0
+        self.is_ocr_match = False
+        self.is_pinned = False
+        self.is_funnel_card = True
+
+        self.raw_count = raw_count
+        self.after_date = after_date
+        self.after_aspect = after_aspect
+        self.final_count = final_count
+
+        # 每一列的 (數字, 標籤名稱)
+        self.rows = [
+            (raw_count,   "FAISS 初始結果"),
+            (after_date,  "日期篩選後"),
+            (after_aspect,"比例篩選後"),
+            (final_count, "最終顯示"),
+        ]
+
+    def get_elided_name(self, fm, width):
+        return "Search Funnel"
 
 class WorkerSignals(QObject):
     result = pyqtSignal(str, QPixmap, bool) #加入一個布林值 is_final，讓系統知道這是不是最終的高清圖
@@ -475,6 +511,18 @@ class SearchResultsModel(QAbstractListModel):
         self._loading_set.clear()
         
         for idx, res in enumerate(results_dict_list):
+            # 漏斗卡片特殊處理
+            if res.get('__funnel_card__'):
+                item = FunnelCardItem(
+                    raw_count=res['raw_count'],
+                    after_date=res['after_date'],
+                    after_aspect=res['after_aspect'],
+                    final_count=res['final_count'],
+                )
+                self.all_items.append(item)
+                self.path_to_row[item.path] = idx
+                continue
+
             item = ImageItem(
                 path=res['path'],
                 filename=res['filename'],
@@ -495,10 +543,23 @@ class SearchResultsModel(QAbstractListModel):
         self.endResetModel()
 
     def sort_items(self, key_func, reverse=False):
-        """排序時直接對 all_items 排序，不再需要洗牌第一批"""
+        """排序時直接對 all_items 排序，不再需要洗牌第一批。
+        漏斗卡片永遠緊跟在所有釘選圖之後，不參與一般排序邏輯。"""
         self.beginResetModel()
-        self.all_items.sort(key=key_func, reverse=reverse)
-        # 排序後必須重建 path_to_row，否則索引與實際位置脫節
+
+        # 抽出漏斗卡片（只有 0 或 1 張）
+        funnel_items = [it for it in self.all_items if getattr(it, 'is_funnel_card', False)]
+        other_items  = [it for it in self.all_items if not getattr(it, 'is_funnel_card', False)]
+
+        # 對一般圖片排序
+        other_items.sort(key=key_func, reverse=reverse)
+
+        # 找到第一張非釘選圖的位置，將漏斗卡片插在釘選圖後、其他圖前
+        insert_pos = sum(1 for it in other_items if it.is_pinned)
+        for f in funnel_items:
+            other_items.insert(insert_pos, f)
+
+        self.all_items = other_items
         self.path_to_row = {item.path: i for i, item in enumerate(self.all_items)}
         self.endResetModel()
 
@@ -518,6 +579,10 @@ class SearchResultsModel(QAbstractListModel):
         elif role == Qt.ItemDataRole.UserRole:
             return item 
         elif role == Qt.ItemDataRole.DecorationRole:
+            # 漏斗卡片不需要縮圖，直接略過讀取
+            if getattr(item, 'is_funnel_card', False):
+                return None
+
             if item.path in self._thumbnail_cache:
                 self._thumbnail_cache.move_to_end(item.path)
                 return self._thumbnail_cache[item.path]
@@ -645,11 +710,19 @@ class ImageDelegate(QStyledItemDelegate):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         item = index.data(Qt.ItemDataRole.UserRole)
-        pixmap = index.data(Qt.ItemDataRole.DecorationRole)
-
-        if not item: 
+        if not item:
             painter.restore()
             return
+
+        # ──────────────────────────────────────────────
+        #  漏斗卡片專屬渲染
+        # ──────────────────────────────────────────────
+        if getattr(item, 'is_funnel_card', False):
+            self._paint_funnel_card(painter, option, item)
+            painter.restore()
+            return
+
+        pixmap = index.data(Qt.ItemDataRole.DecorationRole)
 
         rect = option.rect
         card_rect = rect.adjusted(4, 4, -4, -4)
@@ -836,6 +909,107 @@ class ImageDelegate(QStyledItemDelegate):
             painter.drawPath(path)
 
         painter.restore()
+
+    def _paint_funnel_card(self, painter: QPainter, option, item):
+        """漏斗統計卡片的專屬繪製邏輯"""
+        rect = option.rect
+        card_rect = rect.adjusted(4, 4, -4, -4)
+
+        if hasattr(self.main_window, 'theme_manager'):
+            colors = self.main_window.theme_manager.current_colors
+        else:
+            colors = {}
+
+        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        is_hover    = bool(option.state & QStyle.StateFlag.State_MouseOver)
+
+        # ── 背景 ──
+        bg_color = QColor(colors.get("bg_card", "#2b2b2b"))
+        if is_hover and not is_selected:
+            bg_color = bg_color.lighter(115)
+
+        path_shape = QPainterPath()
+        path_shape.addRoundedRect(QRectF(card_rect), self.radius, self.radius)
+        painter.setBrush(QBrush(bg_color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(path_shape)
+
+        # ── 標題 "漏斗統計" ──
+        accent = QColor(colors.get("primary", "#60cdff"))
+        text_color = QColor(colors.get("text_main", "#e0e0e0"))
+        muted_color = QColor(colors.get("text_muted", "#888888"))
+
+        title_font = QFont("Segoe UI", 9, QFont.Weight.Bold)
+        row_num_font = QFont("Consolas", 14, QFont.Weight.Bold)
+        row_label_font = QFont("Segoe UI", 8)
+
+        inner_x = card_rect.left() + self.padding
+        inner_w = card_rect.width() - 2 * self.padding
+
+        # 標題區
+        title_rect = QRect(inner_x, card_rect.top() + 8, inner_w, 18)
+        painter.setFont(title_font)
+        painter.setPen(accent)
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignCenter, "📊 Search Funnel")
+
+        # 分隔線
+        sep_y = title_rect.bottom() + 5
+        painter.setPen(QPen(muted_color, 1, Qt.PenStyle.SolidLine))
+        painter.drawLine(inner_x, sep_y, inner_x + inner_w, sep_y)
+
+        # ── 每一列資料 ──
+        row_area_top = sep_y + 6
+        row_count = len(item.rows)
+        row_area_h = card_rect.bottom() - self.padding - row_area_top
+        row_h = row_area_h // row_count if row_count else 30
+
+        # 最大數字用來比例換算（避免除零）
+        max_num = max((r[0] for r in item.rows), default=1) or 1
+
+        for i, (num, label) in enumerate(item.rows):
+            ry = row_area_top + i * row_h
+
+            # 進度條背景
+            bar_bg_rect = QRectF(inner_x, ry + row_h - 6, inner_w, 4)
+            painter.setBrush(QBrush(muted_color.darker(150)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(bar_bg_rect, 2, 2)
+
+            # 進度條前景
+            fill_w = (num / max_num) * inner_w
+            if fill_w > 0:
+                bar_fill_rect = QRectF(inner_x, ry + row_h - 6, fill_w, 4)
+                # 最後一行（final_count）用 accent 色，其餘用漸層
+                if i == row_count - 1:
+                    bar_color = accent
+                else:
+                    bar_color = QColor(colors.get("primary", "#60cdff")).lighter(100 + i * 20)
+                painter.setBrush(QBrush(bar_color))
+                painter.drawRoundedRect(bar_fill_rect, 2, 2)
+
+            # 數字（左對齊大字）
+            num_rect = QRect(inner_x, ry, 60, row_h - 8)
+            painter.setFont(row_num_font)
+            painter.setPen(accent if i == row_count - 1 else text_color)
+            painter.drawText(num_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, str(num))
+
+            # 標籤（右側小字）
+            label_rect = QRect(inner_x + 60, ry, inner_w - 60, row_h - 8)
+            painter.setFont(row_label_font)
+            painter.setPen(muted_color if i < row_count - 1 else accent)
+            painter.drawText(label_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+
+        # ── 邊框 ──
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        if is_selected:
+            pen = QPen(accent, 3, Qt.PenStyle.SolidLine)
+        else:
+            border_c = colors.get("primary_hover", "#7ce0ff") if is_hover else colors.get("border_main", "#3e3e3e")
+            pen = QPen(QColor(border_c), 1, Qt.PenStyle.DashLine)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.drawPath(path_shape)
+
 
 from PyQt6.QtCore import QMimeData, QUrl, Qt, QPoint
 from PyQt6.QtGui import QDrag, QImage, QPixmap, QPainter, QBrush, QColor, QPen, QFont
@@ -2483,10 +2657,105 @@ class PreviewOverlay(QWidget):
     def set_ocr_visible(self, visible):
         self.image_label.set_draw_boxes(visible)
 
+    def show_funnel_card(self, funnel_item):
+        """在全螢幕覆蓋層中顯示放大版漏斗統計（按 Space/Esc/點擊空白關閉）"""
+        self.current_preview_path = FunnelCardItem.VIRTUAL_PATH
+        if self.current_preview_worker:
+            self.current_preview_worker.is_cancelled = True
+            self.current_preview_worker = None
+
+        # 用 QPainter 繪製漏斗統計到 QPixmap
+        W, H = 520, 380
+        pixmap = QPixmap(W, H)
+        pixmap.fill(QColor(0, 0, 0, 0))
+        p = QPainter(pixmap)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # 背景卡片
+        bg = QColor(30, 30, 35, 240)
+        card_rect = QRectF(0, 0, W, H)
+        card_path = QPainterPath()
+        card_path.addRoundedRect(card_rect, 16, 16)
+        p.setBrush(QBrush(bg))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawPath(card_path)
+
+        accent = QColor("#60cdff")
+        text_c = QColor("#e0e0e0")
+        muted  = QColor("#888888")
+
+        # 標題
+        title_font = QFont("Segoe UI", 14, QFont.Weight.Bold)
+        p.setFont(title_font)
+        p.setPen(accent)
+        p.drawText(QRectF(0, 20, W, 36), Qt.AlignmentFlag.AlignCenter, "📊  Search Funnel")
+
+        # 分隔線
+        p.setPen(QPen(muted, 1))
+        p.drawLine(40, 62, W - 40, 62)
+
+        rows = funnel_item.rows
+        max_num = max(r[0] for r in rows) or 1
+        row_h = (H - 80) // len(rows)
+
+        num_font   = QFont("Consolas", 22, QFont.Weight.Bold)
+        label_font = QFont("Segoe UI", 11)
+        sub_font   = QFont("Segoe UI", 9)
+
+        for i, (num, label) in enumerate(rows):
+            ry = 72 + i * row_h
+            is_last = (i == len(rows) - 1)
+            bar_color = accent if is_last else QColor("#60cdff").lighter(100 + i * 15)
+            row_text_c = accent if is_last else text_c
+
+            # 箭頭（第一行不畫）
+            if i > 0:
+                arr_y = ry - 10
+                p.setPen(QPen(muted, 1))
+                p.setFont(sub_font)
+                p.drawText(QRectF(0, arr_y, W, 14), Qt.AlignmentFlag.AlignCenter, "▼")
+
+            # 進度條底
+            bar_rect = QRectF(40, ry + row_h - 14, W - 80, 6)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(QColor(60, 60, 70)))
+            p.drawRoundedRect(bar_rect, 3, 3)
+
+            # 進度條前景
+            fill_w = (num / max_num) * (W - 80)
+            if fill_w > 0:
+                fill_rect = QRectF(40, ry + row_h - 14, fill_w, 6)
+                p.setBrush(QBrush(bar_color))
+                p.drawRoundedRect(fill_rect, 3, 3)
+
+            # 數字
+            p.setFont(num_font)
+            p.setPen(row_text_c)
+            p.drawText(QRectF(40, ry, 100, row_h - 16), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, str(num))
+
+            # 標籤
+            p.setFont(label_font)
+            p.setPen(muted if not is_last else accent)
+            p.drawText(QRectF(150, ry, W - 190, row_h - 16), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+
+        p.end()
+
+        self.image_label.setPixmap(pixmap)
+        self.image_label.set_precomputed_ocr_data([], 0, 0)
+        self.filename_label.setText("Search Funnel Stats")
+        self.ocr_hint.hide()
+        self.resize(self.parent().size())
+        self.show()
+        self.raise_()
+        self.setFocus()
+
     def hideEvent(self, event):
         if self.current_preview_worker:
             self.current_preview_worker.is_cancelled = True
             self.current_preview_worker = None
+        # 確保 OCR 提示在漏斗卡片預覽關閉後復原顯示
+        if hasattr(self, 'ocr_hint'):
+            self.ocr_hint.show()
         super().hideEvent(event)
 
     def keyPressEvent(self, event):
@@ -3980,19 +4249,24 @@ class MainWindow(QMainWindow):
     def toggle_preview(self):
         if self.preview_overlay.isVisible():
             self.preview_overlay.hide()
-            self.is_ocr_locked = False 
+            self.is_ocr_locked = False
         else:
             index = self.list_view.currentIndex()
             if index.isValid():
                 item = index.data(Qt.ItemDataRole.UserRole)
                 if item:
+                    # 漏斗卡片：顯示全屏放大版漏斗統計
+                    if getattr(item, 'is_funnel_card', False):
+                        self.preview_overlay.show_funnel_card(item)
+                        return
+
                     self.is_ocr_locked = False
                     current_query = self.input.text().strip()
                     is_precise = self.config.get("ui_state", {}).get("precise_ocr_highlight", False)
-                    
+
                     #  從 Model 取出 L1 快取小圖
                     l1_pixmap = self.model._thumbnail_cache.get(item.path)
-                    
+
                     #  傳遞給顯示層
                     self.preview_overlay.show_image(item, current_query, is_precise, l1_pixmap)
                     self.preview_overlay.set_ocr_visible(False)
@@ -4140,7 +4414,24 @@ class MainWindow(QMainWindow):
             return final_count
 
         # 4. 丟給畫面更新
-        self.model.set_search_results(filtered)
+        # 僅在搜尋模式下，在結果列表最前方插入漏斗統計卡片
+        display_list = list(filtered)
+        if getattr(self, 'is_in_search_mode', False):
+            funnel_card = {
+                '__funnel_card__': True,
+                'path': FunnelCardItem.VIRTUAL_PATH,
+                'filename': 'Search Funnel',
+                'score': 0.0,
+                'raw_count': raw_count,
+                'after_date': after_date,
+                'after_aspect': after_aspect,
+                'final_count': final_count,
+                'mtime': 0,
+                'width': 0,
+                'height': 0,
+            }
+            display_list = [funnel_card] + display_list
+        self.model.set_search_results(display_list)
 
         # 5. 如果有滾輪還原需求，先預先排程（在 sort 之前），避免被 scrollToTop 覆蓋
         if self.nav.pending_scroll_pos is not None:
