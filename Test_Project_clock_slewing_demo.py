@@ -80,6 +80,15 @@ class MainWindow(QMainWindow):
         self.T_real: float = 0.0
         self.T_fake: float | None = None   # None = 尚未初始化
 
+        # ── PID 控制器狀態 ───────────────────────────────────────
+        # error = T_real - T_fake
+        # 正值 → 假時間落後需加速；負值 → 假時間超前需減速
+        self._pid_Kp: float = 0.30   # 比例增益：立即反應偏差
+        self._pid_Ki: float = 0.01   # 積分增益：消除長期偏差
+        self._pid_Kd: float = 0.05   # 微分增益：抑制震盪
+        self._pid_integral: float = 0.0
+        self._pid_last_error: float = 0.0
+
         self.worker: WorkerThread | None = None
 
         self._build_ui()
@@ -162,6 +171,8 @@ class MainWindow(QMainWindow):
     def _start(self):
         self.T_real = 0.0
         self.T_fake = None
+        self._pid_integral   = 0.0
+        self._pid_last_error = 0.0
         self.lbl_fake.setText("00:00:00:00")
         self.lbl_arrow.setText("")
         self.lbl_state.setText("計算估時中...")
@@ -205,20 +216,38 @@ class MainWindow(QMainWindow):
             # 尚未收到第一筆 T_real，等待中
             return
 
-        # ── 1. Clock Slewing ──────────────────────────────────────────────────
-        delta = self.T_real - self.T_fake   # 正 = 假時間落後；負 = 假時間超前
+        # ── 1. PID Clock Slewing ──────────────────────────────────────────────
+        # error = T_real - T_fake
+        # error > 0 → 假時間超前（倒數太快，需減速）；error < 0 → 假時間落後（倒數太慢，需加速）
+        DT    = 0.1   # timer 週期 (秒)
+        error = self.T_real - self.T_fake
 
-        if delta > 0.5:
-            speed_factor = 0.25   # 假時間超前 → 減速等待
-            arrow, arrow_color = "▼", "#1976D2"   # 藍色下箭頭
-        elif delta < -0.5:
-            speed_factor = 2   # 假時間落後 → 加速追上
-            arrow, arrow_color = "▲", "#D32F2F"   # 紅色上箭頭
+        # P 項：立即反應當前偏差
+        p_term = self._pid_Kp * error
+
+        # I 項：累積長期偏差，加入 anti-windup 鉗制避免積分飽和
+        self._pid_integral += error * DT
+        self._pid_integral  = max(-20.0, min(20.0, self._pid_integral))
+        i_term = self._pid_Ki * self._pid_integral
+
+        # D 項：抑制震盪（對 error 的變化率作反應）
+        d_term = self._pid_Kd * (error - self._pid_last_error) / DT
+        self._pid_last_error = error
+
+        # PID 輸出 → speed_factor（以 1.0 為基準，鉗制在 [0.2, 3.0]）
+        # 注意：用「減」而非「加」，使正 error 對應減速、負 error 對應加速
+        pid_output   = p_term + i_term + d_term
+        speed_factor = max(0.2, min(3.0, 1.0 - pid_output))
+
+        # 箭頭：依 speed_factor 決定（>1.05 加速，<0.95 減速）
+        if speed_factor > 1.05:
+            arrow, arrow_color = "▲", "#D32F2F"   # 紅色上箭頭：加速
+        elif speed_factor < 0.95:
+            arrow, arrow_color = "▼", "#1976D2"   # 藍色下箭頭：減速
         else:
-            speed_factor = 1.0   # 同步
-            arrow, arrow_color = "=" , "#555555"   # 灰色等號
+            arrow, arrow_color = "=",  "#555555"   # 灰色等號：同步
 
-        self.T_fake = max(0.0, self.T_fake - 0.1 * speed_factor)
+        self.T_fake = max(0.0, self.T_fake - DT * speed_factor)
 
         # ── 2. Endgame State Machine ──────────────────────────────────────────
         if self.T_fake <= 1.0 and self.T_real > 10.0:
