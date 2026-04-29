@@ -93,9 +93,12 @@ def _collect_dir(src: Path,
 
 def _zip_with_progress(label: str,
                        file_pairs: list[tuple[Path, str]],
-                       out_zip: Path) -> int:
+                       out_zip: Path,
+                       compress_type: int = zipfile.ZIP_DEFLATED,
+                       compresslevel: int | None = 6) -> int:
     """
     逐一壓縮 file_pairs，並以 \\r 動態更新進度條（以位元組計算進度）。
+    compress_type: zipfile.ZIP_DEFLATED（壓縮）或 zipfile.ZIP_STORED（僅儲存）
     回傳：寫入的檔案總數。
     """
     total_bytes = sum(p.stat().st_size for p, _ in file_pairs)
@@ -117,7 +120,12 @@ def _zip_with_progress(label: str,
         )
         sys.stdout.flush()
 
-    with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+    # ZIP_STORED 模式無需 compresslevel
+    open_kwargs: dict = {"compression": compress_type}
+    if compress_type == zipfile.ZIP_DEFLATED and compresslevel is not None:
+        open_kwargs["compresslevel"] = compresslevel
+
+    with zipfile.ZipFile(out_zip, "w", **open_kwargs) as zf:
         for i, (abs_path, arc_name) in enumerate(file_pairs, 1):
             done_bytes += abs_path.stat().st_size
             zf.write(abs_path, arc_name)
@@ -126,9 +134,10 @@ def _zip_with_progress(label: str,
 
     elapsed  = time.time() - t0
     size_mb  = out_zip.stat().st_size / 1024 / 1024
+    mode_str = "(僅儲存)" if compress_type == zipfile.ZIP_STORED else "(壓縮後)"
     sys.stdout.write(
         f"\r  [{'#' * _BAR_W}] 100.0%  "
-        f"{size_mb:.1f} MB (壓縮後)  "
+        f"{size_mb:.1f} MB {mode_str}  "
         f"({total_n} 個檔案, {elapsed:.1f}s)  {label}  ✔\n"
     )
     sys.stdout.flush()
@@ -161,7 +170,9 @@ def pack_models(project_root: Path, out_dir: Path) -> bool:
     pairs    = _collect_dir(src)
     total_mb = sum(p.stat().st_size for p, _ in pairs) / 1024 / 1024
     print(f"  準備打包 AI_Models.zip（{len(pairs)} 個檔案，{total_mb:.1f} MB）...")
-    _zip_with_progress("AI_Models.zip", pairs, out_zip)
+    print("  [模式] ZIP_STORED（模型檔已壓縮，跳過再壓縮以加速打包）")
+    _zip_with_progress("AI_Models.zip", pairs, out_zip,
+                       compress_type=zipfile.ZIP_STORED)
     return True
 
 

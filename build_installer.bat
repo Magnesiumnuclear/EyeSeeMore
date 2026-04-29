@@ -11,6 +11,49 @@ setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 set BUILD_DIR=build
+
+:: ── 前置檢查：User_Environment 是否存在 ──────────────────
+echo.
+if not exist "User_Environment\" (
+    echo [警告] 找不到 User_Environment\ 資料夾！
+    echo        Runtime.zip 將無法打包，請確認已放置 Portable Python 環境。
+    echo.
+    pause
+) else (
+    echo [OK] User_Environment\ 已找到。
+    echo.
+    :: ── 詢問是否執行 fix_env.py ────────────────────────────
+    if exist "fix_env.py" (
+        set /p "_RUN_FIX=是否執行 fix_env.py 檢查套件完整性再開始編譯？ [Y/n] "
+        if /I "!_RUN_FIX!"=="" set _RUN_FIX=Y
+        if /I "!_RUN_FIX!"=="y" (
+            echo.
+            echo [環境修復] 正在執行 fix_env.py --yes ...
+            echo.
+            :: 優先使用 User_Environment 內的 python 執行 fix_env.py
+            if exist "User_Environment\python.exe" (
+                "User_Environment\python.exe" fix_env.py --yes
+            ) else (
+                python fix_env.py --yes
+            )
+            if %errorlevel% neq 0 (
+                echo.
+                echo [錯誤] fix_env.py 執行失敗，請手動修正環境後再繼續。
+                pause
+                exit /b 1
+            )
+            echo.
+            echo [OK] 環境修復完成，繼續建置流程...
+            echo.
+        ) else (
+            echo [略過] 跳過環境檢查。
+            echo.
+        )
+    ) else (
+        echo [略過] 找不到 fix_env.py，跳過環境檢查。
+        echo.
+    )
+)
 set LAUNCHER_SRC=src_cpp/launcher/main_launcher.cpp
 set INSTALLER_SRC=src_cpp/installer/main_installer.cpp
 set RESOURCE_RC=src_cpp/resources/resource.rc
