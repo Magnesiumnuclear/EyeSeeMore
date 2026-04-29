@@ -1803,6 +1803,11 @@ class IndexerWorker(QThread):
 
         total_tasks = len(files_full) + len(files_emb_only) + len(files_ocr_only)
         self.status_update.emit(f"Indexing {total_tasks} images...")
+
+        # 通知主執行緒啟動累計計時
+        self.main_window._eta_accumulated = 0.0
+        self.main_window._eta_paused      = False
+        self.main_window._eta_run_start   = time.time()
         
         # ==========================================
         # [新增] ETA 預估時間專用變數 (滑動視窗測速)
@@ -1815,34 +1820,59 @@ class IndexerWorker(QThread):
             now = time.time()
             elapsed = now - last_update_time[0]
             processed = current - last_current[0]
-            
-            # 1. 紀錄動態速度 (只保留最近 5 次，反映電腦當下真實效能)
+
+            # 1. 紀錄動態速度 (只保留最近 5 次)
             if processed > 0:
                 sec_per_item = elapsed / processed
                 speed_history.append(sec_per_item)
                 if len(speed_history) > 5:
-                    speed_history.pop(0) 
-                    
+                    speed_history.pop(0)
+
             last_update_time[0] = now
             last_current[0] = current
-            
-            # 去除底層傳來字串結尾的 "..."
+
             clean_msg = msg.replace("...", "")
-            
-            # 2. 計算真實剩餘時間 (T_real)，透過 eta_updated signal 傳給主執行緒的 PID timer
+            mode = self.main_window._eta_mode
+
             if current < total:
                 if len(speed_history) >= 2:
                     avg_sec_per_item = sum(speed_history) / len(speed_history)
                     t_real = (total - current) * avg_sec_per_item
-                    # 只 emit 純 stage 訊息，ETA 由主執行緒的假計時器顯示
-                    self.eta_updated.emit(t_real)
-                    final_msg = clean_msg
+
+                    if mode == 1:
+                        # 模式 1：真實時間跳動——直接 emit，不經 PID
+                        self.eta_updated.emit(t_real)
+                        _ms = int(t_real * 1000)
+                        _h, _ms = divmod(_ms, 3600000)
+                        _m, _ms = divmod(_ms, 60000)
+                        _s, _ms = divmod(_ms, 1000)
+                        final_msg = f"{clean_msg} (剩餘: {_h:02d}:{_m:02d}:{_s:02d}:{_ms:03d})"
+
+                    elif mode == 2:
+                        # 模式 2：僅傳送 T_real，顯示由主執行緒 PID timer 控制
+                        self.eta_updated.emit(t_real)
+                        final_msg = clean_msg
+
+                    elif mode == 3:
+                        # 模式 3：累計張數，不顯示時間
+                        self.eta_updated.emit(-1.0)
+                        final_msg = f"{current} / {total} 張"
+
+                    else:
+                        # 模式 4：測試——印終端並顯示占位文字
+                        self.eta_updated.emit(-1.0)
+                        print(f"[ETA Mode 4] current={current} total={total} "
+                              f"t_real={t_real:.2f}s msg={clean_msg}")
+                        final_msg = f"{clean_msg} (Mode 4 Testing...)"
+
                 else:
-                    # 暖機中：用 -1.0 通知主執行緒尚未有有效 ETA
+                    # 暖機中——樣本不足
                     self.eta_updated.emit(-1.0)
-                    final_msg = f"{clean_msg} (計算估時中...)"
+                    if mode == 3:
+                        final_msg = f"{current} / {total} 張"
+                    else:
+                        final_msg = f"{clean_msg} (計算估時中...)"
             else:
-                # 完成：通知假計時器 T_real = 0
                 self.eta_updated.emit(0.0)
                 final_msg = f"{clean_msg} (儲存資料庫中...)"
 
@@ -3427,15 +3457,26 @@ class MainWindow(QMainWindow):
 
         self.taskbar_ctrl = TaskbarController(self.winId())
 
-        # ── ETA PID Clock Slewing ─────────────────────────────────────────────────
-        self._eta_T_real: float       = 0.0
-        self._eta_T_fake: float|None  = None   # None = 尚未收到第一筆 T_real
-        self._eta_stage_msg: str      = ""     # 最新的處理階段文字
-        self._eta_pid_Kp:          float = 0.30
-        self._eta_pid_Ki:          float = 0.01
-        self._eta_pid_Kd:          float = 0.05
-        self._eta_pid_integral:    float = 0.0
-        self._eta_pid_last_error:  float = 0.0
+        # ── ETA 顯示模式與 PID Clock Slewing ───────────────────────────────
+        # 模式 1=真實跳動  2=PID假時間  3=經數  4=測試
+        self._eta_mode: int = self.config.get("eta_display_mode", 1)
+
+        # 共用狀態（所有模式共用）
+        self._eta_T_real:      float       = 0.0
+        self._eta_stage_msg:   str         = ""
+
+        # 模式 1：累計運行時間（預留 pause/resume 接口）
+        self._eta_run_start:   float       = 0.0   # 最近一次 resume 的 wall-clock
+        self._eta_accumulated: float       = 0.0   # 暂停期間累計秒數
+        self._eta_paused:      bool        = False
+
+        # 模式 2： PID假計時器
+        self._eta_T_fake:           float|None = None
+        self._eta_pid_Kp:           float = 0.30
+        self._eta_pid_Ki:           float = 0.01
+        self._eta_pid_Kd:           float = 0.05
+        self._eta_pid_integral:     float = 0.0
+        self._eta_pid_last_error:   float = 0.0
         self._eta_timer = QTimer(self)
         self._eta_timer.setInterval(100)
         self._eta_timer.timeout.connect(self._on_eta_tick)
@@ -4115,20 +4156,49 @@ class MainWindow(QMainWindow):
     
     def update_status(self, text):
         self._eta_stage_msg = text
-        # 若 PID timer 正在執行，狀態欄由 _on_eta_tick 控制；否則直接寫入
-        if not self._eta_timer.isActive():
+        # 模式 2 的 PID timer 正在執行時，狀態欄由 _on_eta_tick 控制
+        if not (self._eta_mode == 2 and self._eta_timer.isActive()):
             self.status.setText(text)
+
+    # ── ETA 公用方法 ────────────────────────────────────────────────
+    def apply_eta_mode(self, mode: int):
+        """設定頁即時切換模式；模式切離 2 時自動停止 PID timer"""
+        old = self._eta_mode
+        self._eta_mode = mode
+        if old == 2 and mode != 2:
+            self._eta_timer.stop()
+
+    def pause_eta_timer(self):
+        """暂停 ETA 計時（預留給未來 Pause/Resume 功能）"""
+        if not self._eta_paused:
+            self._eta_accumulated += time.time() - self._eta_run_start
+            self._eta_paused = True
+            self._eta_timer.stop()
+
+    def resume_eta_timer(self):
+        """繼續 ETA 計時（預留給未來 Pause/Resume 功能）"""
+        if self._eta_paused:
+            self._eta_run_start = time.time()
+            self._eta_paused = False
+            if self._eta_mode == 2 and self._eta_T_fake is not None:
+                self._eta_timer.start()
+
+    def _eta_total_elapsed(self) -> float:
+        """回傳累計運行秒數（暂停期間不包含）"""
+        if self._eta_paused:
+            return self._eta_accumulated
+        return self._eta_accumulated + (time.time() - self._eta_run_start)
 
     def _on_eta_updated(self, t_real: float):
         """收到 IndexerWorker 計算出的真實剩餘時間（T_real）"""
         if t_real < 0:
-            return  # 暖機中，樣本不足，等待下一次
+            return  # 暖機中，樣本不足
         self._eta_T_real = t_real
-        # 第一次收到有效 T_real 時，初始化假計時器
-        if self._eta_T_fake is None and t_real > 0:
-            self._eta_T_fake          = t_real
-            self._eta_pid_integral    = 0.0
-            self._eta_pid_last_error  = 0.0
+        # 模式 2：第一次收到有效 T_real 時初始化假計時器
+        if self._eta_mode == 2 and self._eta_T_fake is None and t_real > 0:
+            self._eta_T_fake         = t_real
+            self._eta_pid_integral   = 0.0
+            self._eta_pid_last_error = 0.0
             if not self._eta_timer.isActive():
                 self._eta_timer.start()
 
@@ -4193,12 +4263,22 @@ class MainWindow(QMainWindow):
         self._eta_pid_integral   = 0.0
         self._eta_pid_last_error = 0.0
 
+        # 模式 1：完成時顯示總消耗時間
+        if self._eta_mode == 1:
+            total_sec = int(self._eta_total_elapsed())
+            _m, _s = divmod(total_sec, 60)
+            self.status.setText(f"索引完成！總耗時：{_m:02d} 分 {_s:02d} 秒")
+        else:
+            self.status.setText("Index Updated.")
+
+        # 重置計時器
+        self._eta_accumulated = 0.0
+        self._eta_paused      = False
+
         self.progress.hide()
-        
+
         # [新增] 索引任務結束，關閉工作列進度條
         self.taskbar_ctrl.set_state(TBPF_NOPROGRESS)
-        
-        self.status.setText("Index Updated.")
         self.trigger_background_db_reload() #  觸發雙緩衝背景載入
 
     def trigger_background_db_reload(self):
@@ -4691,6 +4771,7 @@ class SettingsDialog(QDialog):
             "on_refresh_clicked": mw.on_refresh_clicked,
             "current_view_mode":  mw.current_view_mode,
             "ocr_worker_class":   OCRImportWorker,
+            "apply_eta_mode":     mw.apply_eta_mode,
         }
 
         # ── 跨頁面回呼 hub（在頁面全部建立後填入）─────────────────────────

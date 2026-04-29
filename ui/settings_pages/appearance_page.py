@@ -87,6 +87,30 @@ class AppearancePage(QWidget):
         self.combo_tag_mode.setCurrentIndex(0 if tag_mode == "anchored" else 1)
         self.combo_tag_mode.currentIndexChanged.connect(self._on_tag_mode_changed)
         layout.addWidget(self.combo_tag_mode)
+        layout.addSpacing(10)
+
+        # ── ETA 顯示模式 ───────────────────────────────────────
+        layout.addWidget(QLabel(trans.t("appearance", "lbl_eta_mode",
+                                       "進度時間顯示模式 (ETA Display Mode):")))
+        self.combo_eta = QComboBox()
+        self.combo_eta.setFixedHeight(38)
+        self.combo_eta.addItem(
+            trans.t("appearance", "eta_mode_1",
+                    "模式 1：預設——真實時間跳動 (Real-time Jump)"), 1)
+        self.combo_eta.addItem(
+            trans.t("appearance", "eta_mode_2",
+                    "模式 2：平滑——PID 假時間追蹤真實 ETA (Clock Slewing)"), 2)
+        self.combo_eta.addItem(
+            trans.t("appearance", "eta_mode_3",
+                    "模式 3：極簡——僅顯示已處理張數 (Count Only)"), 3)
+        self.combo_eta.addItem(
+            trans.t("appearance", "eta_mode_4",
+                    "模式 4：測試中 (Dev / Testing)"), 4)
+        current_eta = ctx["config"].get("eta_display_mode", 1)
+        eta_idx = self.combo_eta.findData(current_eta)
+        self.combo_eta.setCurrentIndex(eta_idx if eta_idx >= 0 else 0)
+        self.combo_eta.currentIndexChanged.connect(self._on_eta_mode_changed)
+        layout.addWidget(self.combo_eta)
 
         layout.addStretch(1)
 
@@ -111,3 +135,10 @@ class AppearancePage(QWidget):
         ui_state = self.ctx["config"].get("ui_state", {})
         ui_state["ocr_tag_mode"] = mode
         self.ctx["config"].set("ui_state", ui_state)
+
+    def _on_eta_mode_changed(self, index: int):
+        mode = self.combo_eta.itemData(index)
+        self.ctx["config"].set("eta_display_mode", mode)
+        apply_fn = self.ctx.get("apply_eta_mode")
+        if apply_fn:
+            apply_fn(mode)
