@@ -71,7 +71,7 @@ call :DrawBar 75 "main_installer.cpp → Setup.exe  [OK]"
 
 :: ── Stage 3: 打包發佈套件 (75 %% → 100 %%) ────────────
 echo.
-echo [4/4] 正在執行發佈打包腳本 (pack_release.py) ...
+echo [4/7 ~ 7/7] 正在執行發佈打包腳本 (pack_release.py) ...
 echo.
 
 :: 搜尋可用的 Python 直譯器（優先使用 .venv\Scripts\python.exe）
@@ -102,13 +102,34 @@ set PYTHONIOENCODING=utf-8
 :: 解法：先去掉尾端的反斜線再傳入
 set "_ROOT=%~dp0"
 set "_ROOT=!_ROOT:~0,-1!"
-"!PYTHON_EXE!" "%PACK_SCRIPT%" "!_ROOT!" "%BUILD_DIR%"
-if %errorlevel% neq 0 (
-    echo.
-    echo [錯誤] 發佈打包失敗！請查看上方的錯誤訊息。
-    goto :fail
-)
-call :DrawBar 100 "Runtime / App / Models 打包完成  [OK]"
+
+:: [4/7] 初始化輸出目錄 + 複製 Setup.exe
+echo.
+echo [4/7] 初始化輸出目錄並複製 Setup.exe ...
+"!PYTHON_EXE!" "%PACK_SCRIPT%" "!_ROOT!" "%BUILD_DIR%" --task setup
+if %errorlevel% neq 0 ( echo. & echo [錯誤] 打包失敗（setup）！ & goto :fail )
+call :DrawBar 80 "輸出目錄初始化完成  [OK]"
+
+:: [5/7] App_Code.zip
+echo.
+echo [5/7] 正在打包 App_Code.zip ...
+"!PYTHON_EXE!" "%PACK_SCRIPT%" "!_ROOT!" "%BUILD_DIR%" --task appcode
+if %errorlevel% neq 0 ( echo. & echo [錯誤] 打包失敗（App_Code.zip）！ & goto :fail )
+call :DrawBar 87 "App_Code.zip  [OK]"
+
+:: [6/7] Runtime.zip
+echo.
+echo [6/7] 正在打包 Runtime.zip ...
+"!PYTHON_EXE!" "%PACK_SCRIPT%" "!_ROOT!" "%BUILD_DIR%" --task runtime
+if %errorlevel% neq 0 ( echo. & echo [錯誤] 打包失敗（Runtime.zip）！ & goto :fail )
+call :DrawBar 94 "Runtime.zip  [OK]"
+
+:: [7/7] AI_Models.zip（AI 模型，耗時最久）
+echo.
+echo [7/7] 正在打包 AI_Models.zip（AI 模型，檔案較大，請稍候）...
+"!PYTHON_EXE!" "%PACK_SCRIPT%" "!_ROOT!" "%BUILD_DIR%" --task models
+if %errorlevel% neq 0 ( echo. & echo [錯誤] 打包失敗（AI_Models.zip）！ & goto :fail )
+call :DrawBar 100 "AI_Models.zip 打包完成  [OK]"
 
 :: ── 成功結尾 ───────────────────────────────────────────
 echo.
