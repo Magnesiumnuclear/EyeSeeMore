@@ -260,6 +260,17 @@ class IndexerService:
         cursor.execute('''CREATE TABLE IF NOT EXISTS pinned (
             file_path TEXT PRIMARY KEY
         )''')
+
+        # 8. OCR 結果表（多語系，每張圖片可有多筆記錄）
+        cursor.execute('''CREATE TABLE IF NOT EXISTS ocr_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id INTEGER NOT NULL,
+            lang TEXT,
+            ocr_text TEXT,
+            ocr_data TEXT,
+            confidence REAL,
+            FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+        )''')
         
         conn.commit()
         return conn

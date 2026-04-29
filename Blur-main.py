@@ -1001,10 +1001,11 @@ class ImageSearchEngine:
             # ==========================================
             # [關鍵修改] Tokenizer 改用 huggingface 輕量版
             from transformers import AutoTokenizer, CLIPTokenizer
+            from pathlib import Path as _Path
             base_dir = os.path.dirname(os.path.abspath(__file__))
             
             if self.is_hf_tokenizer:
-                tok_path = os.path.join(base_dir, "models", "tokenizers", "xlm-roberta")
+                tok_path = _Path(os.path.join(base_dir, "models", "tokenizers", "xlm-roberta"))
                 self.tokenizer = AutoTokenizer.from_pretrained(tok_path, local_files_only=True)
                 
                 # ==========================================
@@ -1015,7 +1016,7 @@ class ImageSearchEngine:
                     self.tokenizer.pad_token = self.tokenizer.eos_token or "<pad>"
                     
             else:
-                tok_path = os.path.join(base_dir, "models", "tokenizers", "openai-clip")
+                tok_path = _Path(os.path.join(base_dir, "models", "tokenizers", "openai-clip"))
                 self.tokenizer = CLIPTokenizer.from_pretrained(tok_path, local_files_only=True)
                 
                 # OpenAI CLIP 通常也會需要確認 pad_token
@@ -2333,6 +2334,9 @@ class OCRLabel(QLabel):
 class PreviewOverlay(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 必須在 self.hide() 之前先設好，否則 hideEvent 被觸發時會引發 AttributeError
+        self.current_preview_path = ""
+        self.current_preview_worker = None
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.hide()
         self.setObjectName("PreviewOverlayMask")
@@ -2362,9 +2366,6 @@ class PreviewOverlay(QWidget):
         self.layout.addWidget(self.ocr_hint, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.floating_tag = FloatingWidget(self)
-
-        self.current_preview_path = ""
-        self.current_preview_worker = None
     
     def on_hover_info_changed(self, results, poly, cursor_pos):
         if not results:
