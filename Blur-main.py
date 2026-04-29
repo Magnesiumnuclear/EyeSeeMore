@@ -3423,6 +3423,56 @@ class FeatureBucketWidget(QFrame):
 
 from ui.inspector_panel import CollapsibleSection, RangeCalendarWidget, InspectorPanel
 
+
+class EmptyStateOverlay(QWidget):
+    """畫廊空狀態診斷覆蓋層 — 浮動顯示於 list_view 正上方"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("EmptyStateOverlay")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+
+        outer = QVBoxLayout(self)
+        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        card = QWidget()
+        card.setObjectName("EmptyStateCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(10)
+        card_layout.setContentsMargins(32, 28, 32, 28)
+        card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self._icon_lbl = QLabel()
+        self._icon_lbl.setObjectName("EmptyStateIcon")
+        self._icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_font = QFont()
+        icon_font.setPointSize(36)
+        self._icon_lbl.setFont(icon_font)
+
+        self._msg_lbl = QLabel()
+        self._msg_lbl.setObjectName("EmptyStateMsg")
+        self._msg_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._msg_lbl.setWordWrap(True)
+        self._msg_lbl.setMaximumWidth(360)
+
+        card_layout.addWidget(self._icon_lbl)
+        card_layout.addWidget(self._msg_lbl)
+        outer.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.hide()
+
+    def show_message(self, icon: str, message: str):
+        self._icon_lbl.setText(icon)
+        self._msg_lbl.setText(message)
+        if self.parent():
+            self.resize(self.parent().size())
+        self.raise_()
+        self.show()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.parent():
+            self.resize(self.parent().size())
+
+
 class MainWindow(QMainWindow):
     # 定義訊號
     random_data_ready = pyqtSignal(list)
@@ -3447,7 +3497,9 @@ class MainWindow(QMainWindow):
         self.is_ocr_locked = False
 
         self.last_search_results = [] # 儲存最近一次檢索回來的原始資料
-        self.active_time_range = None # 目前選取的時間區間 (start_ts, end_ts)
+        self.last_search_stats = {}    # 漏斗各層過濾後的計數統計
+        self.is_in_search_mode = False # True = 搜尋結果模式；False = 資料夾瀏覽模式
+        self.active_time_range = None  # 目前選取的時間區間 (start_ts, end_ts)
 
         self.current_image_search_path = None
         self.current_multi_vector_features = None  # (pos_features, neg_features)
@@ -3483,6 +3535,11 @@ class MainWindow(QMainWindow):
 
         self.load_history()
         self.init_ui()
+
+        # 空狀態診斷覆蓋層 (疊在 list_view 上方)
+        self._empty_state_overlay = EmptyStateOverlay(self.list_view)
+        # 讓狀態列 QLabel 支援 PointingHand 游標 (實際點擊邏輯在 eventFilter)
+        self.status.setCursor(Qt.CursorShape.PointingHandCursor)
 
         # NavigationManager 需要在 init_ui() 之後建立 (因為依賴 UI 元件)
         from ui.navigation_manager import NavigationManager
@@ -3789,6 +3846,7 @@ class MainWindow(QMainWindow):
         if not self.engine: return
 
         self.current_folder_path = path
+        self.is_in_search_mode = False  # 資料夾瀏覽模式，停用診斷覆蓋層
         
         #  [修改] 根據側邊欄自動切換下拉選單預設值
         self.inspector_panel.combo_search_scope.blockSignals(True)
@@ -3903,6 +3961,14 @@ class MainWindow(QMainWindow):
 
         # 3. 滑鼠點擊 (MouseButtonPress)
         if event.type() == QEvent.Type.MouseButtonPress:
+            # 狀態列點擊：切換空狀態診斷覆蓋層 (僅在搜尋模式下有效)
+            if obj is self.status and getattr(self, 'is_in_search_mode', False):
+                if hasattr(self, '_empty_state_overlay'):
+                    if self._empty_state_overlay.isVisible():
+                        self._empty_state_overlay.hide()
+                    else:
+                        self._update_search_diagnostics()
+                return True
             ah.handle_mouse_press(obj, event)
 
         return super().eventFilter(obj, event)
@@ -4021,16 +4087,19 @@ class MainWindow(QMainWindow):
         """所有搜尋或載入資料的統一入口，保存最原始的結果，並自動套用目前的過濾器"""
         self.last_search_results = results
         self.apply_current_filters_and_show()
+        self._update_search_diagnostics()
 
     def apply_current_filters_and_show(self, test_mode=False):
         """套用時間等過濾器到 self.last_search_results，然後丟給 Model 顯示"""
         filtered = self.last_search_results
-        
+        raw_count = len(filtered)
+
         # 1. 時間區間過濾
         if self.active_time_range:
             start_ts, end_ts = self.active_time_range
             filtered = [item for item in filtered if start_ts <= item["mtime"] <= end_ts]
-            
+        after_date = len(filtered)
+
         # 2. 長寬比過濾 (容差 5%)
         aspect_mode = self.inspector_panel.combo_aspect.currentText()
         if aspect_mode != "不限比例":
@@ -4046,7 +4115,8 @@ class MainWindow(QMainWindow):
                     elif aspect_mode == "正方形 (Square)" and 0.95 <= ratio <= 1.05:
                         temp_filtered.append(item)
             filtered = temp_filtered
-            
+        after_aspect = len(filtered)
+
         # ==========================================
         #  3. UI 顯示數量限制 (Limit Truncation)
         # 這是實作「超額抓取 + 精準裁切」的最關鍵一步
@@ -4055,13 +4125,23 @@ class MainWindow(QMainWindow):
         if limit_text != "All":
             limit_val = int(limit_text)
             filtered = filtered[:limit_val]
+        final_count = len(filtered)
+
+        # 更新漏斗統計 (僅在正式顯示模式下更新，測試模式不污染統計)
+        if not test_mode:
+            self.last_search_stats = {
+                "raw_count": raw_count,
+                "after_date": after_date,
+                "after_aspect": after_aspect,
+                "final_count": final_count,
+            }
 
         if test_mode:
-            return len(filtered) 
-            
+            return final_count
+
         # 4. 丟給畫面更新
         self.model.set_search_results(filtered)
-        
+
         # 5. 如果有滾輪還原需求，先預先排程（在 sort 之前），避免被 scrollToTop 覆蓋
         if self.nav.pending_scroll_pos is not None:
             pos = self.nav.pending_scroll_pos
@@ -4075,7 +4155,7 @@ class MainWindow(QMainWindow):
         # 6. 順便套用目前的排序設定
         self.apply_gallery_sort()
 
-        return len(filtered)
+        return final_count
 
     def apply_time_filter_to_gallery(self, start_ts, end_ts):
         """點擊 [套用結果]：測試過濾數量，若為 0 顯示防呆警告，否則套用"""
@@ -4100,8 +4180,55 @@ class MainWindow(QMainWindow):
         """點擊 [清除]：移除過濾器並還原畫廊"""
         self.active_time_range = None
         self.apply_current_filters_and_show()
+        self._update_search_diagnostics()
         #  [修正] 將 len(self.model.items) 改為 len(self.model.all_items)
         self.status.setText(f"Time filter cleared. Showing {len(self.model.all_items)} images")
+
+    def _update_search_diagnostics(self):
+        """根據 last_search_stats 決定是否顯示空狀態覆蓋層與狀態列高亮"""
+        if not hasattr(self, '_empty_state_overlay'):
+            return
+
+        stats = getattr(self, 'last_search_stats', {})
+        final_count = stats.get('final_count', -1)
+
+        # 僅在搜尋模式且結果為 0 時啟動診斷
+        if not getattr(self, 'is_in_search_mode', False) or final_count != 0:
+            self._empty_state_overlay.hide()
+            self.update_status_highlight('none')
+            return
+
+        raw = stats.get('raw_count', 0)
+        after_date = stats.get('after_date', 0)
+        after_aspect = stats.get('after_aspect', 0)
+
+        if raw == 0:
+            icon = '🔍'
+            msg = "找不到符合關鍵字的圖片。\n請嘗試不同的關鍵字，或切換到「全域」搜尋。"
+        elif after_date == 0:
+            icon = '📅'
+            msg = "我們找到了相似圖片，但它們都不在您選擇的『日期區間』內。\n建議在右側面板放寬日期範圍！"
+        elif after_aspect == 0:
+            icon = '📐'
+            msg = "有符合日期的相似圖，但因為您限制了『比例』所以被隱藏了。\n建議在右側面板改為「不限比例」！"
+        else:
+            icon = '🔢'
+            msg = "顯示數量限制將所有結果截斷。\n請在右側面板提高 Limit 數量！"
+
+        self._empty_state_overlay.show_message(icon, msg)
+        # 若是過濾器造成的空結果，高亮狀態列吸引使用者注意右側面板
+        self.update_status_highlight('alert' if raw > 0 else 'none')
+
+    def update_status_highlight(self, alert_level: str):
+        """設定狀態列邊框高亮，alert_level: 'alert' | 'none'"""
+        if alert_level == 'alert':
+            self.status.setStyleSheet(
+                'border: 1px solid #F5A623; border-radius: 4px; '
+                'padding: 2px 6px; color: #F5A623;'
+            )
+        else:
+            self.status.setStyleSheet('')
+
 
     def search_by_time_range(self, start_ts, end_ts):
         """點擊 [直接搜尋]：忽略關鍵字，直接全域抓出該時段的圖，並加入防呆檢查"""
@@ -4550,6 +4677,7 @@ class MainWindow(QMainWindow):
         use_ocr = getattr(self, '_pending_use_ocr', self.btn_ocr_toggle.isChecked())
         self._pending_use_ocr = None  # 消費後清除
 
+        self.is_in_search_mode = True  # 進入搜尋結果模式
         fetch_k, target_folder = self.search_orch.resolve_search_params(
             self.inspector_panel.combo_limit_panel.currentText(),
             self.inspector_panel.combo_search_scope.currentIndex(),
@@ -4574,6 +4702,7 @@ class MainWindow(QMainWindow):
         self.input.setText(f"[Image] {os.path.basename(image_path)}")
         self._prepare_search_ui("Searching by Image...", "Similar Images")
 
+        self.is_in_search_mode = True  # 進入搜尋結果模式
         fetch_k, target_folder = self.search_orch.resolve_search_params(
             self.inspector_panel.combo_limit_panel.currentText(),
             self.inspector_panel.combo_search_scope.currentIndex(),
@@ -4595,6 +4724,7 @@ class MainWindow(QMainWindow):
         self.input.setText(f"[Multi-Vector] Pos:{len(pos_features)} Neg:{len(neg_features)}")
         self._prepare_search_ui("Calculating Vector Math...", "Vector Arithmetic Results")
 
+        self.is_in_search_mode = True  # 進入搜尋結果模式
         fetch_k, target_folder = self.search_orch.resolve_search_params(
             self.inspector_panel.combo_limit_panel.currentText(),
             self.inspector_panel.combo_search_scope.currentIndex(),
@@ -4608,14 +4738,17 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        
+
         # 隱藏浮動視窗 (加上 hasattr 防呆檢查，避免初始化時崩潰)
         if hasattr(self, 'history_list'):
             self.history_list.hide()
-            
+
         if hasattr(self, 'preview_overlay') and self.preview_overlay.isVisible():
             self.preview_overlay.resize(self.size())
-            
+
+        if hasattr(self, '_empty_state_overlay') and self._empty_state_overlay.isVisible():
+            self._empty_state_overlay.resize(self.list_view.size())
+
         # [關鍵] 視窗大小改變時，Viewport 寬度也會變，必須重算
         QTimer.singleShot(0, self.adjust_layout)
 

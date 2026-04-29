@@ -127,6 +127,7 @@ class Ui_MainWindow:
 
         MainWindow.status = QLabel("Initializing...")
         MainWindow.status.setObjectName("StatusBarText")
+        MainWindow.status.setCursor(Qt.CursorShape.PointingHandCursor)
         right_actions_layout.addWidget(MainWindow.status, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         MainWindow.btn_toggle_inspector = QPushButton("📊")
