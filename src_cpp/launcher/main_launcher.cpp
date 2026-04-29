@@ -296,14 +296,17 @@ static void PythonThread(std::wstring wsRoot) {
         "os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = qt_plugins\n"
         "os.chdir(dir)\n"
         
+        // --- 前面的設定環境變數都不變 ---
         "sys.argv = ['Blur-main.py']\n"
         "__file__ = os.path.join(dir, 'Blur-main.py')\n"
         
-        // --- 加入 try-except 捕捉任何死因 ---
+        // --- 修改 try 區塊，使用真實的 __main__ 模組 ---
         "try:\n"
+        "    import __main__\n"                                    // 1. 取得系統真正的 __main__
+        "    __main__.__file__ = __file__\n"                       // 2. 綁定檔案路徑
         "    with open('Blur-main.py', 'r', encoding='utf-8') as f:\n"
         "        code = compile(f.read(), __file__, 'exec')\n"
-        "        exec(code, {'__name__': '__main__', '__file__': __file__})\n"
+        "        exec(code, __main__.__dict__)\n"                  // 3. 🌟 關鍵：直接在系統 __main__ 的字典中執行！
         "except Exception as e:\n"
         "    with open('launcher_error.log', 'w', encoding='utf-8') as log:\n"
         "        traceback.print_exc(file=log)\n";
