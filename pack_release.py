@@ -30,7 +30,7 @@ APP_CODE_ENTRIES = [
     "indexer.py",
     "onnx_ocr.py",
     "export_clip_onnx.py",
-    "config.json",
+
     "core",
     "ui",
     "utils",

@@ -231,11 +231,20 @@ LRESULT CALLBACK SplashWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
     }
 
     // 每 100 ms 輪詢：Python 主視窗就緒後銷毀 Splash
+    // 同時偵測主視窗標題與首次執行歡迎視窗標題，避免首次安裝時 Splash 永遠不消失
     case WM_TIMER: {
-        HWND hMain = FindWindowW(nullptr, TARGET_TITLE);
-        if (hMain && IsWindowVisible(hMain)) {
-            KillTimer(hWnd, 1);
-            DestroyWindow(hWnd);
+        const wchar_t* TITLES[] = {
+            L"EyeSeeMore-(Alpha)",
+            L"EyeSeeMore - Welcome",
+            nullptr
+        };
+        for (int i = 0; TITLES[i]; ++i) {
+            HWND hMain = FindWindowW(nullptr, TITLES[i]);
+            if (hMain && IsWindowVisible(hMain)) {
+                KillTimer(hWnd, 1);
+                DestroyWindow(hWnd);
+                break;
+            }
         }
         break;
     }
@@ -279,12 +288,20 @@ static void PythonThread(std::wstring wsRoot) {
     utf8Root.pop_back(); // 去掉尾端 NUL
 
     // 引導腳本：設定 sys.path、cwd，然後執行 Blur-main.py
-    // 注意：ESM_THEME / ESM_LANG 環境變數已由 WinMain 設好，
-    //       Python 可透過 os.environ 直接取得，無需額外 I/O。
+    //
+    // 重要：嵌入式載入 python310.dll 時，._pth 檔案不會被自動處理，
+    //   必須手動將 Lib/site-packages 加入 sys.path，
+    //   並呼叫 import site 以啟用這个路徑，否則 PyQt6 / faiss 等套件
+    //   全部找不到，程式會静默崩潰。
     std::string script =
         "import sys, os\n"
         "dir = r'" + utf8Root + "'\n"
         "sys.path.insert(0, dir)\n"
+        "# 嵌入式 DLL 不處理 ._pth，需手動加入 site-packages\n"
+        "_sp = os.path.join(dir, 'Lib', 'site-packages')\n"
+        "if _sp not in sys.path:\n"
+        "    sys.path.insert(1, _sp)\n"
+        "import site\n"
         "os.chdir(dir)\n"
         "sys.argv = ['Blur-main.py']\n"
         "__file__ = os.path.join(dir, 'Blur-main.py')\n"
