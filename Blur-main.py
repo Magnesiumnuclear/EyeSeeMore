@@ -1765,7 +1765,10 @@ class IndexerWorker(QThread):
     status_update = pyqtSignal(str)       
     progress_update = pyqtSignal(int, int)
     scan_finished = pyqtSignal(int, int)  
-    all_finished = pyqtSignal()           
+    all_finished = pyqtSignal()
+    # 純粹的真實剩餘秒數，由主執行緒的 PID timer 轉換成假時間顯示
+    # -1.0 = 暖機中（樣本不足），0.0 = 完成
+    eta_updated = pyqtSignal(float)       
 
     # [修改 1] 加入 main_window 參數，以取得主程式的 AI 模型
     def __init__(self, config, main_window):
@@ -1826,23 +1829,21 @@ class IndexerWorker(QThread):
             # 去除底層傳來字串結尾的 "..."
             clean_msg = msg.replace("...", "")
             
-            # 2. 計算與格式化倒數時間
+            # 2. 計算真實剩餘時間 (T_real)，透過 eta_updated signal 傳給主執行緒的 PID timer
             if current < total:
-                # 收集到至少 2 筆批次資料才開始算，避開模型剛啟動的極端延遲
-                if len(speed_history) >= 2: 
+                if len(speed_history) >= 2:
                     avg_sec_per_item = sum(speed_history) / len(speed_history)
-                    remaining_items = total - current
-                    eta_seconds = int(remaining_items * avg_sec_per_item)
-                    
-                    if eta_seconds > 3600:
-                        final_msg = f"{clean_msg} (剩餘時間: > 1 小時)"
-                    else:
-                        m, s = divmod(eta_seconds, 60)
-                        final_msg = f"{clean_msg} (剩餘時間: {m:02d}:{s:02d})"
+                    t_real = (total - current) * avg_sec_per_item
+                    # 只 emit 純 stage 訊息，ETA 由主執行緒的假計時器顯示
+                    self.eta_updated.emit(t_real)
+                    final_msg = clean_msg
                 else:
+                    # 暖機中：用 -1.0 通知主執行緒尚未有有效 ETA
+                    self.eta_updated.emit(-1.0)
                     final_msg = f"{clean_msg} (計算估時中...)"
             else:
-                # 3. 完美歸零視覺魔法：100% 瞬間切換文字，安撫寫入硬碟那 1 秒的等待感
+                # 完成：通知假計時器 T_real = 0
+                self.eta_updated.emit(0.0)
                 final_msg = f"{clean_msg} (儲存資料庫中...)"
 
             self.progress_update.emit(current, total)
@@ -3426,6 +3427,19 @@ class MainWindow(QMainWindow):
 
         self.taskbar_ctrl = TaskbarController(self.winId())
 
+        # ── ETA PID Clock Slewing ─────────────────────────────────────────────────
+        self._eta_T_real: float       = 0.0
+        self._eta_T_fake: float|None  = None   # None = 尚未收到第一筆 T_real
+        self._eta_stage_msg: str      = ""     # 最新的處理階段文字
+        self._eta_pid_Kp:          float = 0.30
+        self._eta_pid_Ki:          float = 0.01
+        self._eta_pid_Kd:          float = 0.05
+        self._eta_pid_integral:    float = 0.0
+        self._eta_pid_last_error:  float = 0.0
+        self._eta_timer = QTimer(self)
+        self._eta_timer.setInterval(100)
+        self._eta_timer.timeout.connect(self._on_eta_tick)
+
         self.load_history()
         self.init_ui()
 
@@ -3445,6 +3459,7 @@ class MainWindow(QMainWindow):
         self.indexer_worker.progress_update.connect(self.update_progress)
         self.indexer_worker.scan_finished.connect(self.on_scan_finished)
         self.indexer_worker.all_finished.connect(self.on_indexing_finished)
+        self.indexer_worker.eta_updated.connect(self._on_eta_updated)
 
         self.search_orch = SearchOrchestrator(SearchWorker, parent=self)
         self.search_orch.results_ready.connect(self.set_base_results)
@@ -4099,7 +4114,55 @@ class MainWindow(QMainWindow):
             self._apply_folder_filter(self.current_folder_path)
     
     def update_status(self, text):
-        self.status.setText(text)
+        self._eta_stage_msg = text
+        # 若 PID timer 正在執行，狀態欄由 _on_eta_tick 控制；否則直接寫入
+        if not self._eta_timer.isActive():
+            self.status.setText(text)
+
+    def _on_eta_updated(self, t_real: float):
+        """收到 IndexerWorker 計算出的真實剩餘時間（T_real）"""
+        if t_real < 0:
+            return  # 暖機中，樣本不足，等待下一次
+        self._eta_T_real = t_real
+        # 第一次收到有效 T_real 時，初始化假計時器
+        if self._eta_T_fake is None and t_real > 0:
+            self._eta_T_fake          = t_real
+            self._eta_pid_integral    = 0.0
+            self._eta_pid_last_error  = 0.0
+            if not self._eta_timer.isActive():
+                self._eta_timer.start()
+
+    def _on_eta_tick(self):
+        """每 100ms 以 PID 控制器更新假計時器，並將假時間寫入 status bar"""
+        if self._eta_T_fake is None:
+            return
+
+        DT    = 0.1
+        error = self._eta_T_real - self._eta_T_fake   # 正 = 假時間超前需減速；負 = 落後需加速
+
+        p_term = self._eta_pid_Kp * error
+        self._eta_pid_integral += error * DT
+        self._eta_pid_integral  = max(-20.0, min(20.0, self._eta_pid_integral))
+        i_term = self._eta_pid_Ki * self._eta_pid_integral
+        d_term = self._eta_pid_Kd * (error - self._eta_pid_last_error) / DT
+        self._eta_pid_last_error = error
+
+        pid_output   = p_term + i_term + d_term
+        speed_factor = max(0.2, min(3.0, 1.0 - pid_output))   # 正 error → 減速
+        self._eta_T_fake = max(0.0, self._eta_T_fake - DT * speed_factor)
+
+        # Endgame 狀態機
+        if self._eta_T_fake <= 1.0 and self._eta_T_real > 10.0:
+            self._eta_T_fake = 1.0
+            eta_suffix = "(即將完成...)"
+        elif self._eta_T_fake <= 5.0 and self._eta_T_real > 30.0:
+            self._eta_T_fake = 5.0
+            eta_suffix = "(最後步驟...)"
+        else:
+            m, s = divmod(int(self._eta_T_fake), 60)
+            eta_suffix = f"(剩餘時間: {m:02d}:{s:02d})"
+
+        self.status.setText(f"{self._eta_stage_msg} {eta_suffix}")
 
     def update_progress(self, current, total):
         self.progress.show()
@@ -4119,6 +4182,13 @@ class MainWindow(QMainWindow):
             print("[Indexer] No changes detected.")
 
     def on_indexing_finished(self):
+        # 停止 PID 假計時器並重置狀態
+        self._eta_timer.stop()
+        self._eta_T_fake         = None
+        self._eta_T_real         = 0.0
+        self._eta_pid_integral   = 0.0
+        self._eta_pid_last_error = 0.0
+
         self.progress.hide()
         
         # [新增] 索引任務結束，關閉工作列進度條
