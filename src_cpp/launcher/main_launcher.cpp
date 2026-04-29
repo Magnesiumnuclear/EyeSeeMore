@@ -268,46 +268,45 @@ static void PythonThread(std::wstring wsRoot) {
     HMODULE hPy = LoadLibraryW((wsRoot + L"\\python310.dll").c_str());
     if (!hPy) return;
 
-    auto Py_Init  = reinterpret_cast<Py_Initialize_t>(
-        GetProcAddress(hPy, "Py_Initialize"));
-    auto PyRunStr = reinterpret_cast<PyRun_SimpleString_t>(
-        GetProcAddress(hPy, "PyRun_SimpleString"));
-    auto Py_Fin   = reinterpret_cast<Py_Finalize_t>(
-        GetProcAddress(hPy, "Py_Finalize"));
+    auto Py_Init  = reinterpret_cast<Py_Initialize_t>(GetProcAddress(hPy, "Py_Initialize"));
+    auto PyRunStr = reinterpret_cast<PyRun_SimpleString_t>(GetProcAddress(hPy, "PyRun_SimpleString"));
+    auto Py_Fin   = reinterpret_cast<Py_Finalize_t>(GetProcAddress(hPy, "Py_Finalize"));
 
     if (!Py_Init || !PyRunStr || !Py_Fin) { FreeLibrary(hPy); return; }
 
     Py_Init();
 
-    // wstring → UTF-8 std::string（供 Python 腳本內嵌使用）
-    int sz = WideCharToMultiByte(CP_UTF8, 0, wsRoot.c_str(), -1,
-                                 nullptr, 0, nullptr, nullptr);
+    int sz = WideCharToMultiByte(CP_UTF8, 0, wsRoot.c_str(), -1, nullptr, 0, nullptr, nullptr);
     std::string utf8Root(sz, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wsRoot.c_str(), -1,
-                        &utf8Root[0], sz, nullptr, nullptr);
-    utf8Root.pop_back(); // 去掉尾端 NUL
+    WideCharToMultiByte(CP_UTF8, 0, wsRoot.c_str(), -1, &utf8Root[0], sz, nullptr, nullptr);
+    utf8Root.pop_back(); 
 
-    // 引導腳本：設定 sys.path、cwd，然後執行 Blur-main.py
-    //
-    // 重要：嵌入式載入 python310.dll 時，._pth 檔案不會被自動處理，
-    //   必須手動將 Lib/site-packages 加入 sys.path，
-    //   並呼叫 import site 以啟用這个路徑，否則 PyQt6 / faiss 等套件
-    //   全部找不到，程式會静默崩潰。
+    // 🌟 強化版引導腳本：加入 Qt 插件路徑修正與崩潰日誌輸出
     std::string script =
-        "import sys, os\n"
+        "import sys, os, traceback\n"
         "dir = r'" + utf8Root + "'\n"
         "sys.path.insert(0, dir)\n"
-        "# 嵌入式 DLL 不處理 ._pth，需手動加入 site-packages\n"
         "_sp = os.path.join(dir, 'Lib', 'site-packages')\n"
         "if _sp not in sys.path:\n"
         "    sys.path.insert(1, _sp)\n"
         "import site\n"
+        
+        // --- 核心修復：告訴 PyQt6 插件的絕對路徑 ---
+        "qt_plugins = os.path.join(_sp, 'PyQt6', 'Qt6', 'plugins')\n"
+        "os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = qt_plugins\n"
         "os.chdir(dir)\n"
+        
         "sys.argv = ['Blur-main.py']\n"
         "__file__ = os.path.join(dir, 'Blur-main.py')\n"
-        "with open('Blur-main.py', 'r', encoding='utf-8') as f:\n"
-        "    code = compile(f.read(), __file__, 'exec')\n"
-        "    exec(code, {'__name__': '__main__', '__file__': __file__})\n";
+        
+        // --- 加入 try-except 捕捉任何死因 ---
+        "try:\n"
+        "    with open('Blur-main.py', 'r', encoding='utf-8') as f:\n"
+        "        code = compile(f.read(), __file__, 'exec')\n"
+        "        exec(code, {'__name__': '__main__', '__file__': __file__})\n"
+        "except Exception as e:\n"
+        "    with open('launcher_error.log', 'w', encoding='utf-8') as log:\n"
+        "        traceback.print_exc(file=log)\n";
 
     PyRunStr(script.c_str());
     Py_Fin();
