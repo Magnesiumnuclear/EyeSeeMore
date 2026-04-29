@@ -4159,8 +4159,12 @@ class MainWindow(QMainWindow):
             self._eta_T_fake = 5.0
             eta_suffix = "(最後步驟...)"
         else:
-            m, s = divmod(int(self._eta_T_fake), 60)
-            eta_suffix = f"(剩餘時間: {m:02d}:{s:02d})"
+            _ms_total = int(self._eta_T_fake * 1000)
+            _ms  = _ms_total % 1000
+            _sec = (_ms_total // 1000) % 60
+            _min = (_ms_total // 60000) % 60
+            _hr  = _ms_total // 3600000
+            eta_suffix = f"(剩餘時間: {_hr:02d}:{_min:02d}:{_sec:02d}:{_ms:03d})"
 
         self.status.setText(f"{self._eta_stage_msg} {eta_suffix}")
 
