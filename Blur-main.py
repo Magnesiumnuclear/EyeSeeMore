@@ -4493,8 +4493,9 @@ class MainWindow(QMainWindow):
 
 class OnboardingDialog(QDialog):
     """首次開啟的引導與自動硬體設定面板"""
-    def __init__(self, parent=None):
+    def __init__(self, config, parent=None):
         super().__init__(parent)
+        self.config = config
         self.setWindowTitle("EyeSeeMore - Welcome")
         self.setFixedSize(600, 450)
         
