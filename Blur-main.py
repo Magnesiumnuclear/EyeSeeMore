@@ -4230,8 +4230,9 @@ class MainWindow(QMainWindow):
 
         # 3. 滑鼠點擊 (MouseButtonPress)
         if event.type() == QEvent.Type.MouseButtonPress:
-            # 狀態列點擊：顯示漏斗統計預覽 (僅在搜尋模式下有效)
-            if obj is self.status and getattr(self, 'is_in_search_mode', False):
+            # 狀態列點擊：顯示漏斗統計預覽 (搜尋模式，或有任何過濾器啟用時皆有效)
+            _has_filters = self.inspector_panel.btn_clear_all.isVisible()
+            if obj is self.status and (getattr(self, 'is_in_search_mode', False) or _has_filters):
                 stats = getattr(self, 'last_search_stats', {})
                 if stats:
                     fi = FunnelCardItem(
