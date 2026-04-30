@@ -232,7 +232,15 @@ LRESULT CALLBACK SplashWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
 
     // 每 100 ms 輪詢：Python 主視窗就緒後銷毀 Splash
     // 同時偵測主視窗標題與首次執行歡迎視窗標題，避免首次安裝時 Splash 永遠不消失
+    // 逾時保護：最多等待 60 秒，防止 Python 啟動失敗時 Splash 永遠殘留
     case WM_TIMER: {
+        static int s_elapsed = 0;
+        ++s_elapsed;
+        if (s_elapsed >= 600) {   // 600 × 100 ms = 60 秒逾時
+            KillTimer(hWnd, 1);
+            DestroyWindow(hWnd);
+            break;
+        }
         const wchar_t* TITLES[] = {
             L"EyeSeeMore-(Alpha)",
             L"EyeSeeMore - Welcome",
@@ -378,7 +386,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     const int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
     HWND hWnd = CreateWindowExW(
-        WS_EX_TOPMOST, CLASS_NAME, L"Splash", WS_POPUP,
+        0, CLASS_NAME, L"Splash", WS_POPUP,   // 不使用 WS_EX_TOPMOST，避免遮擋其他程式
         x, y, w, h, nullptr, nullptr, hInstance,
         &splashTheme   // ← WM_CREATE 透過 LPCREATESTRUCT.lpCreateParams 接收
     );
