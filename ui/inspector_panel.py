@@ -638,43 +638,45 @@ class InspectorPanel(QFrame):
         self.main_window.start_multi_vector_search(pos_features, neg_features)
 
     def _setup_ocr_tab(self):
-        layout = QVBoxLayout(self.tab_ocr)
-        layout.setSpacing(8)
-        layout.setContentsMargins(15, 15, 15, 15)
+        tab_layout = QVBoxLayout(self.tab_ocr)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
 
-        # 目前圖片名稱
-        self.ocr_filename_lbl = QLabel("尚未選取圖片")
-        self.ocr_filename_lbl.setWordWrap(True)
-        self.ocr_filename_lbl.setObjectName("OcrFilenameLabel")
-        self.ocr_filename_lbl.setStyleSheet(
-            "font-size: 13px; font-weight: bold; background: transparent;"
-        )
-        layout.addWidget(self.ocr_filename_lbl)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setObjectName("InspectorScrollArea")
 
-        # 偵測語言標籤
-        self.ocr_lang_lbl = QLabel("")
-        self.ocr_lang_lbl.setObjectName("OcrLangLabel")
-        self.ocr_lang_lbl.setStyleSheet(
-            "font-size: 12px; color: #888; background: transparent;"
-        )
-        layout.addWidget(self.ocr_lang_lbl)
+        container = QWidget()
+        container.setObjectName("OcrTabContainer")
 
-        # OCR 文字顯示區 (唯讀)
+        self.ocr_main_layout = QVBoxLayout(container)
+        self.ocr_main_layout.setContentsMargins(0, 0, 0, 0)
+        self.ocr_main_layout.setSpacing(0)
+        self.ocr_main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # --- 區塊：識別文字 ---
+        self.sec_ocr_text = CollapsibleSection("識別文字")
+
         self.ocr_text_display = QTextEdit()
         self.ocr_text_display.setReadOnly(True)
         self.ocr_text_display.setObjectName("OcrTextDisplay")
-        self.ocr_text_display.setPlaceholderText(
-            "點擊圖片後，此處將顯示 OCR 識別文字..."
-        )
-        layout.addWidget(self.ocr_text_display, stretch=1)
+        self.ocr_text_display.setPlaceholderText("點擊圖片後，此處將顯示 OCR 識別文字...")
+        self.ocr_text_display.setMinimumHeight(200)
+        self.sec_ocr_text.addWidget(self.ocr_text_display)
 
-        # 底部：複製按鈕
+        self.ocr_main_layout.addWidget(self.sec_ocr_text)
+        self.ocr_main_layout.addStretch(1)
+
+        scroll_area.setWidget(container)
+        tab_layout.addWidget(scroll_area)
+
+        # 底部：複製按鈕 (與 btn_clear_all 對稱)
         self.btn_copy_ocr = QPushButton("📋 複製全部文字")
         self.btn_copy_ocr.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_copy_ocr.setProperty("cssClass", "ActionBtn")
+        self.btn_copy_ocr.setObjectName("ClearFilterBtn")
         self.btn_copy_ocr.clicked.connect(self._on_copy_ocr_text)
         self.btn_copy_ocr.setEnabled(False)
-        layout.addWidget(self.btn_copy_ocr)
+        tab_layout.addWidget(self.btn_copy_ocr)
 
     def _setup_info_tab(self):
         layout = QVBoxLayout(self.tab_info)
@@ -724,14 +726,11 @@ class InspectorPanel(QFrame):
 
     def update_ocr(self, item):
         """更新 OCR 分頁的文字顯示（懶加載，按需查詢資料庫）"""
-        LANG_NAMES = {"ch": "中文 (ZH)", "en": "英文 (EN)", "jp": "日文 (JA)", "kr": "韓文 (KR)"}
-
-        self.ocr_filename_lbl.setText(f"📄 {item.filename}")
+        self.sec_ocr_text.lbl_title.setText(f"識別文字 — {item.filename}")
 
         engine = getattr(self.main_window, 'engine', None)
         if not engine:
             self.ocr_text_display.setPlainText("⚠️ AI 引擎未就緒，無法讀取 OCR 資料。")
-            self.ocr_lang_lbl.setText("")
             self.btn_copy_ocr.setEnabled(False)
             return
 
@@ -740,40 +739,22 @@ class InspectorPanel(QFrame):
             self.ocr_text_display.setPlainText(
                 "此圖片尚無 OCR 資料。\n\n請先對圖片進行索引，或確認「設定 → AI 引擎」中的 OCR 語言設定。"
             )
-            self.ocr_lang_lbl.setText("")
             self.btn_copy_ocr.setEnabled(False)
             return
 
-        # 依語言分組文字（保留出現順序）
-        lang_texts: dict[str, list[str]] = {}
-        for box in ocr_boxes:
-            lang = box.get("lang", "unk")
-            text = box.get("text", "").strip()
-            if text and text not in ("[NONE]", "[NULL]", ""):
-                lang_texts.setdefault(lang, []).append(text)
-
-        if not lang_texts:
-            self.ocr_text_display.setPlainText("此圖片的 OCR 結果為空（未偵測到文字）。")
-            self.ocr_lang_lbl.setText("")
-            self.btn_copy_ocr.setEnabled(False)
-            return
-
-        # 語言標籤
-        detected = list(lang_texts.keys())
-        self.ocr_lang_lbl.setText(
-            "🌐 " + "  ·  ".join(LANG_NAMES.get(l, l.upper()) for l in detected)
-        )
-
-        # 組合顯示文字
+        # 每個 OCR 框為一行
         lines = []
-        for lang, texts in lang_texts.items():
-            if len(lang_texts) > 1:
-                lines.append(f"── {LANG_NAMES.get(lang, lang.upper())} ──")
-            lines.append(" ".join(texts))
-            if len(lang_texts) > 1:
-                lines.append("")
+        for box in ocr_boxes:
+            text = box.get("text", "").strip()
+            if text and text not in ("[NONE]", "[NULL]"):
+                lines.append(text)
 
-        self.ocr_text_display.setPlainText("\n".join(lines).strip())
+        if not lines:
+            self.ocr_text_display.setPlainText("此圖片的 OCR 結果為空（未偵測到文字）。")
+            self.btn_copy_ocr.setEnabled(False)
+            return
+
+        self.ocr_text_display.setPlainText("\n".join(lines))
         self.btn_copy_ocr.setEnabled(True)
 
     def _on_copy_ocr_text(self):
