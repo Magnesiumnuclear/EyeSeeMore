@@ -10,7 +10,7 @@ import os
 import subprocess
 from datetime import date, datetime, time as dt_time, timedelta
 
-from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QImageReader, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
@@ -302,6 +302,61 @@ class RangeCalendarWidget(QWidget):
 
 
 # ==========================================
+#  OcrSearchWorker — 背景 OCR 搜尋執行緒
+# ==========================================
+
+class OcrSearchWorker(QThread):
+    """在背景對所有 TEXT 標籤圖片執行 OCR 框過濾查詢，避免阻塞 UI"""
+    results_ready = pyqtSignal(str, int)  # (formatted_text, total_match_count)
+
+    def __init__(self, engine, items, query, parent=None):
+        super().__init__(parent)
+        self.engine = engine
+        self.items = items    # is_ocr_match=True 的 ImageItem 列表
+        self.query = query
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        query_lower = self.query.strip().lower()
+        if not query_lower:
+            self.results_ready.emit("", 0)
+            return
+
+        result_lines = []
+        total_matches = 0
+
+        for item in self.items:
+            if self._cancelled:
+                return
+            try:
+                boxes = self.engine.get_ocr_data_by_path(item.path)
+                matching = [
+                    b.get("text", "").strip()
+                    for b in boxes
+                    if query_lower in b.get("text", "").lower()
+                    and b.get("text", "").strip() not in ("[NONE]", "[NULL]", "")
+                ]
+                if matching:
+                    result_lines.append(f"── {item.filename} ──")
+                    result_lines.extend(matching)
+                    result_lines.append("")
+                    total_matches += len(matching)
+            except Exception:
+                pass
+
+        if self._cancelled:
+            return
+
+        if result_lines:
+            self.results_ready.emit("\n".join(result_lines).strip(), total_matches)
+        else:
+            self.results_ready.emit("", 0)
+
+
+# ==========================================
 #  InspectorPanel — 右側屬性與檢索控制台
 # ==========================================
 
@@ -371,6 +426,7 @@ class InspectorPanel(QFrame):
             item = getattr(self, 'current_ocr_item', None)
             if item:
                 self.update_ocr(item)
+            self.update_ocr_search()
 
     def _setup_search_tab(self):
         tab_layout = QVBoxLayout(self.tab_search)
@@ -665,6 +721,28 @@ class InspectorPanel(QFrame):
         self.sec_ocr_text.addWidget(self.ocr_text_display)
 
         self.ocr_main_layout.addWidget(self.sec_ocr_text)
+
+        # --- 區塊：OCR 搜尋 ---
+        self.sec_ocr_search = CollapsibleSection("OCR 搜尋")
+
+        self.ocr_search_display = QTextEdit()
+        self.ocr_search_display.setReadOnly(True)
+        self.ocr_search_display.setObjectName("OcrTextDisplay")
+        self.ocr_search_display.setPlaceholderText("依畫廊中 TEXT 標籤圖片，列出每張圖中符合搜尋詞的 OCR 文字行...")
+        self.ocr_search_display.setMinimumHeight(200)
+        self.sec_ocr_search.addWidget(self.ocr_search_display)
+
+        refresh_row = QHBoxLayout()
+        refresh_row.setContentsMargins(0, 4, 0, 0)
+        refresh_row.addStretch(1)
+        self.btn_refresh_ocr_search = QPushButton("🔍 重新整理")
+        self.btn_refresh_ocr_search.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_refresh_ocr_search.setProperty("cssClass", "ActionBtn")
+        self.btn_refresh_ocr_search.clicked.connect(self.update_ocr_search)
+        refresh_row.addWidget(self.btn_refresh_ocr_search)
+        self.sec_ocr_search.addLayout(refresh_row)
+
+        self.ocr_main_layout.addWidget(self.sec_ocr_search)
         self.ocr_main_layout.addStretch(1)
 
         scroll_area.setWidget(container)
@@ -779,6 +857,63 @@ class InspectorPanel(QFrame):
 
         self.ocr_text_display.setPlainText("\n".join(lines))
         self.btn_copy_ocr.setEnabled(True)
+
+    def update_ocr_search(self):
+        """依搜尋欄關鍵字，在背景掃描畫廊所有 TEXT 標籤圖片的 OCR 框，顯示符合的文字行"""
+        engine = getattr(self.main_window, 'engine', None)
+        model = getattr(self.main_window, 'model', None)
+        query = getattr(self.main_window, 'input', None)
+        query = query.text().strip() if query else ""
+
+        if not query:
+            self.sec_ocr_search.lbl_title.setText("OCR 搜尋")
+            self.ocr_search_display.setPlainText("請先在頂端搜尋欄輸入關鍵字，再切換到此分頁查看結果。")
+            return
+
+        if not engine or not model:
+            self.ocr_search_display.setPlainText("⚠️ AI 引擎未就緒。")
+            return
+
+        ocr_items = [
+            item for item in model.all_items
+            if getattr(item, 'is_ocr_match', False) and not getattr(item, 'is_funnel_card', False)
+        ]
+
+        self.sec_ocr_search.lbl_title.setText(f"OCR 搜尋 — 「{query}」")
+        self.btn_refresh_ocr_search.setEnabled(False)
+
+        if not ocr_items:
+            self.ocr_search_display.setPlainText("畫廊中沒有帶 TEXT 標籤的圖片。")
+            self.btn_refresh_ocr_search.setEnabled(True)
+            return
+
+        self.ocr_search_display.setPlainText(f"🔄 搜尋中（共 {len(ocr_items)} 張 TEXT 圖片）...")
+
+        # 取消並等待前一個 worker 結束
+        prev = getattr(self, '_ocr_search_worker', None)
+        if prev and prev.isRunning():
+            prev.cancel()
+            prev.wait(1000)
+
+        worker = OcrSearchWorker(engine, ocr_items, query, parent=self)
+        self._ocr_search_worker = worker
+        worker.results_ready.connect(self._on_ocr_search_done)
+        worker.start()
+
+    def _on_ocr_search_done(self, text: str, count: int):
+        """Worker 完成時回到主執行緒更新 UI"""
+        self.btn_refresh_ocr_search.setEnabled(True)
+        query = getattr(self.main_window, 'input', None)
+        query = query.text().strip() if query else ""
+        self.sec_ocr_search.lbl_title.setText(
+            f"OCR 搜尋 — 「{query}」({'共 ' + str(count) + ' 筆' if count else '無結果'})"
+        )
+        if text:
+            self.ocr_search_display.setPlainText(text)
+        else:
+            self.ocr_search_display.setPlainText(
+                f"在所有 TEXT 標籤圖片中找不到包含「{query}」的文字行。"
+            )
 
     def _on_copy_ocr_text(self):
         """將 OCR 文字複製到剪貼簿"""
