@@ -736,9 +736,32 @@ class InspectorPanel(QFrame):
 
         ocr_boxes = engine.get_ocr_data_by_path(item.path)
         if not ocr_boxes:
-            self.ocr_text_display.setPlainText(
-                "此圖片尚無 OCR 資料。\n\n請先對圖片進行索引，或確認「設定 → AI 引擎」中的 OCR 語言設定。"
-            )
+            # 直接查資料庫：是否有此檔案的 ocr_results 列（含 [NONE]）
+            has_record = False
+            try:
+                conn = engine.get_db_conn()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT COUNT(*) FROM ocr_results o
+                    JOIN files f ON o.file_id = f.id
+                    WHERE f.file_path = ?
+                """, (item.path,))
+                has_record = (cursor.fetchone()[0] > 0)
+                conn.close()
+            except Exception:
+                pass
+
+            if has_record:
+                # 有列，但 ocr_data = "[]" → OCR 掃描過，圖中無文字 ([NONE])
+                self.ocr_text_display.setPlainText(
+                    "OCR 已掃描，但此圖片中未偵測到任何文字。"
+                )
+            else:
+                # 完全沒有列 → 從未執行 OCR 任務
+                self.ocr_text_display.setPlainText(
+                    "此圖片尚未執行 OCR 任務。\n\n"
+                    "請至「設定 → 自動任務」啟用 OCR 索引，或重新索引此資料夾。"
+                )
             self.btn_copy_ocr.setEnabled(False)
             return
 
@@ -750,7 +773,7 @@ class InspectorPanel(QFrame):
                 lines.append(text)
 
         if not lines:
-            self.ocr_text_display.setPlainText("此圖片的 OCR 結果為空（未偵測到文字）。")
+            self.ocr_text_display.setPlainText("OCR 已掃描，但此圖片中未偵測到任何文字。")
             self.btn_copy_ocr.setEnabled(False)
             return
 
