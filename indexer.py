@@ -505,8 +505,9 @@ class IndexerService:
                     batch_meta.append((path, os.path.basename(path), os.path.dirname(path), os.path.getmtime(path), w, h, file_size))
                     
                     # 3. 派發給 OCR：預先將 RGB 轉為 OpenCV 需要的 BGR 陣列
+                    # 注意：img_bgr 來自已轉正的 img_rgb，座標系已是視覺正確方向，不需再翻轉
                     img_bgr = cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR)
-                    ocr_batch_cache[path] = (img_bgr, orientation, raw_w, raw_h)
+                    ocr_batch_cache[path] = img_bgr
 
                 except Exception: continue
 
@@ -538,8 +539,8 @@ class IndexerService:
                     file_id = id_map.get(path)
                     if not file_id or path not in ocr_batch_cache: continue
 
-                    # 🌟 從記憶體拿現成的 BGR 圖片與尺寸資料，不准再讀硬碟！
-                    img_bgr, orientation, raw_w, raw_h = ocr_batch_cache[path]
+                    # 🌟 從記憶體拿現成的 BGR 圖片，不准再讀硬碟！
+                    img_bgr = ocr_batch_cache[path]
                     
                     required_langs = self._get_folder_ocr_setting(path, folder_ocr_map)
                     for target_lang in required_langs:
@@ -554,11 +555,6 @@ class IndexerService:
                                 json_data_list = []
                                 for line in ocr_result[0]:
                                     box, (text, conf) = line[0], line[1]
-                                    
-                                    # 🌟 將紅框座標進行 EXIF 翻轉校正後再存入資料庫
-                                    if orientation != 1 and raw_w > 0:
-                                        box = rotate_ocr_box(box, orientation, raw_w, raw_h)
-                                        
                                     detected_text_list.append(text)
                                     json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
                                 ocr_text_final = " ".join(detected_text_list)
@@ -623,15 +619,8 @@ class IndexerService:
                     file_id = row[0]
                     
                     # 🌟 統一讀取中心 (軌道 C 專用)
+                    # exif_transpose 轉正後，OCR 輸出座標即為視覺正確座標，直接存入
                     with Image.open(path) as pil_img:
-                        raw_w, raw_h = pil_img.size
-                        orientation = 1
-                        exif = pil_img.getexif()
-                        if exif:
-                            for k, v in exif.items():
-                                if ExifTags.TAGS.get(k) == 'Orientation':
-                                    orientation = v
-                                    break
                         img_rgb = pil_to_rgb_safe(ImageOps.exif_transpose(pil_img))
                         
                     # 轉換為 OCR 需要的 BGR 陣列
@@ -655,11 +644,6 @@ class IndexerService:
                                 json_data_list = []
                                 for line in ocr_result[0]:
                                     box, (text, conf) = line[0], line[1]
-                                    
-                                    # 🌟 將紅框座標進行 EXIF 翻轉校正
-                                    if orientation != 1 and raw_w > 0:
-                                        box = rotate_ocr_box(box, orientation, raw_w, raw_h)
-                                        
                                     detected_text_list.append(text)
                                     json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
                                 ocr_text_final = " ".join(detected_text_list)
