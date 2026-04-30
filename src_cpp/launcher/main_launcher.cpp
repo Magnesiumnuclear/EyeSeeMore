@@ -238,6 +238,7 @@ LRESULT CALLBACK SplashWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
         ++s_elapsed;
         if (s_elapsed >= 600) {   // 600 × 100 ms = 60 秒逾時
             KillTimer(hWnd, 1);
+            AnimateWindow(hWnd, 200, AW_HIDE | AW_BLEND);  // 200ms 淡出
             DestroyWindow(hWnd);
             break;
         }
@@ -250,6 +251,7 @@ LRESULT CALLBACK SplashWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
             HWND hMain = FindWindowW(nullptr, TITLES[i]);
             if (hMain && IsWindowVisible(hMain)) {
                 KillTimer(hWnd, 1);
+                AnimateWindow(hWnd, 200, AW_HIDE | AW_BLEND);  // 200ms 淡出
                 DestroyWindow(hWnd);
                 break;
             }
