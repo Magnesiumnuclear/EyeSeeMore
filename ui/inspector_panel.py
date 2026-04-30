@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QImageReader, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QPushButton, QScrollArea, QSlider, QTabWidget,
+    QPushButton, QScrollArea, QSlider, QTabWidget, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -360,7 +360,17 @@ class InspectorPanel(QFrame):
         self._setup_info_tab()
         self.tabs.addTab(self.tab_info, "ℹ️ 資訊")
 
+        # 切換到 OCR 分頁時懶加載內容
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
         self.hide() # 預設隱藏，等待按鈕觸發
+
+    def _on_tab_changed(self, index):
+        """切換分頁時，若切到 OCR tab 且已有選取圖片，則懶加載更新"""
+        if index == 2:
+            item = getattr(self, 'current_ocr_item', None)
+            if item:
+                self.update_ocr(item)
 
     def _setup_search_tab(self):
         tab_layout = QVBoxLayout(self.tab_search)
@@ -628,17 +638,43 @@ class InspectorPanel(QFrame):
         self.main_window.start_multi_vector_search(pos_features, neg_features)
 
     def _setup_ocr_tab(self):
-        # 修正：原代碼誤寫為 self.tab_clip，現已改回 self.tab_ocr
-        layout = QVBoxLayout(self.tab_ocr) 
-        layout.setSpacing(15)
-        layout.setContentsMargins(20, 25, 20, 20)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout = QVBoxLayout(self.tab_ocr)
+        layout.setSpacing(8)
+        layout.setContentsMargins(15, 15, 15, 15)
 
-        # 修正：使用正確的按鈕變數名稱
-        self.btn_test_ocr = self._create_construction_button("🚧 施工中：進階 OCR 屬性分析")
-        layout.addWidget(self.btn_test_ocr)
+        # 目前圖片名稱
+        self.ocr_filename_lbl = QLabel("尚未選取圖片")
+        self.ocr_filename_lbl.setWordWrap(True)
+        self.ocr_filename_lbl.setObjectName("OcrFilenameLabel")
+        self.ocr_filename_lbl.setStyleSheet(
+            "font-size: 13px; font-weight: bold; background: transparent;"
+        )
+        layout.addWidget(self.ocr_filename_lbl)
 
-        layout.addStretch(1)
+        # 偵測語言標籤
+        self.ocr_lang_lbl = QLabel("")
+        self.ocr_lang_lbl.setObjectName("OcrLangLabel")
+        self.ocr_lang_lbl.setStyleSheet(
+            "font-size: 12px; color: #888; background: transparent;"
+        )
+        layout.addWidget(self.ocr_lang_lbl)
+
+        # OCR 文字顯示區 (唯讀)
+        self.ocr_text_display = QTextEdit()
+        self.ocr_text_display.setReadOnly(True)
+        self.ocr_text_display.setObjectName("OcrTextDisplay")
+        self.ocr_text_display.setPlaceholderText(
+            "點擊圖片後，此處將顯示 OCR 識別文字..."
+        )
+        layout.addWidget(self.ocr_text_display, stretch=1)
+
+        # 底部：複製按鈕
+        self.btn_copy_ocr = QPushButton("📋 複製全部文字")
+        self.btn_copy_ocr.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_copy_ocr.setProperty("cssClass", "ActionBtn")
+        self.btn_copy_ocr.clicked.connect(self._on_copy_ocr_text)
+        self.btn_copy_ocr.setEnabled(False)
+        layout.addWidget(self.btn_copy_ocr)
 
     def _setup_info_tab(self):
         layout = QVBoxLayout(self.tab_info)
@@ -686,8 +722,75 @@ class InspectorPanel(QFrame):
         layout.addLayout(self.grid)
         layout.addStretch(1)
 
+    def update_ocr(self, item):
+        """更新 OCR 分頁的文字顯示（懶加載，按需查詢資料庫）"""
+        LANG_NAMES = {"ch": "中文 (ZH)", "en": "英文 (EN)", "jp": "日文 (JA)", "kr": "韓文 (KR)"}
+
+        self.ocr_filename_lbl.setText(f"📄 {item.filename}")
+
+        engine = getattr(self.main_window, 'engine', None)
+        if not engine:
+            self.ocr_text_display.setPlainText("⚠️ AI 引擎未就緒，無法讀取 OCR 資料。")
+            self.ocr_lang_lbl.setText("")
+            self.btn_copy_ocr.setEnabled(False)
+            return
+
+        ocr_boxes = engine.get_ocr_data_by_path(item.path)
+        if not ocr_boxes:
+            self.ocr_text_display.setPlainText(
+                "此圖片尚無 OCR 資料。\n\n請先對圖片進行索引，或確認「設定 → AI 引擎」中的 OCR 語言設定。"
+            )
+            self.ocr_lang_lbl.setText("")
+            self.btn_copy_ocr.setEnabled(False)
+            return
+
+        # 依語言分組文字（保留出現順序）
+        lang_texts: dict[str, list[str]] = {}
+        for box in ocr_boxes:
+            lang = box.get("lang", "unk")
+            text = box.get("text", "").strip()
+            if text and text not in ("[NONE]", "[NULL]", ""):
+                lang_texts.setdefault(lang, []).append(text)
+
+        if not lang_texts:
+            self.ocr_text_display.setPlainText("此圖片的 OCR 結果為空（未偵測到文字）。")
+            self.ocr_lang_lbl.setText("")
+            self.btn_copy_ocr.setEnabled(False)
+            return
+
+        # 語言標籤
+        detected = list(lang_texts.keys())
+        self.ocr_lang_lbl.setText(
+            "🌐 " + "  ·  ".join(LANG_NAMES.get(l, l.upper()) for l in detected)
+        )
+
+        # 組合顯示文字
+        lines = []
+        for lang, texts in lang_texts.items():
+            if len(lang_texts) > 1:
+                lines.append(f"── {LANG_NAMES.get(lang, lang.upper())} ──")
+            lines.append(" ".join(texts))
+            if len(lang_texts) > 1:
+                lines.append("")
+
+        self.ocr_text_display.setPlainText("\n".join(lines).strip())
+        self.btn_copy_ocr.setEnabled(True)
+
+    def _on_copy_ocr_text(self):
+        """將 OCR 文字複製到剪貼簿"""
+        from PyQt6.QtWidgets import QApplication
+        text = self.ocr_text_display.toPlainText()
+        if text:
+            QApplication.clipboard().setText(text)
+
     def update_info(self, item):
         """當主畫面點擊圖片時，呼叫此函式更新第三分頁的資料"""
+        # 儲存 item 供 OCR 分頁懶加載
+        self.current_ocr_item = item
+        # 若 OCR 分頁正在顯示，立即更新
+        if self.tabs.currentIndex() == 2:
+            self.update_ocr(item)
+
         self.filename_lbl.setText(item.filename)
         
         # 智慧縮放預覽圖
