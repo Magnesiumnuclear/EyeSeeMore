@@ -5,7 +5,7 @@
 # --- [1] 個人設定、隱私與紀錄 ---
 # 排除個人設定檔
 config.json
-user_config.json
+*.json
 # 排除個人搜尋紀錄
 search_history.json
 # 排除存放個人測試圖片的資料夾
