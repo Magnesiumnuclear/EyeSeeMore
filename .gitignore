@@ -53,6 +53,7 @@ EyeSeeMore_Runtime/
 # 排除 Python 打包規格與 HTML 暫存
 *.spec
 latent_space.html
+latent_space_3d.html
 
 # --- [6] 系統與 IDE 雜項 ---
 .vscode/

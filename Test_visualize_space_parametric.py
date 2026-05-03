@@ -27,7 +27,7 @@ DB_PATH = "images.db"
 
 # Parametric UMAP Encoder (Keras SavedModel) 的儲存路徑
 # 訓練完成後，未來所有執行都只使用這個固定模型
-ENCODER_SAVE_PATH = os.path.join("models", "parametric_umap_encoder")
+ENCODER_SAVE_PATH = "models/parametric_umap_encoder.keras"
 
 THUMB_SIZE  = (80, 80)   # 懸浮視窗縮圖尺寸 (不要太大，否則 HTML 會很肥)
 OUTPUT_FILE = "latent_space_3d.html"
