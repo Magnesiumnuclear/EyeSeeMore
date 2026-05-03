@@ -835,9 +835,9 @@ class InspectorPanel(QFrame):
                     "OCR 已掃描，但此圖片中未偵測到任何文字。"
                 )
             else:
-                # 完全沒有列 → 從未執行 OCR 任務
+                # 完全沒有列 → 從未有 OCR 任務
                 self.ocr_text_display.setPlainText(
-                    "此圖片尚未執行 OCR 任務。\n\n"
+                    "此圖片尚未有 OCR 任務。\n\n"
                     "請至「設定 → 自動任務」啟用 OCR 索引，或重新索引此資料夾。"
                 )
             self.btn_copy_ocr.setEnabled(False)
