@@ -25,4 +25,3 @@ LANGS_DIR        = os.path.join(BASE_DIR, "languages")
 THEMES_DIR       = os.path.join(BASE_DIR, "themes")
 CONFIG_PATH      = os.path.join(BASE_DIR, "config.json")
 DB_PATH          = os.path.join(BASE_DIR, "images.db")
-USER_CONFIG_PATH = os.path.join(BASE_DIR, "user_config.json")  # C++ Launcher 橋接檔

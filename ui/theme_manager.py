@@ -1,7 +1,7 @@
 import os
 import json
 from PyQt6.QtWidgets import QApplication
-from core.paths import THEMES_DIR, USER_CONFIG_PATH
+from core.paths import THEMES_DIR
 
 class ThemeManager:
     def __init__(self, config_manager):
@@ -52,17 +52,8 @@ class ThemeManager:
         ui_state["theme"] = theme_id
         self.config.set("ui_state", ui_state)
 
-        # 同步寫入 user_config.json，供 C++ Launcher 下次啟動讀取
-        try:
-            ucfg = {}
-            if os.path.exists(USER_CONFIG_PATH):
-                with open(USER_CONFIG_PATH, 'r', encoding='utf-8') as f:
-                    ucfg = json.load(f)
-            ucfg["theme"] = theme_id
-            with open(USER_CONFIG_PATH, 'w', encoding='utf-8') as f:
-                json.dump(ucfg, f, indent=4, ensure_ascii=False)
-        except Exception as e:
-            print(f"[ThemeManager] 同步 user_config.json 失敗: {e}")
+        # 同步更新 config.json 頂層 "theme" 鍵，供 C++ Launcher 下次啟動讀取
+        self.config.set("theme", theme_id)
 
         # 3. 讀取 QSS 樣板並替換變數
         qss_path = os.path.join(self.themes_dir, "base_style.qss")

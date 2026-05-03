@@ -128,14 +128,14 @@ struct SplashTheme {
 
 /**
  * 讀取流：
- *   installDir\user_config.json  →  取得 "theme" 欄位（如 "dark"）
+ *   installDir\config.json        →  取得頂層 "theme" 欄位（如 "dark"）
  *   installDir\themes\dark.json  →  取得 colors.bg_app / primary / text_sec
  * 任一步驟失敗均回傳 SplashTheme 預設值（深色），確保啟動不閃退。
  */
 static SplashTheme LoadSplashTheme(const std::wstring& installDir) {
     SplashTheme t;
 
-    std::string ucfg = ReadFileUtf8(installDir + L"\\user_config.json");
+    std::string ucfg = ReadFileUtf8(installDir + L"\\config.json");
     if (ucfg.empty()) return t;
 
     std::string themeId = JsonGetStr(ucfg, "theme");
@@ -351,14 +351,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     //     │ 傳遞方向         │ 機制                                  │
     //     ├─────────────────┼──────────────────────────────────────┤
     //     │ C++ → Python    │ SetEnvironmentVariableA("ESM_THEME") │
-    //     │ Python → C++    │ 寫入 user_config.json（下次啟動讀取）  │
+    //     │ Python → C++    │ 寫入 config.json 頂層鍵（下次啟動讀取）│
     //     └─────────────────┴──────────────────────────────────────┘
     //
     //   Python 端讀法：
     //     theme = os.environ.get("ESM_THEME", "dark")
     //     lang  = os.environ.get("ESM_LANG",  "zh_TW")
     // ────────────────────────────────────────────────────────────────────
-    std::string ucfg  = ReadFileUtf8(wsRoot + L"\\user_config.json");
+    std::string ucfg  = ReadFileUtf8(wsRoot + L"\\config.json");
     std::string theme = JsonGetStr(ucfg, "theme");
     std::string lang  = JsonGetStr(ucfg, "language");
     if (theme.empty()) theme = "dark";

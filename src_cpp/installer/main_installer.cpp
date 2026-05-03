@@ -173,15 +173,14 @@ int main() {
     }
 
     // ==========================================
-    // E. 建立預設 user_config.json（橋接檔）
+    // E. 建立預設 config.json（首次安裝時建立最小版本）
     //    ─ 僅在首次安裝時建立，保留升級安裝時的既有使用者設定
-    //    ─ 格式：{"theme": "dark", "language": "zh_TW"}
-    //    ─ Python 在使用者變更主題/語言後會同步更新此檔
-    //    ─ C++ Launcher 每次啟動讀取此檔以決定 Splash 色彩與環境變數
+    //    ─ 頂層放置 "theme" 與 "language"，供 C++ Launcher 啟動時直接讀取
+    //    ─ Python 啟動後會自動補齊所有其他預設設定值
     // ==========================================
-    std::wstring userConfigPath = installDir + L"\\user_config.json";
-    if (GetFileAttributesW(userConfigPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        HANDLE hFile = CreateFileW(userConfigPath.c_str(), GENERIC_WRITE, 0, nullptr,
+    std::wstring configPath = installDir + L"\\config.json";
+    if (GetFileAttributesW(configPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        HANDLE hFile = CreateFileW(configPath.c_str(), GENERIC_WRITE, 0, nullptr,
                                    CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile != INVALID_HANDLE_VALUE) {
             const char* defaultCfg =
@@ -192,12 +191,12 @@ int main() {
             DWORD written = 0;
             WriteFile(hFile, defaultCfg, static_cast<DWORD>(strlen(defaultCfg)), &written, nullptr);
             CloseHandle(hFile);
-            std::cout << "[系統] 已建立預設使用者設定檔 (user_config.json)\n" << std::endl;
+            std::cout << "[系統] 已建立預設設定檔 (config.json)\n" << std::endl;
         } else {
-            std::cerr << "[系統] 警告：無法建立 user_config.json，Launcher 將使用內建預設值。\n" << std::endl;
+            std::cerr << "[系統] 警告：無法建立 config.json，程式仍可啟動但設定將使用內建預設值。\n" << std::endl;
         }
     } else {
-        std::cout << "[系統] 使用者設定檔已存在，升級安裝保留現有設定。\n" << std::endl;
+        std::cout << "[系統] 設定檔已存在，升級安裝保留現有設定。\n" << std::endl;
     }
 
     // ==========================================
