@@ -2782,6 +2782,7 @@ class PreviewOverlay(QWidget):
         self.current_preview_worker = None
         self._crop_worker  = None       # CropOCRWorker
         self._crop_items   = []         # 框選 OCR 暫存結果
+        self._last_crop_rect_px = None  # 使用者框選的原始圖片像素 QRect
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.hide()
         self.setObjectName("PreviewOverlayMask")
@@ -2846,7 +2847,15 @@ class PreviewOverlay(QWidget):
         self._crop_status_lbl.setObjectName("CropStatusLabel")
         _cb_layout.addWidget(self._crop_status_lbl)
 
-        # 第二排：按鈕靠右排列
+        # 第二排：可編輯文字欄（OCR 完成後顯示，可修改後再存入 DB）
+        self._crop_edit = QLineEdit()
+        self._crop_edit.setObjectName("CropTextEdit")
+        self._crop_edit.setPlaceholderText("點此輸入或修改文字…")
+        self._crop_edit.hide()
+        self._crop_edit.textChanged.connect(self._on_crop_edit_changed)
+        _cb_layout.addWidget(self._crop_edit)
+
+        # 第三排：按鈕靠右排列
         _btn_row = QHBoxLayout()
         _btn_row.setContentsMargins(0, 0, 0, 0)
         _btn_row.setSpacing(8)
@@ -2882,6 +2891,9 @@ class PreviewOverlay(QWidget):
             self._crop_worker.is_cancelled = True
             self._crop_worker = None
         self._crop_items = []
+        self._last_crop_rect_px = None
+        self._crop_edit.clear()
+        self._crop_edit.hide()
         self.image_label.exit_crop_mode()
         self.btn_ocr_crop.setChecked(False)
         self.btn_ocr_crop.setStyleSheet("")
@@ -2902,6 +2914,7 @@ class PreviewOverlay(QWidget):
         orig_h = self.image_label.original_size.height()
 
         self._crop_items = []
+        self._last_crop_rect_px = rect  # 儲存原始像素 rect 供手動輸入使用
         self._crop_status_lbl.setText(f"載入引擎並辨識中… ({', '.join(needed_langs)})")
         self._btn_save_crop.setEnabled(False)
         self._reposition_confirm_bar()
@@ -2942,23 +2955,63 @@ class PreviewOverlay(QWidget):
         self.image_label.set_crop_items(items)
         if items:
             texts = [i["text"] for i in items]
-            preview = "、".join(texts[:3]) + ("…" if len(texts) > 3 else "")
-            self._crop_status_lbl.setText(f"辨識到 {len(items)} 個文字區塊：{preview}")
+            self._crop_status_lbl.setText(f"辨識到 {len(items)} 個文字區塊（可編輯）")
+            self._crop_edit.setText(" ".join(texts))
             self._btn_save_crop.setEnabled(True)
         else:
-            self._crop_status_lbl.setText("未辨識到文字")
-            self._btn_save_crop.setEnabled(False)
+            self._crop_status_lbl.setText("未辨識到文字（可手動輸入後存入）")
+            self._crop_edit.setText("")
+            self._btn_save_crop.setEnabled(False)  # 等待輸入後才啟用
+        self._crop_edit.show()
+        self._crop_edit.setFocus()
         self._reposition_confirm_bar()
+
+    def _on_crop_edit_changed(self, text: str):
+        """文字欄內容改變時：未辨識到文字的情況下，有輸入才啟用加入按鈕"""
+        if not self._crop_items:
+            self._btn_save_crop.setEnabled(bool(text.strip()))
 
     def _on_crop_ocr_error(self, msg: str):
         self._crop_status_lbl.setText(f"OCR 錯誤：{msg}")
         self._btn_save_crop.setEnabled(False)
 
     def _save_crop_to_db(self):
-        if not self._crop_items or not self.current_preview_path:
+        if not self.current_preview_path:
             return
+        edited_text = self._crop_edit.text().strip()
+        if not edited_text and not self._crop_items:
+            return
+
+        # 決定要儲存的 items：以編輯欄文字為準
+        original_texts = " ".join(i["text"] for i in self._crop_items) if self._crop_items else ""
+        if edited_text and edited_text != original_texts:
+            # 使用者修改過，或手動輸入（用框選的矩形作為 box）
+            r = self._last_crop_rect_px
+            if r:
+                box = [[r.left(), r.top()], [r.right(), r.top()],
+                       [r.right(), r.bottom()], [r.left(), r.bottom()]]
+            elif self._crop_items:
+                box = self._crop_items[0]["box"]
+            else:
+                return
+            lang = self._crop_items[0]["lang"] if self._crop_items else \
+                   self._get_langs_for_path(self.current_preview_path)[0]
+            save_items = [{
+                "box":     box,
+                "lang":    lang,
+                "text":    edited_text,
+                "conf":    1.0,
+                "results": [{"lang": lang, "text": edited_text, "conf": 1.0}],
+            }]
+        else:
+            # 文字未修改，儲存原始 OCR 結果
+            save_items = self._crop_items
+
+        if not save_items:
+            return
+
         engine = self.parent().engine
-        ok = engine.upsert_crop_ocr(self.current_preview_path, self._crop_items)
+        ok = engine.upsert_crop_ocr(self.current_preview_path, save_items)
         if ok:
             self._reload_ocr_data()  # 更新 Shift 紅框
             self._cancel_crop()      # 關閉框選模式與確認列

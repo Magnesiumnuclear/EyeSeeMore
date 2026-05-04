@@ -422,6 +422,22 @@ QLabel#CropStatusLabel {
     background: transparent;
 }
 
+QLineEdit#CropTextEdit {
+    background-color: rgba(40, 40, 50, 200);
+    color: @text_main;
+    border: 1px solid @border_main;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 13px;
+    selection-background-color: rgba(0, 120, 200, 160);
+}
+QLineEdit#CropTextEdit:focus {
+    border-color: rgba(0, 150, 220, 200);
+}
+QLineEdit#CropTextEdit:hover {
+    border-color: @border_hover;
+}
+
 QPushButton#CropSaveBtn {
     background-color: rgba(0, 160, 60, 180);
     color: white;
