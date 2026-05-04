@@ -2571,31 +2571,31 @@ class PreviewOverlay(QWidget):
 
         self.floating_tag = FloatingWidget(self)
 
-        # --- 浮動功能列 (圖片右上角外側) ---
+        # --- 浮動功能列 (圖片右側，頂部對齊) ---
         self.img_toolbar = QWidget(self)
         self.img_toolbar.setObjectName("PreviewImgToolbar")
         self.img_toolbar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        _tb_layout = QHBoxLayout(self.img_toolbar)
-        _tb_layout.setContentsMargins(6, 5, 6, 5)
-        _tb_layout.setSpacing(6)
+        _tb_layout = QVBoxLayout(self.img_toolbar)
+        _tb_layout.setContentsMargins(5, 5, 5, 5)
+        _tb_layout.setSpacing(4)
+        _tb_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        self.btn_ocr_crop = QPushButton("⬚  OCR 框選")
+        self.btn_ocr_crop = QPushButton("⬚")
         self.btn_ocr_crop.setObjectName("PreviewToolbarBtn")
         self.btn_ocr_crop.setToolTip("框選區域執行 OCR")
+        self.btn_ocr_crop.setFixedSize(36, 36)
         _tb_layout.addWidget(self.btn_ocr_crop)
 
         self.img_toolbar.adjustSize()
         self.img_toolbar.hide()
 
     def _reposition_toolbar(self):
-        """將功能列定位於 image_label 右上角外側"""
+        """將功能列定位於 image_label 右側，頂部與圖片頂部對齊"""
         img_rect = self.image_label.geometry()
         tb = self.img_toolbar
         tb.adjustSize()
-        x = img_rect.right() - tb.width()
-        y = img_rect.top() - tb.height() - 4
-        if y < 0:
-            y = img_rect.top() + 4   # 空間不足時退入圖片頂部內側
+        x = img_rect.right()          # 緊貼圖片右邊
+        y = img_rect.top()            # 頂部對齊
         tb.move(x, y)
         tb.raise_()
         tb.show()

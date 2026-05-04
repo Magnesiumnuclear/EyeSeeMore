@@ -383,11 +383,14 @@ QLabel#PreviewOverlayHint {
     background: transparent; 
 }
 
-/* 預覽功能列 */
+/* 預覽功能列（貼圖片右側，左兩角不導圓角） */
 QWidget#PreviewImgToolbar {
     background-color: rgba(18, 18, 22, 210);
     border: 1px solid @border_main;
-    border-radius: 6px;
+    border-top-left-radius: 0px;
+    border-bottom-left-radius: 0px;
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
 }
 
 QPushButton#PreviewToolbarBtn {
@@ -395,8 +398,9 @@ QPushButton#PreviewToolbarBtn {
     color: @text_main;
     border: none;
     border-radius: 4px;
-    padding: 4px 10px;
-    font-size: 13px;
+    padding: 0px;
+    font-size: 18px;
+    qproperty-iconSize: 20px 20px;
 }
 
 QPushButton#PreviewToolbarBtn:hover {
