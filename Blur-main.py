@@ -2841,10 +2841,9 @@ class PreviewOverlay(QWidget):
         _cb_layout.setContentsMargins(10, 8, 10, 8)
         _cb_layout.setSpacing(6)
 
-        # 第一排：辨識狀態文字（自動換行）
+        # 第一排：辨識狀態文字
         self._crop_status_lbl = QLabel("辨識中…")
         self._crop_status_lbl.setObjectName("CropStatusLabel")
-        self._crop_status_lbl.setWordWrap(True)
         _cb_layout.addWidget(self._crop_status_lbl)
 
         # 第二排：按鈕靠右排列
@@ -2961,26 +2960,58 @@ class PreviewOverlay(QWidget):
         engine = self.parent().engine
         ok = engine.upsert_crop_ocr(self.current_preview_path, self._crop_items)
         if ok:
-            self._crop_status_lbl.setText("已成功寫入資料庫！")
-            self._btn_save_crop.setEnabled(False)
+            self._reload_ocr_data()  # 更新 Shift 紅框
+            self._cancel_crop()      # 關閉框選模式與確認列
         else:
             self._crop_status_lbl.setText("寫入失敗，請確認圖片已建立索引")
 
+    def _reload_ocr_data(self):
+        """從 DB 重新讀取 OCR 資料並更新 image_label（Shift 紅框即時反映新內容）"""
+        try:
+            engine = self.parent().engine
+            raw = engine.get_ocr_data_by_path(self.current_preview_path)
+            merged = [
+                {"box": item["box"],
+                 "results": [{"lang": item.get("lang", ""),
+                               "text": item.get("text", ""),
+                               "conf": item.get("conf", 0.0)}]}
+                for item in raw if item.get("box")
+            ]
+            lbl = self.image_label
+            lbl.set_precomputed_ocr_data(
+                merged,
+                lbl.original_size.width(),
+                lbl.original_size.height(),
+                lbl.search_query,
+                lbl.is_precise_mode,
+            )
+        except Exception as e:
+            print(f"[PreviewOverlay] reload OCR error: {e}")
+
     def _reposition_confirm_bar(self):
-        """將確認列定位在圖片下緣內側"""
+        """將確認列定位在圖片下緣，寬度自動延伸以完整顯示文字"""
         pm = self.image_label.pixmap()
         if pm is None or pm.isNull():
             return
         lbl = self.image_label
         lbl_rect = lbl.geometry()
-        img_y2  = lbl_rect.top()  + (lbl_rect.height() + pm.height()) // 2   # 圖片下緣
-        img_x   = lbl_rect.left() + (lbl_rect.width()  - pm.width())  // 2
+        img_y2 = lbl_rect.top()  + (lbl_rect.height() + pm.height()) // 2  # 圖片下緣
+        img_cx = lbl_rect.left() + (lbl_rect.width()  - pm.width())  // 2 + pm.width() // 2  # 圖片水平中心
+
         bar = self._crop_confirm_bar
+        # 移除舊的固定寬限制，讓 bar 自然伸展
+        bar.setMinimumWidth(0)
+        bar.setMaximumWidth(16777215)
         bar.adjustSize()
-        bw = min(bar.width(), pm.width())
-        bx = img_x + (pm.width() - bw) // 2
-        by = img_y2 - bar.height() - 6
+        bw = max(bar.sizeHint().width(), pm.width())  # 至少與圖片同寬
+        bw = min(bw, self.width() - 20)               # 不超出 overlay 邊界
         bar.setFixedWidth(bw)
+        bar.adjustSize()
+        bh = bar.height()
+        bx = max(0, img_cx - bw // 2)                 # 水平置中於圖片
+        if bx + bw > self.width():
+            bx = max(0, self.width() - bw)
+        by = img_y2 - bh - 6
         bar.move(bx, by)
         bar.raise_()
 
