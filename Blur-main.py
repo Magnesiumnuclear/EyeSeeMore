@@ -2837,24 +2837,34 @@ class PreviewOverlay(QWidget):
         self._crop_confirm_bar = QWidget(self)
         self._crop_confirm_bar.setObjectName("CropConfirmBar")
         self._crop_confirm_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        _cb_layout = QHBoxLayout(self._crop_confirm_bar)
-        _cb_layout.setContentsMargins(10, 6, 10, 6)
-        _cb_layout.setSpacing(8)
+        _cb_layout = QVBoxLayout(self._crop_confirm_bar)
+        _cb_layout.setContentsMargins(10, 8, 10, 8)
+        _cb_layout.setSpacing(6)
 
+        # 第一排：辨識狀態文字（自動換行）
         self._crop_status_lbl = QLabel("辨識中…")
         self._crop_status_lbl.setObjectName("CropStatusLabel")
-        _cb_layout.addWidget(self._crop_status_lbl, stretch=1)
+        self._crop_status_lbl.setWordWrap(True)
+        _cb_layout.addWidget(self._crop_status_lbl)
+
+        # 第二排：按鈕靠右排列
+        _btn_row = QHBoxLayout()
+        _btn_row.setContentsMargins(0, 0, 0, 0)
+        _btn_row.setSpacing(8)
+        _btn_row.addStretch()
 
         self._btn_save_crop = QPushButton("加入資料庫")
         self._btn_save_crop.setObjectName("CropSaveBtn")
         self._btn_save_crop.setEnabled(False)
         self._btn_save_crop.clicked.connect(self._save_crop_to_db)
-        _cb_layout.addWidget(self._btn_save_crop)
+        _btn_row.addWidget(self._btn_save_crop)
 
         self._btn_cancel_crop = QPushButton("取消")
         self._btn_cancel_crop.setObjectName("CropCancelBtn")
         self._btn_cancel_crop.clicked.connect(self._cancel_crop)
-        _cb_layout.addWidget(self._btn_cancel_crop)
+        _btn_row.addWidget(self._btn_cancel_crop)
+
+        _cb_layout.addLayout(_btn_row)
 
         self._crop_confirm_bar.adjustSize()
         self._crop_confirm_bar.hide()
