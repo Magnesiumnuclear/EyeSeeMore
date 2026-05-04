@@ -2580,7 +2580,7 @@ class PreviewOverlay(QWidget):
         _tb_layout.setSpacing(4)
         _tb_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        self.btn_ocr_crop = QPushButton("⬚")
+        self.btn_ocr_crop = QPushButton("[T]")
         self.btn_ocr_crop.setObjectName("PreviewToolbarBtn")
         self.btn_ocr_crop.setToolTip("框選區域執行 OCR")
         self.btn_ocr_crop.setFixedSize(36, 36)
@@ -2590,13 +2590,20 @@ class PreviewOverlay(QWidget):
         self.img_toolbar.hide()
 
     def _reposition_toolbar(self):
-        """將功能列定位於 image_label 右側，頂部與圖片頂部對齊"""
-        img_rect = self.image_label.geometry()
+        """將功能列定位於 image_label 內實際圖片右側，頂部對齊"""
+        lbl = self.image_label
+        pm = lbl.pixmap()
+        if pm is None or pm.isNull():
+            return
+        lbl_rect = lbl.geometry()
+        # 圖片在 QLabel 內的實際布局（居中對齊）
+        img_x = lbl_rect.left() + (lbl_rect.width()  - pm.width())  // 2
+        img_y = lbl_rect.top()  + (lbl_rect.height() - pm.height()) // 2
+        img_right = img_x + pm.width()
+
         tb = self.img_toolbar
         tb.adjustSize()
-        x = img_rect.right()          # 緊貼圖片右邊
-        y = img_rect.top()            # 頂部對齊
-        tb.move(x, y)
+        tb.move(img_right, img_y)   # 頂部對齊、緊貼圖片右邊
         tb.raise_()
         tb.show()
 
@@ -2677,6 +2684,7 @@ class PreviewOverlay(QWidget):
             if not img.isNull():
                 pixmap = QPixmap.fromImage(img)
                 self.image_label.setPixmap(pixmap)
+                QTimer.singleShot(0, self._reposition_toolbar)  # 高清圖載入後重新對齊
                 
             # 2.  就算圖片因為極端原因載入失敗，我們也強制把算好的 OCR 資料塞給畫布
             # 這樣按 Shift 就絕對能看得到紅框！

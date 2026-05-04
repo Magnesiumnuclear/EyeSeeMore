@@ -399,8 +399,10 @@ QPushButton#PreviewToolbarBtn {
     border: none;
     border-radius: 4px;
     padding: 0px;
-    font-size: 18px;
-    qproperty-iconSize: 20px 20px;
+    font-size: 13px;
+    font-family: "Consolas", monospace;
+    font-weight: bold;
+    letter-spacing: 1px;
 }
 
 QPushButton#PreviewToolbarBtn:hover {
