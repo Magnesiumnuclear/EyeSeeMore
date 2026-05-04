@@ -3003,8 +3003,8 @@ class PreviewOverlay(QWidget):
         bar.setMinimumWidth(0)
         bar.setMaximumWidth(16777215)
         bar.adjustSize()
-        bw = max(bar.sizeHint().width(), pm.width())  # 至少與圖片同寬
-        bw = min(bw, self.width() - 20)               # 不超出 overlay 邊界
+        bw = bar.sizeHint().width()           # 只用內容所需寬度
+        bw = min(bw, self.width() - 20)       # 不超出 overlay 邊界
         bar.setFixedWidth(bw)
         bar.adjustSize()
         bh = bar.height()
