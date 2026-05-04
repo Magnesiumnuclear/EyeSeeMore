@@ -404,11 +404,48 @@ QPushButton#PreviewToolbarBtn {
     font-weight: bold;
     letter-spacing: 1px;
 }
-
-QPushButton#PreviewToolbarBtn:hover {
-    background-color: @bg_hover;
-    color: @primary;
+QPushButton#PreviewToolbarBtn:hover    { background-color: @bg_hover; color: @primary; }QPushButton#PreviewToolbarBtn:checked {
+    background-color: rgba(0, 200, 80, 60);
+    color: #00dc50;
 }
+
+/* 框選結果確認列 */
+QWidget#CropConfirmBar {
+    background-color: rgba(18, 18, 22, 210);
+    border: 1px solid @border_main;
+    border-radius: 6px;
+}
+
+QLabel#CropStatusLabel {
+    color: @text_sec;
+    font-size: 12px;
+    background: transparent;
+}
+
+QPushButton#CropSaveBtn {
+    background-color: rgba(0, 160, 60, 180);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: bold;
+}
+
+QPushButton#CropSaveBtn:hover  { background-color: rgba(0, 200, 80, 220); }
+QPushButton#CropSaveBtn:disabled { background-color: @bg_hover; color: @text_muted; }
+
+QPushButton#CropCancelBtn {
+    background-color: transparent;
+    color: @text_sec;
+    border: 1px solid @border_main;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+QPushButton#CropCancelBtn:hover { background-color: @bg_hover; color: @text_main; }
+
 
 /* ==========================================
    第三波除垢：統計面板 (StatsMenuWidget)

@@ -242,6 +242,98 @@ class PreviewSignals(QObject):
     #  關鍵修復：將跨執行緒的傳遞物件從 QPixmap 換成絕對安全的 QImage
     result = pyqtSignal(str, QImage, list, int, int, str, bool)
 
+
+# ==========================================
+#  框選 OCR 背景工作執行緒
+# ==========================================
+class CropOCRSignals(QObject):
+    result = pyqtSignal(list)   # list of merged-data dicts (box, results, lang)
+    error  = pyqtSignal(str)
+
+class CropOCRWorker(QRunnable):
+    """
+    在背景執行緒裡對使用者框選的矩形範圍跑 OCR。
+    因為已知範圍，跳過全圖 det 步驟；直接對裁切後的子圖做 det+rec（小圖很快）。
+    box 座標最終換算回原始圖片的完整座標系。
+    """
+    def __init__(self, file_path, crop_rect, shared_engines, needed_langs,
+                 use_gpu, orig_w, orig_h):
+        super().__init__()
+        self.file_path      = file_path
+        self.crop_rect      = crop_rect          # QRect，單位是原始圖片像素
+        self.shared_engines = shared_engines     # dict {lang: ONNXOCR}，可被寫回新載入的引擎
+        self.needed_langs   = needed_langs       # ["ch", "japan", ...]
+        self.use_gpu        = use_gpu
+        self.orig_w         = orig_w
+        self.orig_h         = orig_h
+        self.signals        = CropOCRSignals()
+        self.is_cancelled   = False
+
+    def run(self):
+        try:
+            import cv2 as _cv2
+            from PIL import Image as _PIL, ImageOps as _ImageOps
+            from onnx_ocr import ONNXOCR as _ONNXOCR
+
+            # 讀圖（含 EXIF 轉正）
+            with _PIL.open(self.file_path) as pil_img:
+                pil_img = _ImageOps.exif_transpose(pil_img)
+                img_rgb = pil_img.convert("RGB")
+            img_bgr = _cv2.cvtColor(np.array(img_rgb), _cv2.COLOR_RGB2BGR)
+
+            if self.is_cancelled: return
+
+            # 若 shared_engines 中缺少所需語系，即時載入並寫回（下次可直接複用）
+            for lang in self.needed_langs:
+                if lang not in self.shared_engines:
+                    try:
+                        print(f"[CropOCR] 載入 OCR 引擎: {lang}")
+                        self.shared_engines[lang] = _ONNXOCR(lang=lang, use_gpu=self.use_gpu)
+                    except Exception as e:
+                        print(f"[CropOCR] 載入 '{lang}' 失敗: {e}")
+
+            if self.is_cancelled: return
+
+            # 取裁切範圍（夾邊防越界）
+            x  = max(0, self.crop_rect.x())
+            y  = max(0, self.crop_rect.y())
+            x2 = min(img_bgr.shape[1], self.crop_rect.right() + 1)
+            y2 = min(img_bgr.shape[0], self.crop_rect.bottom() + 1)
+            crop = img_bgr[y:y2, x:x2]
+            if crop.size == 0:
+                self.signals.result.emit([])
+                return
+
+            if self.is_cancelled: return
+
+            merged = []
+            for lang in self.needed_langs:
+                engine = self.shared_engines.get(lang)
+                if engine is None:
+                    continue
+                ocr_out = engine.ocr(crop, cls=False)
+                if not ocr_out or not ocr_out[0]:
+                    continue
+                for line in ocr_out[0]:
+                    box_local, (text, conf) = line[0], line[1]
+                    # 把框座標平移回全圖座標
+                    box_full = [[int(pt[0]) + x, int(pt[1]) + y] for pt in box_local]
+                    merged.append({
+                        "box":     box_full,
+                        "results": [{"lang": lang, "text": text, "conf": round(float(conf), 4)}],
+                        "lang":    lang,
+                        "text":    text,
+                        "conf":    round(float(conf), 4),
+                    })
+
+            if not self.is_cancelled:
+                self.signals.result.emit(merged)
+
+        except Exception as e:
+            if not self.is_cancelled:
+                self.signals.error.emit(str(e))
+
+
 class PreviewLoader(QRunnable):
     """專門用於大圖預覽的高清背景讀取器 + 幾何碰撞運算器"""
     def __init__(self, file_path, target_size, engine, query, is_precise, orig_w, orig_h):
@@ -1704,7 +1796,70 @@ class ImageSearchEngine:
         finally:
             conn.close()
         return ocr_boxes
-    
+
+    def upsert_crop_ocr(self, file_path: str, new_items: list) -> bool:
+        """
+        將框選 OCR 結果合併寫入資料庫。
+        new_items 格式: [{"lang": str, "box": [[x,y]...], "text": str, "conf": float}, ...]
+        每個 lang 單獨處理：取出舊 ocr_data，追加新框，回寫。
+        """
+        if not new_items:
+            return False
+        try:
+            conn = self.get_db_conn()
+            cur  = conn.cursor()
+            # 取 file_id
+            cur.execute("SELECT id FROM files WHERE file_path=?", (file_path,))
+            row = cur.fetchone()
+            if not row:
+                conn.close()
+                return False
+            file_id = row[0]
+
+            # 把 new_items 按語系分組
+            by_lang: dict[str, list] = {}
+            for item in new_items:
+                lang = item.get("lang", "unk")
+                by_lang.setdefault(lang, []).append({
+                    "box":  item["box"],
+                    "text": item["text"],
+                    "conf": item["conf"],
+                })
+
+            for lang, items in by_lang.items():
+                cur.execute(
+                    "SELECT id, ocr_text, ocr_data FROM ocr_results WHERE file_id=? AND lang=?",
+                    (file_id, lang)
+                )
+                existing = cur.fetchone()
+
+                if existing:
+                    row_id, old_text, old_data_json = existing
+                    try:
+                        old_data = json.loads(old_data_json) if old_data_json else []
+                    except Exception:
+                        old_data = []
+                    merged_data = old_data + items
+                    merged_text = (old_text or "") + " " + " ".join(i["text"] for i in items)
+                    cur.execute(
+                        "UPDATE ocr_results SET ocr_text=?, ocr_data=? WHERE id=?",
+                        (merged_text.strip(), json.dumps(merged_data, ensure_ascii=False), row_id)
+                    )
+                else:
+                    ocr_text = " ".join(i["text"] for i in items)
+                    ocr_data = json.dumps(items, ensure_ascii=False)
+                    cur.execute(
+                        "INSERT INTO ocr_results (file_id, lang, ocr_text, ocr_data, confidence) VALUES (?,?,?,?,?)",
+                        (file_id, lang, ocr_text, ocr_data, 1.0)
+                    )
+
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"[Engine] upsert_crop_ocr error: {e}")
+            return False
+
     def get_text_vector(self, text):
         """瞬間產生文字的 1024 維特徵 (約 0.05 秒)"""
         if not self.is_ready or not hasattr(self, 'clip_text_session'): return None
@@ -2315,7 +2470,8 @@ class FloatingWidget(QWidget):
 # 請將這段程式碼完全覆蓋原本的 OCRLabel 類別
 # ==========================================
 class OCRLabel(QLabel):
-    hover_info_changed = pyqtSignal(list, QPolygon, QPoint)
+    hover_info_changed   = pyqtSignal(list, QPolygon, QPoint)
+    crop_rect_confirmed  = pyqtSignal(QRect)   # 框選完成，QRect 為原始圖片像素座標
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2323,13 +2479,87 @@ class OCRLabel(QLabel):
         self.show_ocr_boxes = False
         self.original_size = QSize(0, 0)
         self.search_query = ""
-        self.is_precise_mode = False 
+        self.is_precise_mode = False
+
+        # 框選 OCR 相關狀態
+        self._crop_mode    = False
+        self._crop_start   = QPoint()
+        self._crop_end     = QPoint()
+        self._crop_drawing = False          # 正在拖曳中
+        self._crop_frozen  = False          # 放開後凍結顯示，等待 OCR 結果
+        self._crop_items   = []             # 框選 OCR 結果（綠框）
         
-        # [新增] 1. 開啟滑鼠追蹤，讓游標移動時也能觸發事件
+        # 開啟滑鼠追蹤
         self.setMouseTracking(True)
-        # [新增] 紀錄目前滑鼠懸停踩中的多邊形索引與游標位置
         self.hovered_index = -1
         self.cursor_pos = QPoint(0, 0)
+
+    # ---- 框選模式開關 ----------------------------------------
+    def enter_crop_mode(self):
+        self._crop_mode    = True
+        self._crop_frozen  = False
+        self._crop_drawing = False
+        self._crop_items   = []
+        self._crop_start   = QPoint()
+        self._crop_end     = QPoint()
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.update()
+
+    def exit_crop_mode(self):
+        self._crop_mode    = False
+        self._crop_frozen  = False
+        self._crop_drawing = False
+        self._crop_items   = []
+        self._crop_start   = QPoint()
+        self._crop_end     = QPoint()
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def set_crop_items(self, items: list):
+        """接收框選 OCR 結果，凍結框並以綠色繪製"""
+        self._crop_items  = items
+        self._crop_frozen = True
+        self.update()
+
+    def _label_to_image_rect(self, label_rect: QRect) -> QRect:
+        """將 QLabel 座標系內的矩形換算成原始圖片像素座標"""
+        pm = self.pixmap()
+        if pm is None or pm.isNull() or self.original_size.width() == 0:
+            return QRect()
+        dw = pm.width();  dh = pm.height()
+        ox = (self.width()  - dw) / 2
+        oy = (self.height() - dh) / 2
+        sx = self.original_size.width()  / dw
+        sy = self.original_size.height() / dh
+        ix = int((label_rect.x()      - ox) * sx)
+        iy = int((label_rect.y()      - oy) * sy)
+        iw = int(label_rect.width()          * sx)
+        ih = int(label_rect.height()         * sy)
+        return QRect(ix, iy, iw, ih)
+
+    # ---- 滑鼠事件 -------------------------------------------
+    def mousePressEvent(self, event):
+        if self._crop_mode and event.button() == Qt.MouseButton.LeftButton:
+            self._crop_start   = event.pos()
+            self._crop_end     = event.pos()
+            self._crop_drawing = True
+            self._crop_frozen  = False
+            self._crop_items   = []
+            self.update()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._crop_mode and self._crop_drawing and event.button() == Qt.MouseButton.LeftButton:
+            self._crop_end     = event.pos()
+            self._crop_drawing = False
+            rect_label = QRect(self._crop_start, self._crop_end).normalized()
+            if rect_label.width() > 5 and rect_label.height() > 5:
+                rect_img = self._label_to_image_rect(rect_label)
+                self.crop_rect_confirmed.emit(rect_img)
+            self.update()
+            return
+        super().mouseReleaseEvent(event)
 
 
     def set_draw_boxes(self, show):
@@ -2373,6 +2603,12 @@ class OCRLabel(QLabel):
     # [新增] 滑鼠移動事件：處理座標對齊與碰撞偵測
     # ==========================================
     def mouseMoveEvent(self, event):
+        # 框選拖曳更新
+        if self._crop_mode and self._crop_drawing:
+            self._crop_end = event.pos()
+            self.update()
+            return
+
         super().mouseMoveEvent(event)
         
         # 如果沒開紅框，或者沒資料，就不浪費算力
@@ -2402,19 +2638,16 @@ class OCRLabel(QLabel):
         for i, item in enumerate(self.ocr_data):
             box = item.get("box")
             if box and len(box) == 4:
-                # 建立原尺寸的多邊形
                 poly = QPolygon([QPoint(int(pt[0]), int(pt[1])) for pt in box])
-                # 測試滑鼠是否踩在裡面
                 if poly.containsPoint(real_point, Qt.FillRule.OddEvenFill):
                     new_hovered_index = i
-                    break # 找到一個就停，避免重疊時閃爍
+                    break
 
         # 4. 如果踩到的目標改變了，或者游標在框內移動(需要更新標籤位置)
         if self.hovered_index != new_hovered_index or new_hovered_index != -1:
             self.hovered_index = new_hovered_index
             self.update()
             
-            # [新增] 準備資料並發射給 FloatingWidget
             if self.hovered_index != -1:
                 item = self.ocr_data[self.hovered_index]
                 results = item.get("results", [])
@@ -2433,106 +2666,112 @@ class OCRLabel(QLabel):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        
-        if self.show_ocr_boxes and self.ocr_data and self.pixmap():
-            if self.original_size.width() == 0 or self.original_size.height() == 0:
-                return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            
-            displayed_w = self.pixmap().width()
-            displayed_h = self.pixmap().height()
-            offset_x = (self.width() - displayed_w) / 2
-            offset_y = (self.height() - displayed_h) / 2
-            scale_x = displayed_w / self.original_size.width()
-            scale_y = displayed_h / self.original_size.height()
+        # ── 計算圖片縮放參數（共用）──────────────────────────────
+        pm = self.pixmap()
+        has_pm = pm is not None and not pm.isNull()
+        if has_pm and self.original_size.width() > 0:
+            dw       = pm.width();   dh = pm.height()
+            offset_x = (self.width()  - dw) / 2
+            offset_y = (self.height() - dh) / 2
+            scale_x  = dw / self.original_size.width()
+            scale_y  = dh / self.original_size.height()
+        else:
+            has_pm = False
 
-            import math
+        import math
 
-            # ==========================================
-            # 迴圈 1：繪製所有底層紅框 (與精確高亮)
-            # ==========================================
+        # ── 1. 既有 OCR 紅框（Shift 模式）────────────────────────
+        if self.show_ocr_boxes and self.ocr_data and has_pm:
             for i, item in enumerate(self.ocr_data):
-                sorted_box = item.get("box") 
+                sorted_box = item.get("box")
                 if not sorted_box or len(sorted_box) != 4: continue
-                
-                # 將該框群組內的所有文字串起來檢查是否命中搜尋
-                results = item.get("results", [])
+
+                results   = item.get("results", [])
                 full_text = " ".join([r.get("text", "") for r in results]).lower()
-                
                 p0, p1, p2, p3 = sorted_box[0], sorted_box[1], sorted_box[2], sorted_box[3]
                 highlight_box = sorted_box
-            
+
                 if self.search_query and self.search_query in full_text:
                     if self.is_precise_mode:
-                        # 找出具體是哪個語言的文字命中了，以此來計算黃色螢光筆的比例
                         match_text = ""
                         for r in results:
                             if self.search_query in r.get("text", "").lower():
-                                match_text = r.get("text", "").lower()
-                                break
+                                match_text = r.get("text", "").lower(); break
                         if not match_text: match_text = full_text
-                        
                         start_ratio, end_ratio = self._calculate_ratios(match_text, self.search_query)
                         margin = 0.015
                         if start_ratio > 0.0: start_ratio = min(start_ratio + margin, 1.0)
-                        if end_ratio < 1.0:   end_ratio = max(end_ratio - margin, 0.0)
+                        if end_ratio < 1.0:   end_ratio   = max(end_ratio   - margin, 0.0)
                         if start_ratio >= end_ratio:
                             center = (start_ratio + end_ratio) / 2.0
                             start_ratio, end_ratio = center - 0.001, center + 0.001
-
-                        width = math.hypot(p0[0] - p1[0], p0[1] - p1[1])
-                        height = math.hypot(p0[0] - p3[0], p0[1] - p3[1])
-                        
-                        if height > width * 1.2:
-                            np0 = [p0[0] + (p3[0]-p0[0])*start_ratio, p0[1] + (p3[1]-p0[1])*start_ratio]
-                            np3 = [p0[0] + (p3[0]-p0[0])*end_ratio,   p0[1] + (p3[1]-p0[1])*end_ratio]
-                            np1 = [p1[0] + (p2[0]-p1[0])*start_ratio, p1[1] + (p2[1]-p1[1])*start_ratio]
-                            np2 = [p1[0] + (p2[0]-p1[0])*end_ratio,   p1[1] + (p2[1]-p1[1])*end_ratio]
+                        width_px  = math.hypot(p0[0]-p1[0], p0[1]-p1[1])
+                        height_px = math.hypot(p0[0]-p3[0], p0[1]-p3[1])
+                        if height_px > width_px * 1.2:
+                            np0=[p0[0]+(p3[0]-p0[0])*start_ratio, p0[1]+(p3[1]-p0[1])*start_ratio]
+                            np3=[p0[0]+(p3[0]-p0[0])*end_ratio,   p0[1]+(p3[1]-p0[1])*end_ratio]
+                            np1=[p1[0]+(p2[0]-p1[0])*start_ratio, p1[1]+(p2[1]-p1[1])*start_ratio]
+                            np2=[p1[0]+(p2[0]-p1[0])*end_ratio,   p1[1]+(p2[1]-p1[1])*end_ratio]
                         else:
-                            np0 = [p0[0] + (p1[0]-p0[0])*start_ratio, p0[1] + (p1[1]-p0[1])*start_ratio]
-                            np1 = [p0[0] + (p1[0]-p0[0])*end_ratio,   p0[1] + (p1[1]-p0[1])*end_ratio]
-                            np3 = [p3[0] + (p2[0]-p3[0])*start_ratio, p3[1] + (p2[1]-p3[1])*start_ratio]
-                            np2 = [p3[0] + (p2[0]-p3[0])*end_ratio,   p3[1] + (p2[1]-p3[1])*end_ratio]
-                    
+                            np0=[p0[0]+(p1[0]-p0[0])*start_ratio, p0[1]+(p1[1]-p0[1])*start_ratio]
+                            np1=[p0[0]+(p1[0]-p0[0])*end_ratio,   p0[1]+(p1[1]-p0[1])*end_ratio]
+                            np3=[p3[0]+(p2[0]-p3[0])*start_ratio, p3[1]+(p2[1]-p3[1])*start_ratio]
+                            np2=[p3[0]+(p2[0]-p3[0])*end_ratio,   p3[1]+(p2[1]-p3[1])*end_ratio]
                         highlight_box = [np0, np1, np2, np3]
-                
-                    poly_points = []
-                    for pt in highlight_box:
-                        nx = pt[0] * scale_x + offset_x
-                        ny = pt[1] * scale_y + offset_y
-                        poly_points.append(QPoint(int(nx), int(ny)))
-                
-                    #  從頂層視窗取得 ThemeManager
-                    colors = self.window().theme_manager.current_colors
-                    highlight_color = QColor(colors.get("ocr_highlight", "#64ffff00"))
-                    
-                    painter.setBrush(QBrush(highlight_color)) 
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.drawPolygon(QPolygon(poly_points))
-            
-                full_poly_points = []
-                for pt in sorted_box:
-                    nx = pt[0] * scale_x + offset_x
-                    ny = pt[1] * scale_y + offset_y
-                    full_poly_points.append(QPoint(int(nx), int(ny)))
-                    
-                #  從主題取得基礎色與懸停色
-                colors = self.window().theme_manager.current_colors
-                hover_bg = QColor(colors.get("primary", "#60cdff"))
-                hover_bg.setAlpha(60) # 加上透明度
-                hover_pen = QColor(colors.get("primary", "#60cdff"))
-                normal_pen = QColor(colors.get("ocr_box_normal", "#c8ff0000"))
 
+                    poly_pts = [QPoint(int(pt[0]*scale_x+offset_x), int(pt[1]*scale_y+offset_y))
+                                for pt in highlight_box]
+                    colors = self.window().theme_manager.current_colors
+                    painter.setBrush(QBrush(QColor(colors.get("ocr_highlight", "#64ffff00"))))
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.drawPolygon(QPolygon(poly_pts))
+
+                full_pts = [QPoint(int(pt[0]*scale_x+offset_x), int(pt[1]*scale_y+offset_y))
+                            for pt in sorted_box]
+                colors = self.window().theme_manager.current_colors
+                hover_bg = QColor(colors.get("primary", "#60cdff")); hover_bg.setAlpha(60)
                 if i == self.hovered_index:
-                    painter.setBrush(QBrush(hover_bg)) 
-                    painter.setPen(QPen(hover_pen, 3))
-                    painter.drawPolygon(QPolygon(full_poly_points))
+                    painter.setBrush(QBrush(hover_bg))
+                    painter.setPen(QPen(QColor(colors.get("primary", "#60cdff")), 3))
                 else:
-                    painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-                    painter.setPen(QPen(normal_pen, 2))
-                    painter.drawPolygon(QPolygon(full_poly_points))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.setPen(QPen(QColor(colors.get("ocr_box_normal", "#c8ff0000")), 2))
+                painter.drawPolygon(QPolygon(full_pts))
+
+        # ── 2. 框選 OCR 結果（綠框）──────────────────────────────
+        if self._crop_items and has_pm:
+            green_pen  = QPen(QColor(0, 220, 80, 220), 2)
+            green_fill = QColor(0, 220, 80, 40)
+            for item in self._crop_items:
+                box = item.get("box")
+                if not box or len(box) != 4: continue
+                pts = [QPoint(int(pt[0]*scale_x+offset_x), int(pt[1]*scale_y+offset_y))
+                       for pt in box]
+                painter.setBrush(QBrush(green_fill))
+                painter.setPen(green_pen)
+                painter.drawPolygon(QPolygon(pts))
+
+        # ── 3. 橡皮框（拖曳中 & 凍結）───────────────────────────
+        if self._crop_mode and (self._crop_drawing or self._crop_frozen):
+            rect = QRect(self._crop_start, self._crop_end).normalized()
+            if not self._crop_drawing and self._crop_items:
+                # OCR 完成後框變綠色實線
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(QColor(0, 220, 80, 200), 2))
+            else:
+                # 拖曳中：藍色虛線
+                dash_pen = QPen(QColor(100, 180, 255, 200), 2, Qt.PenStyle.DashLine)
+                painter.setBrush(QColor(100, 180, 255, 25))
+                painter.setPen(dash_pen)
+            painter.drawRect(rect)
+
+        painter.end()
+
+
+
 
 
 class PreviewOverlay(QWidget):
@@ -2541,6 +2780,8 @@ class PreviewOverlay(QWidget):
         # 必須在 self.hide() 之前先設好，否則 hideEvent 被觸發時會引發 AttributeError
         self.current_preview_path = ""
         self.current_preview_worker = None
+        self._crop_worker  = None       # CropOCRWorker
+        self._crop_items   = []         # 框選 OCR 暫存結果
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.hide()
         self.setObjectName("PreviewOverlayMask")
@@ -2550,6 +2791,7 @@ class PreviewOverlay(QWidget):
         
         self.image_label = OCRLabel()
         self.image_label.hover_info_changed.connect(self.on_hover_info_changed)
+        self.image_label.crop_rect_confirmed.connect(self._on_crop_confirmed)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet("background: transparent;")
         
@@ -2584,10 +2826,155 @@ class PreviewOverlay(QWidget):
         self.btn_ocr_crop.setObjectName("PreviewToolbarBtn")
         self.btn_ocr_crop.setToolTip("框選區域執行 OCR")
         self.btn_ocr_crop.setFixedSize(36, 36)
+        self.btn_ocr_crop.setCheckable(True)
+        self.btn_ocr_crop.clicked.connect(self._toggle_crop_mode)
         _tb_layout.addWidget(self.btn_ocr_crop)
 
         self.img_toolbar.adjustSize()
         self.img_toolbar.hide()
+
+        # --- 框選結果確認列（浮在圖片下邊緣內側）---
+        self._crop_confirm_bar = QWidget(self)
+        self._crop_confirm_bar.setObjectName("CropConfirmBar")
+        self._crop_confirm_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        _cb_layout = QHBoxLayout(self._crop_confirm_bar)
+        _cb_layout.setContentsMargins(10, 6, 10, 6)
+        _cb_layout.setSpacing(8)
+
+        self._crop_status_lbl = QLabel("辨識中…")
+        self._crop_status_lbl.setObjectName("CropStatusLabel")
+        _cb_layout.addWidget(self._crop_status_lbl, stretch=1)
+
+        self._btn_save_crop = QPushButton("加入資料庫")
+        self._btn_save_crop.setObjectName("CropSaveBtn")
+        self._btn_save_crop.setEnabled(False)
+        self._btn_save_crop.clicked.connect(self._save_crop_to_db)
+        _cb_layout.addWidget(self._btn_save_crop)
+
+        self._btn_cancel_crop = QPushButton("取消")
+        self._btn_cancel_crop.setObjectName("CropCancelBtn")
+        self._btn_cancel_crop.clicked.connect(self._cancel_crop)
+        _cb_layout.addWidget(self._btn_cancel_crop)
+
+        self._crop_confirm_bar.adjustSize()
+        self._crop_confirm_bar.hide()
+
+    # ── 框選模式控制 ────────────────────────────────────────────
+    def _toggle_crop_mode(self, checked: bool):
+        if checked:
+            self._cancel_crop()          # 先清除上次殘留
+            self.image_label.enter_crop_mode()
+            self.btn_ocr_crop.setStyleSheet("background-color: rgba(0,200,80,60);")
+        else:
+            self._cancel_crop()
+
+    def _cancel_crop(self):
+        if self._crop_worker:
+            self._crop_worker.is_cancelled = True
+            self._crop_worker = None
+        self._crop_items = []
+        self.image_label.exit_crop_mode()
+        self.btn_ocr_crop.setChecked(False)
+        self.btn_ocr_crop.setStyleSheet("")
+        self._crop_confirm_bar.hide()
+
+    def _on_crop_confirmed(self, rect: QRect):
+        """使用者框選完成，啟動背景 OCR"""
+        if rect.width() < 4 or rect.height() < 4:
+            return
+
+        # 根據圖片路徑決定要跑哪些語系
+        needed_langs   = self._get_langs_for_path(self.current_preview_path)
+        shared_engines = getattr(self.parent().engine, "shared_ocr_engines", {})
+        use_gpu        = bool(self.parent().config.get("use_gpu_ocr", False))
+
+        # 取得原圖尺寸
+        orig_w = self.image_label.original_size.width()
+        orig_h = self.image_label.original_size.height()
+
+        self._crop_items = []
+        self._crop_status_lbl.setText(f"載入引擎並辨識中… ({', '.join(needed_langs)})")
+        self._btn_save_crop.setEnabled(False)
+        self._reposition_confirm_bar()
+        self._crop_confirm_bar.show()
+        self._crop_confirm_bar.raise_()
+
+        if self._crop_worker:
+            self._crop_worker.is_cancelled = True
+
+        self._crop_worker = CropOCRWorker(
+            self.current_preview_path, rect,
+            shared_engines, needed_langs, use_gpu,
+            orig_w, orig_h
+        )
+        self._crop_worker.signals.result.connect(self._on_crop_ocr_ready)
+        self._crop_worker.signals.error.connect(self._on_crop_ocr_error)
+        QThreadPool.globalInstance().start(self._crop_worker)
+
+    def _get_langs_for_path(self, image_path: str) -> list:
+        """根據圖片路徑尋找 config source_folders 中最匹配資料夾的語系，找不到 fallback ['ch']"""
+        try:
+            config_folders = self.parent().config.get("source_folders") or []
+            norm_img = os.path.normpath(image_path)
+            best_folder, best_langs = "", []
+            for f_conf in config_folders:
+                folder = os.path.normpath(f_conf.get("path", ""))
+                langs  = f_conf.get("enabled_langs") or []
+                if norm_img.startswith(folder) and len(folder) > len(best_folder):
+                    best_folder = folder
+                    best_langs  = langs
+            return best_langs if best_langs else ["ch"]
+        except Exception:
+            return ["ch"]
+
+
+    def _on_crop_ocr_ready(self, items: list):
+        self._crop_items = items
+        self.image_label.set_crop_items(items)
+        if items:
+            texts = [i["text"] for i in items]
+            preview = "、".join(texts[:3]) + ("…" if len(texts) > 3 else "")
+            self._crop_status_lbl.setText(f"辨識到 {len(items)} 個文字區塊：{preview}")
+            self._btn_save_crop.setEnabled(True)
+        else:
+            self._crop_status_lbl.setText("未辨識到文字")
+            self._btn_save_crop.setEnabled(False)
+        self._reposition_confirm_bar()
+
+    def _on_crop_ocr_error(self, msg: str):
+        self._crop_status_lbl.setText(f"OCR 錯誤：{msg}")
+        self._btn_save_crop.setEnabled(False)
+
+    def _save_crop_to_db(self):
+        if not self._crop_items or not self.current_preview_path:
+            return
+        engine = self.parent().engine
+        ok = engine.upsert_crop_ocr(self.current_preview_path, self._crop_items)
+        if ok:
+            self._crop_status_lbl.setText("已成功寫入資料庫！")
+            self._btn_save_crop.setEnabled(False)
+        else:
+            self._crop_status_lbl.setText("寫入失敗，請確認圖片已建立索引")
+
+    def _reposition_confirm_bar(self):
+        """將確認列定位在圖片下緣內側"""
+        pm = self.image_label.pixmap()
+        if pm is None or pm.isNull():
+            return
+        lbl = self.image_label
+        lbl_rect = lbl.geometry()
+        img_y2  = lbl_rect.top()  + (lbl_rect.height() + pm.height()) // 2   # 圖片下緣
+        img_x   = lbl_rect.left() + (lbl_rect.width()  - pm.width())  // 2
+        bar = self._crop_confirm_bar
+        bar.adjustSize()
+        bw = min(bar.width(), pm.width())
+        bx = img_x + (pm.width() - bw) // 2
+        by = img_y2 - bar.height() - 6
+        bar.setFixedWidth(bw)
+        bar.move(bx, by)
+        bar.raise_()
+
+
 
     def _reposition_toolbar(self):
         """將功能列定位於 image_label 內實際圖片右側，頂部對齊"""
@@ -2796,15 +3183,28 @@ class PreviewOverlay(QWidget):
             self.ocr_hint.show()
         if hasattr(self, 'img_toolbar'):
             self.img_toolbar.hide()
+        if hasattr(self, '_crop_confirm_bar'):
+            self._cancel_crop()
         super().hideEvent(event)
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Escape):
+        if event.key() == Qt.Key.Key_Escape:
+            if self.image_label._crop_mode:
+                self._cancel_crop()   # Esc 先退出框選模式
+                return
+            self.hide()
+        elif event.key() == Qt.Key.Key_Space:
             self.hide()
 
     def mousePressEvent(self, event):
-        # 只有點擊圖片以外的區域才關閉
-        if not self.image_label.geometry().contains(event.position().toPoint()):
+        # 框選模式中，所有 overlay 點擊不關閉預覽（讓 OCRLabel 自己處理）
+        if self.image_label._crop_mode:
+            return
+        # 點擊圖片、功能列、確認列以外的區域才關閉
+        pos = event.position().toPoint()
+        if (not self.image_label.geometry().contains(pos)
+                and not self.img_toolbar.geometry().contains(pos)
+                and not self._crop_confirm_bar.geometry().contains(pos)):
             self.hide()
 
 # HistoryItemWidget 已遷移至 ui/widgets/search_capsule.py
