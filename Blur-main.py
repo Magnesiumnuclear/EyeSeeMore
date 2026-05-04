@@ -71,7 +71,6 @@ EyeSeeMore
 # TODO: 想要加上Satisfactory主題的UI樣式
 # TODO: 想要加上BlueArchive主題的UI樣式
 # TODO: 刪除 Unicode 符號 減少AI味
-# TODO: BUG 由手機相機拍的圖片視覺規格都是width > height 的導致橫圖直圖 塞選沒用
 
 import sys
 import ctypes
