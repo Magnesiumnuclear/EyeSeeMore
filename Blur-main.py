@@ -2795,6 +2795,11 @@ class PreviewOverlay(QWidget):
         self.image_label.crop_rect_confirmed.connect(self._on_crop_confirmed)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet("background: transparent;")
+        # Expanding 讓 label 始終填滿可用空間，pixmap 變動不觸發 layout 重算
+        # 確保 _reposition_toolbar 讀到的 geometry 永遠穩定
+        self.image_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(40)
@@ -3165,7 +3170,9 @@ class PreviewOverlay(QWidget):
             if not img.isNull():
                 pixmap = QPixmap.fromImage(img)
                 self.image_label.setPixmap(pixmap)
-                QTimer.singleShot(0, self._reposition_toolbar)  # 高清圖載入後重新對齊
+                # setPixmap 可能因長寬比不同使 layout 需要重新結算，
+                # 用 timer 推遲到當前 event loop 結束後再定位，確保 geometry 已更新
+                QTimer.singleShot(0, self._reposition_toolbar)
                 
             # 2.  就算圖片因為極端原因載入失敗，我們也強制把算好的 OCR 資料塞給畫布
             # 這樣按 Shift 就絕對能看得到紅框！
