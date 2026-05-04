@@ -72,7 +72,6 @@ EyeSeeMore
 # TODO: 想要加上BlueArchive主題的UI樣式
 # TODO: 刪除 Unicode 符號 減少AI味
 # TODO: BUG 由手機相機拍的圖片視覺規格都是width > height 的導致橫圖直圖 塞選沒用
-# TODO: 分隔正向量與負向量的拖拽功能
 
 import sys
 import ctypes
@@ -2571,7 +2570,36 @@ class PreviewOverlay(QWidget):
         self.layout.addWidget(self.ocr_hint, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.floating_tag = FloatingWidget(self)
-    
+
+        # --- 浮動功能列 (圖片右上角外側) ---
+        self.img_toolbar = QWidget(self)
+        self.img_toolbar.setObjectName("PreviewImgToolbar")
+        self.img_toolbar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        _tb_layout = QHBoxLayout(self.img_toolbar)
+        _tb_layout.setContentsMargins(6, 5, 6, 5)
+        _tb_layout.setSpacing(6)
+
+        self.btn_ocr_crop = QPushButton("⬚  OCR 框選")
+        self.btn_ocr_crop.setObjectName("PreviewToolbarBtn")
+        self.btn_ocr_crop.setToolTip("框選區域執行 OCR")
+        _tb_layout.addWidget(self.btn_ocr_crop)
+
+        self.img_toolbar.adjustSize()
+        self.img_toolbar.hide()
+
+    def _reposition_toolbar(self):
+        """將功能列定位於 image_label 右上角外側"""
+        img_rect = self.image_label.geometry()
+        tb = self.img_toolbar
+        tb.adjustSize()
+        x = img_rect.right() - tb.width()
+        y = img_rect.top() - tb.height() - 4
+        if y < 0:
+            y = img_rect.top() + 4   # 空間不足時退入圖片頂部內側
+        tb.move(x, y)
+        tb.raise_()
+        tb.show()
+
     def on_hover_info_changed(self, results, poly, cursor_pos):
         if not results:
             self.floating_tag.hide()
@@ -2639,6 +2667,7 @@ class PreviewOverlay(QWidget):
         self.show()
         self.raise_()
         self.setFocus()
+        QTimer.singleShot(0, self._reposition_toolbar)
 
     def on_highres_ready(self, path, img, merged_data, orig_w, orig_h, query, is_precise):
         # 確保是目前正在看這張圖
@@ -2744,6 +2773,7 @@ class PreviewOverlay(QWidget):
         self.image_label.set_precomputed_ocr_data([], 0, 0)
         self.filename_label.setText("Search Funnel Stats")
         self.ocr_hint.hide()
+        self.img_toolbar.hide()   # 漏斗卡片不顯示功能列
         self.resize(self.parent().size())
         self.show()
         self.raise_()
@@ -2756,6 +2786,8 @@ class PreviewOverlay(QWidget):
         # 確保 OCR 提示在漏斗卡片預覽關閉後復原顯示
         if hasattr(self, 'ocr_hint'):
             self.ocr_hint.show()
+        if hasattr(self, 'img_toolbar'):
+            self.img_toolbar.hide()
         super().hideEvent(event)
 
     def keyPressEvent(self, event):
