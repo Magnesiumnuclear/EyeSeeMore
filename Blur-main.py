@@ -443,8 +443,11 @@ class PreviewLoader(QRunnable):
         final_img = QImage() # 建立一個空的 QImage 作為預設值
         try:
             reader = QImageReader(self.file_path)
+            # [修正] 先取原始(RAW)尺寸再啟用 AutoTransform：
+            # 若先 setAutoTransform(True) 再 size()，Qt6 回傳的是顯示方向尺寸（直向）；
+            # 但 JPEG 解碼器仍以原始橫向資料工作，setScaledSize 給直向提示會導致畫面扭曲或超出邊界。
+            orig_size = reader.size()  # RAW 尺寸（EXIF 旋轉前）
             reader.setAutoTransform(True)
-            orig_size = reader.size()
             
             if orig_size.isValid():
                 scaled_size = orig_size.scaled(self.target_size, Qt.AspectRatioMode.KeepAspectRatio)
@@ -452,6 +455,13 @@ class PreviewLoader(QRunnable):
                 img = reader.read()
                 
                 if not self.is_cancelled and not img.isNull():
+                    # [修正] EXIF 旋轉後寬高可能超出 target_size（手機直拍照片常見），需再縮放一次
+                    if img.width() > self.target_size.width() or img.height() > self.target_size.height():
+                        img = img.scaled(
+                            self.target_size,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation
+                        )
                     # 轉換格式，但保持為 QImage
                     final_img = img.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
         except Exception as e:
@@ -520,12 +530,23 @@ class ThumbnailLoader(QRunnable):
 
         try:
             reader = QImageReader(self.file_path)
-            orig_size = reader.size()
+            orig_size = reader.size()  # RAW 尺寸（EXIF 旋轉前）
+            reader.setAutoTransform(True)
             if orig_size.isValid():
                 scaled_size = orig_size.scaled(self.target_size, Qt.AspectRatioMode.KeepAspectRatio)
                 reader.setScaledSize(scaled_size)
-                reader.setAutoTransform(True)
                 high_res_image = reader.read()
+
+                # [修正] EXIF 旋轉後寬高可能超出 target_size，縮圖前先確保大小正確
+                if not high_res_image.isNull() and (
+                    high_res_image.width() > self.target_size.width() or
+                    high_res_image.height() > self.target_size.height()
+                ):
+                    high_res_image = high_res_image.scaled(
+                        self.target_size,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
 
                 # 動態補建 L2 (如果之前沒有的話)
                 if not has_l2 and not high_res_image.isNull() and not self.is_cancelled:
@@ -3048,16 +3069,22 @@ class PreviewOverlay(QWidget):
 
     def _reposition_confirm_bar(self):
         """將確認列定位在圖片下緣，寬度自動延伸以完整顯示文字"""
-        pm = self.image_label.pixmap()
+        lbl = self.image_label
+        pm  = lbl.pixmap()
         if pm is None or pm.isNull():
             return
-        lbl = self.image_label
-        lbl_rect = lbl.geometry()
-        img_y2 = lbl_rect.top()  + (lbl_rect.height() + pm.height()) // 2  # 圖片下緣
-        img_cx = lbl_rect.left() + (lbl_rect.width()  - pm.width())  // 2 + pm.width() // 2  # 圖片水平中心
+
+        # 水平：同 _reposition_toolbar，直接用 overlay 寬度計算
+        # img_cx = (self.width() + pm.width()) / 2 - pm.width() / 2 + pm.width() / 2
+        #        = (self.width() + pm.width()) / 2  → image right edge
+        # 置中於圖片 = overlay 水平中心
+        img_cx = self.width() // 2
+
+        # 垂直：圖片下緣
+        lbl_top = lbl.mapTo(self, QPoint(0, 0)).y()
+        img_y2  = lbl_top + (lbl.height() + pm.height()) // 2
 
         bar = self._crop_confirm_bar
-        # 移除舊的固定寬限制，讓 bar 自然伸展
         bar.setMinimumWidth(0)
         bar.setMaximumWidth(16777215)
         bar.adjustSize()
@@ -3066,7 +3093,7 @@ class PreviewOverlay(QWidget):
         bar.setFixedWidth(bw)
         bar.adjustSize()
         bh = bar.height()
-        bx = max(0, img_cx - bw // 2)                 # 水平置中於圖片
+        bx = max(0, img_cx - bw // 2)        # 水平置中於圖片
         if bx + bw > self.width():
             bx = max(0, self.width() - bw)
         by = img_y2 - bh - 6
@@ -3078,18 +3105,22 @@ class PreviewOverlay(QWidget):
     def _reposition_toolbar(self):
         """將功能列定位於 image_label 內實際圖片右側，頂部對齊"""
         lbl = self.image_label
-        pm = lbl.pixmap()
+        pm  = lbl.pixmap()
         if pm is None or pm.isNull():
             return
-        lbl_rect = lbl.geometry()
-        # 圖片在 QLabel 內的實際布局（居中對齊）
-        img_x = lbl_rect.left() + (lbl_rect.width()  - pm.width())  // 2
-        img_y = lbl_rect.top()  + (lbl_rect.height() - pm.height()) // 2
-        img_right = img_x + pm.width()
+
+        # 水平方向：label 有 Expanding 永遠佔滿 overlay 全寬
+        # 因此直接用 overlay 寬度計算，不依賴 lbl.width()/lbl.geometry()
+        # 避免 layout 延遲更新導致水平偏移量計算錯誤（尤其直圖問題）
+        img_right = (self.width() + pm.width()) // 2
+
+        # 垂直方向：用 mapTo 取得 label 實際 y 位置（y 變動小，不受長寬比影響）
+        lbl_top = lbl.mapTo(self, QPoint(0, 0)).y()
+        img_y   = lbl_top + (lbl.height() - pm.height()) // 2
 
         tb = self.img_toolbar
         tb.adjustSize()
-        tb.move(img_right, img_y)   # 頂部對齊、緊貼圖片右邊
+        tb.move(img_right, img_y)
         tb.raise_()
         tb.show()
 
@@ -3170,8 +3201,7 @@ class PreviewOverlay(QWidget):
             if not img.isNull():
                 pixmap = QPixmap.fromImage(img)
                 self.image_label.setPixmap(pixmap)
-                # setPixmap 可能因長寬比不同使 layout 需要重新結算，
-                # 用 timer 推遲到當前 event loop 結束後再定位，確保 geometry 已更新
+                # 延遲到下一個 event loop tick 再定位，避免 layout 延遲結算導致呶得舊初始化時的 y 座標
                 QTimer.singleShot(0, self._reposition_toolbar)
                 
             # 2.  就算圖片因為極端原因載入失敗，我們也強制把算好的 OCR 資料塞給畫布
@@ -4025,11 +4055,15 @@ class ThumbnailWorker(QRunnable):
     def run(self):
         try:
             reader = QImageReader(self.path)
+            raw_sz = reader.size()  # RAW 尺寸（EXIF 旋轉前）
             reader.setAutoTransform(True)
-            if reader.size().isValid():
-                reader.setScaledSize(reader.size().scaled(self.size, Qt.AspectRatioMode.KeepAspectRatio))
+            if raw_sz.isValid():
+                reader.setScaledSize(raw_sz.scaled(self.size, Qt.AspectRatioMode.KeepAspectRatio))
                 img = reader.read()
-                if not img.isNull(): self.signals.finished.emit(self.item, QIcon(QPixmap.fromImage(img)))
+                if not img.isNull():
+                    if img.width() > self.size.width() or img.height() > self.size.height():
+                        img = img.scaled(self.size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    self.signals.finished.emit(self.item, QIcon(QPixmap.fromImage(img)))
         except: pass
 
 class FeatureBucketWidget(QFrame):
