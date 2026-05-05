@@ -3425,9 +3425,9 @@ class PreviewOverlay(QWidget):
             scaled_l1 = l1_pixmap.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.image_label.setPixmap(scaled_l1)
         else:
-            self.image_label.clear()
+                        self.image_label.clear()
 
-        
+        self.floating_tag.hide()   # 切換圖片時立即清除舊圖的 OCR 懸浮標籤
         self.image_label.set_precomputed_ocr_data([], orig_w, orig_h)
 
         #  將 engine 傳入，讓它在背景自己去撈資料！
