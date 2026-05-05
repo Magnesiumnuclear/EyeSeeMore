@@ -4729,6 +4729,14 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"[UI] 視窗狀態還原失敗: {e}")
 
+        # Splitter 比例還原：在 restoreGeometry() 確立視窗寬度後執行，
+        # 且只有 Inspector 可見時才有意義
+        if ui_state.get("inspector_visible", True) and "splitter_sizes" in ui_state:
+            try:
+                self.main_splitter.setSizes(ui_state["splitter_sizes"])
+            except Exception as e:
+                print(f"[UI] splitter 大小還原失敗: {e}")
+
         if ui_state.get("auto_scan_on_startup", True):
             self.indexer_worker.start()
         else:
@@ -5896,6 +5904,14 @@ class MainWindow(QMainWindow):
         # 其餘 UI 狀態
         ui_state["sidebar_expanded"] = self.sidebar.is_expanded
         ui_state["view_mode"] = getattr(self, 'current_view_mode', 'large')
+        ui_state["inspector_visible"] = self.inspector_panel.isVisible()
+
+        # Inspector 寬度：只在 Inspector 可見時儲存 splitter 比例
+        # 若 Inspector 隱藏，sizes()[1] 為 0，儲存無意義
+        if self.inspector_panel.isVisible():
+            _sizes = self.main_splitter.sizes()
+            if len(_sizes) >= 2 and _sizes[1] > 0:
+                ui_state["splitter_sizes"] = list(_sizes)
 
         # 清除已被 saveGeometry() 取代的舊欄位，避免 config.json 殘留臟資料
         for old_key in ["window_width", "window_height", "is_maximized"]:

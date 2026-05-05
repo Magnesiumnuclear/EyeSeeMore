@@ -203,6 +203,13 @@ class Ui_MainWindow:
         if not saved_expanded:
             MainWindow.sidebar.toggle_sidebar()
 
+        # Inspector 面板顯示/隱藏狀態還原
+        # 注意：不直接呼叫 toggle_inspector()，避免觸發其內部的 QTimer 副作用
+        saved_inspector = ui_state.get("inspector_visible", True)
+        if not saved_inspector:
+            MainWindow.inspector_panel.hide()
+            MainWindow.btn_toggle_inspector.setChecked(False)
+
         # 視窗大小與位置由 init_ui 中的 restoreGeometry() 統一處理，不在此處重複設定
 
         # --- ListView 事件綁定 ---
