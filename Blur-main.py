@@ -2833,7 +2833,7 @@ class PreviewOverlay(QWidget):
         self.filename_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.layout.addWidget(self.filename_label)
         
-        self.ocr_hint = QLabel("Hold SHIFT to view OCR text locations")
+        self.ocr_hint = QLabel("SHIFT: 長按顯示紅框 / 按一下切換鎖定　　◉ 工具列按鈕：切換顯示")
         self.ocr_hint.setObjectName("PreviewOverlayHint")
         self.layout.addWidget(self.ocr_hint, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -2847,6 +2847,15 @@ class PreviewOverlay(QWidget):
         _tb_layout.setContentsMargins(5, 5, 5, 5)
         _tb_layout.setSpacing(4)
         _tb_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # OCR 紅框切換按鈕（圖示：眼睛，放在第一顆）
+        self.btn_ocr_toggle = QPushButton("◉")
+        self.btn_ocr_toggle.setObjectName("PreviewToolbarBtn")
+        self.btn_ocr_toggle.setToolTip("顯示／隱藏 OCR 紅框 (Shift)")
+        self.btn_ocr_toggle.setFixedSize(36, 36)
+        self.btn_ocr_toggle.setCheckable(True)
+        self.btn_ocr_toggle.clicked.connect(self._on_toolbar_ocr_toggle)
+        _tb_layout.addWidget(self.btn_ocr_toggle)
 
         self.btn_ocr_crop = QPushButton("[T]")
         self.btn_ocr_crop.setObjectName("PreviewToolbarBtn")
@@ -3142,6 +3151,19 @@ class PreviewOverlay(QWidget):
         self.image_label.set_draw_boxes(visible)
         if not visible:
             self.floating_tag.hide()
+        # 同步工具列按鈕亮起/熄滅狀態
+        self.btn_ocr_toggle.setChecked(visible)
+        self.btn_ocr_toggle.setStyleSheet(
+            "background-color: rgba(100,200,255,60);" if visible else ""
+        )
+
+    def _on_toolbar_ocr_toggle(self, checked: bool):
+        """工具列 OCR 按鈕：不管當前 Shift 模式，一律切換顯示/隱藏"""
+        self.set_ocr_visible(checked)
+        # 同步回主視窗的 is_ocr_locked 狀態
+        mw = self.parent()
+        if hasattr(mw, 'is_ocr_locked'):
+            mw.is_ocr_locked = checked
 
     def show_image(self, result_data, current_query="", is_precise_mode=False, l1_pixmap=None):
         if isinstance(result_data, ImageItem):
@@ -3190,6 +3212,10 @@ class PreviewOverlay(QWidget):
         self.show()
         self.raise_()
         self.setFocus()
+        # 新圖顯示時：保持 is_ocr_locked 的鎖定狀態，但若未鎖定則確保紅框隱藏
+        mw = self.parent()
+        locked = getattr(mw, 'is_ocr_locked', False)
+        self.set_ocr_visible(locked)
         QTimer.singleShot(0, self._reposition_toolbar)
 
     def on_highres_ready(self, path, img, merged_data, orig_w, orig_h, query, is_precise):
@@ -3325,6 +3351,23 @@ class PreviewOverlay(QWidget):
             self.hide()
         elif event.key() == Qt.Key.Key_Space:
             self.hide()
+        elif event.key() == Qt.Key.Key_Shift:
+            # 直接呼叫 ActionHandler，讓 Shift 行為跟主視窗完全一致
+            mw = self.parent()
+            if hasattr(mw, 'action_handler'):
+                cfg = mw.action_handler.get_config()
+                mw.action_handler.handle_shift_press(cfg["ocr_mode"])
+            event.accept()
+
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key.Key_Shift:
+            mw = self.parent()
+            if hasattr(mw, 'action_handler'):
+                cfg = mw.action_handler.get_config()
+                mw.action_handler.handle_shift_release(cfg["ocr_mode"])
+            event.accept()
+        else:
+            super().keyReleaseEvent(event)
 
     def mousePressEvent(self, event):
         # 框選模式中，所有 overlay 點擊不關閉預覽（讓 OCRLabel 自己處理）
@@ -4541,9 +4584,11 @@ class MainWindow(QMainWindow):
         self.list_view.clearSelection()
 
     def _on_ocr_show(self, visible):
+        # hold 模式：按下顯示、放開隱藏（不改變 is_ocr_locked）
         self.preview_overlay.set_ocr_visible(visible)
 
     def _on_ocr_toggle_lock(self):
+        # toggle 模式：按一下切換
         self.is_ocr_locked = not self.is_ocr_locked
         self.preview_overlay.set_ocr_visible(self.is_ocr_locked)
 
