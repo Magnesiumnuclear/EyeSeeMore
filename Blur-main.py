@@ -1880,6 +1880,107 @@ class ImageSearchEngine:
             print(f"[Engine] upsert_crop_ocr error: {e}")
             return False
 
+    def delete_ocr_box(self, file_path: str, lang: str, box_to_delete: list) -> bool:
+        """
+        從指定語系的 ocr_data 中移除符合座標的框。
+        box_to_delete 為 4 點列表，允許 ±2px 誤差比對。
+        """
+        def _boxes_match(b1, b2, tol=2):
+            try:
+                return all(
+                    abs(b1[i][0] - b2[i][0]) < tol and abs(b1[i][1] - b2[i][1]) < tol
+                    for i in range(4)
+                )
+            except Exception:
+                return False
+        try:
+            conn = self.get_db_conn()
+            cur  = conn.cursor()
+            cur.execute("SELECT id FROM files WHERE file_path=?", (file_path,))
+            row = cur.fetchone()
+            if not row:
+                conn.close(); return False
+            file_id = row[0]
+            cur.execute(
+                "SELECT id, ocr_text, ocr_data FROM ocr_results WHERE file_id=? AND lang=?",
+                (file_id, lang)
+            )
+            existing = cur.fetchone()
+            if not existing:
+                conn.close(); return False
+            row_id, old_text, old_data_json = existing
+            try:
+                items = json.loads(old_data_json) if old_data_json else []
+            except Exception:
+                items = []
+            new_items = [it for it in items if not _boxes_match(it.get("box", []), box_to_delete)]
+            if len(new_items) == len(items):
+                conn.close(); return False  # 沒找到相符的框
+            new_text = " ".join(it.get("text", "") for it in new_items)
+            cur.execute(
+                "UPDATE ocr_results SET ocr_text=?, ocr_data=? WHERE id=?",
+                (new_text, json.dumps(new_items, ensure_ascii=False), row_id)
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"[Engine] delete_ocr_box error: {e}")
+            return False
+
+    def update_ocr_box_text(self, file_path: str, lang: str, box_to_match: list, new_text: str) -> bool:
+        """
+        將指定框的辨識文字更新為 new_text（座標不變）。
+        若找不到相符的框，回傳 False。
+        """
+        def _boxes_match(b1, b2, tol=2):
+            try:
+                return all(
+                    abs(b1[i][0] - b2[i][0]) < tol and abs(b1[i][1] - b2[i][1]) < tol
+                    for i in range(4)
+                )
+            except Exception:
+                return False
+        try:
+            conn = self.get_db_conn()
+            cur  = conn.cursor()
+            cur.execute("SELECT id FROM files WHERE file_path=?", (file_path,))
+            row = cur.fetchone()
+            if not row:
+                conn.close(); return False
+            file_id = row[0]
+            cur.execute(
+                "SELECT id, ocr_data FROM ocr_results WHERE file_id=? AND lang=?",
+                (file_id, lang)
+            )
+            existing = cur.fetchone()
+            if not existing:
+                conn.close(); return False
+            row_id, old_data_json = existing
+            try:
+                items = json.loads(old_data_json) if old_data_json else []
+            except Exception:
+                items = []
+            matched = False
+            for it in items:
+                if _boxes_match(it.get("box", []), box_to_match):
+                    it["text"] = new_text
+                    it["conf"] = 1.0
+                    matched = True
+            if not matched:
+                conn.close(); return False
+            full_text = " ".join(it.get("text", "") for it in items)
+            cur.execute(
+                "UPDATE ocr_results SET ocr_text=?, ocr_data=? WHERE id=?",
+                (full_text, json.dumps(items, ensure_ascii=False), row_id)
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"[Engine] update_ocr_box_text error: {e}")
+            return False
+
     def get_text_vector(self, text):
         """瞬間產生文字的 1024 維特徵 (約 0.05 秒)"""
         if not self.is_ready or not hasattr(self, 'clip_text_session'): return None
@@ -2492,6 +2593,8 @@ class FloatingWidget(QWidget):
 class OCRLabel(QLabel):
     hover_info_changed   = pyqtSignal(list, QPolygon, QPoint)
     crop_rect_confirmed  = pyqtSignal(QRect)   # 框選完成，QRect 為原始圖片像素座標
+    box_left_clicked     = pyqtSignal(int)              # 左鍵點擊 OCR 框（index）
+    box_right_clicked    = pyqtSignal(int, QPoint)      # 右鍵點擊 OCR 框（index, 全域座標）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2567,6 +2670,16 @@ class OCRLabel(QLabel):
             self._crop_items   = []
             self.update()
             return
+        # OCR 框點擊互動（顯示紅框時才生效）
+        if self.show_ocr_boxes and self.hovered_index != -1 and not self._crop_mode:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.box_left_clicked.emit(self.hovered_index)
+                event.accept()
+                return
+            if event.button() == Qt.MouseButton.RightButton:
+                self.box_right_clicked.emit(self.hovered_index, event.globalPosition().toPoint())
+                event.accept()
+                return
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -2803,6 +2916,7 @@ class PreviewOverlay(QWidget):
         self._crop_worker  = None       # CropOCRWorker
         self._crop_items   = []         # 框選 OCR 暫存結果
         self._last_crop_rect_px = None  # 使用者框選的原始圖片像素 QRect
+        self._edit_mode_item = None     # 正在編輯的 OCR 框資料（None 表示新增模式）
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.hide()
         self.setObjectName("PreviewOverlayMask")
@@ -2813,6 +2927,8 @@ class PreviewOverlay(QWidget):
         self.image_label = OCRLabel()
         self.image_label.hover_info_changed.connect(self.on_hover_info_changed)
         self.image_label.crop_rect_confirmed.connect(self._on_crop_confirmed)
+        self.image_label.box_left_clicked.connect(self._on_box_left_clicked)
+        self.image_label.box_right_clicked.connect(self._on_box_right_clicked)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet("background: transparent;")
         # Expanding 讓 label 始終填滿可用空間，pixmap 變動不觸發 layout 重算
@@ -2926,6 +3042,7 @@ class PreviewOverlay(QWidget):
             self._crop_worker = None
         self._crop_items = []
         self._last_crop_rect_px = None
+        self._edit_mode_item = None
         self._crop_edit.clear()
         self._crop_edit.hide()
         self.image_label.exit_crop_mode()
@@ -3001,8 +3118,12 @@ class PreviewOverlay(QWidget):
         self._reposition_confirm_bar()
 
     def _on_crop_edit_changed(self, text: str):
-        """文字欄內容改變時：未辨識到文字的情況下，有輸入才啟用加入按鈕"""
-        if not self._crop_items:
+        """文字欄內容改變時：依照目前模式決定是否啟用儲存按鈕"""
+        if self._edit_mode_item is not None:
+            # 編輯模式：有文字就可儲存
+            self._btn_save_crop.setEnabled(bool(text.strip()))
+        elif not self._crop_items:
+            # 新增模式（無 OCR 結果）：手動輸入才啟用
             self._btn_save_crop.setEnabled(bool(text.strip()))
 
     def _on_crop_ocr_error(self, msg: str):
@@ -3010,6 +3131,10 @@ class PreviewOverlay(QWidget):
         self._btn_save_crop.setEnabled(False)
 
     def _save_crop_to_db(self):
+        # 編輯模式：走替換流程
+        if self._edit_mode_item is not None:
+            self._save_edited_box()
+            return
         if not self.current_preview_path:
             return
         edited_text = self._crop_edit.text().strip()
@@ -3051,6 +3176,83 @@ class PreviewOverlay(QWidget):
             self._cancel_crop()      # 關閉框選模式與確認列
         else:
             self._crop_status_lbl.setText("寫入失敗，請確認圖片已建立索引")
+
+    # ── OCR 框點擊互動 ─────────────────────────────────────────
+    def _on_box_left_clicked(self, idx: int):
+        """左鍵點擊 OCR 框：開啟編輯確認列"""
+        if idx < 0 or idx >= len(self.image_label.ocr_data):
+            return
+        item = self.image_label.ocr_data[idx]
+        self._edit_mode_item = item
+        # 組合所有語系文字
+        combined = " ".join(r.get("text", "") for r in item.get("results", []))
+        self._crop_status_lbl.setText("編輯 OCR 文字（完成後點擊儲存）")
+        self._crop_edit.setText(combined)
+        self._crop_edit.show()
+        self._crop_edit.selectAll()
+        self._crop_edit.setFocus()
+        self._btn_save_crop.setEnabled(bool(combined.strip()))
+        self._reposition_confirm_bar()
+        self._crop_confirm_bar.show()
+        self._crop_confirm_bar.raise_()
+
+    def _on_box_right_clicked(self, idx: int, global_pos: QPoint):
+        """右鍵點擊 OCR 框：顯示操作選單"""
+        if idx < 0 or idx >= len(self.image_label.ocr_data):
+            return
+        item = self.image_label.ocr_data[idx]
+        combined = " ".join(r.get("text", "") for r in item.get("results", []))
+
+        menu = QMenu(self)
+        act_copy = menu.addAction("複製文字")
+        act_edit = menu.addAction("編輯文字")
+        menu.addSeparator()
+        act_del  = menu.addAction("刪除此區塊")
+
+        chosen = menu.exec(global_pos)
+        if chosen == act_copy:
+            QApplication.clipboard().setText(combined)
+        elif chosen == act_edit:
+            self._on_box_left_clicked(idx)
+        elif chosen == act_del:
+            self._delete_ocr_box_at(idx)
+
+    def _delete_ocr_box_at(self, idx: int):
+        """從 DB 刪除指定的 OCR 框，並重新整合畫面"""
+        if idx < 0 or idx >= len(self.image_label.ocr_data):
+            return
+        item = self.image_label.ocr_data[idx]
+        box  = item.get("box")
+        if not box:
+            return
+        engine = self.parent().engine
+        for r in item.get("results", []):
+            engine.delete_ocr_box(self.current_preview_path, r.get("lang", "unk"), box)
+        self._reload_ocr_data()
+
+    def _save_edited_box(self):
+        """以替換方式更新編輯後的文字到 DB"""
+        if not self._edit_mode_item or not self.current_preview_path:
+            self._cancel_crop()
+            return
+        new_text = self._crop_edit.text().strip()
+        if not new_text:
+            self._cancel_crop()
+            return
+        item = self._edit_mode_item
+        box  = item.get("box")
+        engine = self.parent().engine
+        ok = True
+        for r in item.get("results", []):
+            if not engine.update_ocr_box_text(
+                self.current_preview_path, r.get("lang", "unk"), box, new_text
+            ):
+                ok = False
+        if ok:
+            self._reload_ocr_data()
+            self._cancel_crop()
+        else:
+            self._crop_status_lbl.setText("更新失敗，請確認圖片已建立索引")
 
     def _reload_ocr_data(self):
         """從 DB 重新讀取 OCR 資料並更新 image_label（Shift 紅框即時反映新內容）"""
