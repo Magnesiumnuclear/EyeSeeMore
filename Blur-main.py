@@ -2710,6 +2710,14 @@ class OCRLabel(QLabel):
         super().mouseReleaseEvent(event)
 
 
+    def leaveEvent(self, event):
+        """滑鼠完全離開 OCRLabel（移至圖片外的灰色區域）時，立即隱藏懸浮標籤"""
+        if self.hovered_index != -1:
+            self.hovered_index = -1
+            self.hover_info_changed.emit([], QPolygon(), QPoint())
+            self.update()
+        super().leaveEvent(event)
+
     def set_draw_boxes(self, show):
         self.show_ocr_boxes = show
         if not show:
