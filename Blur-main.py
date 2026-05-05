@@ -333,6 +333,85 @@ class CropOCRWorker(QRunnable):
                 self.signals.error.emit(str(e))
 
 
+def _merge_raw_ocr_shapely(raw_ocr_data: list) -> list:
+    """將 DB 撈出的 flat OCR 列表，以 Shapely 重疊率 >85% 合併成多語言框。
+    回傳 [{"box": [...], "results": [{lang, text, conf}, ...]}, ...]
+    """
+    def _sort_points(box):
+        import numpy as np
+        pts = np.array(box)
+        rect = np.zeros((4, 2), dtype="float32")
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)]
+        rect[2] = pts[np.argmax(s)]
+        diff = np.diff(pts, axis=1)
+        rect[1] = pts[np.argmin(diff)]
+        rect[3] = pts[np.argmax(diff)]
+        return rect.tolist()
+
+    try:
+        from shapely.geometry import Polygon as ShapelyPolygon
+    except ImportError:
+        ShapelyPolygon = None
+
+    merged_data = []
+    if not ShapelyPolygon:
+        for item in raw_ocr_data:
+            merged_data.append({
+                "box": item.get("box", []),
+                "results": [{"lang": item.get("lang", "unk"),
+                              "text": item.get("text", ""),
+                              "conf": item.get("conf", 0.0)}]
+            })
+        return merged_data
+
+    for item in raw_ocr_data:
+        box = item.get("box")
+        if not box or len(box) != 4:
+            continue
+        try:
+            sorted_box = _sort_points(box)
+            current_poly = ShapelyPolygon(sorted_box)
+            if not current_poly.is_valid or current_poly.area <= 0:
+                continue
+        except Exception:
+            continue
+
+        is_merged = False
+        for existing in merged_data:
+            existing_poly = existing.get("poly")
+            if not existing_poly:
+                continue
+            try:
+                if current_poly.intersects(existing_poly):
+                    inter_area = current_poly.intersection(existing_poly).area
+                    min_area = min(current_poly.area, existing_poly.area)
+                    if (inter_area / min_area) > 0.85:
+                        existing["results"].append({
+                            "lang": item.get("lang", "unk"),
+                            "text": item.get("text", ""),
+                            "conf": item.get("conf", 0.0)
+                        })
+                        is_merged = True
+                        break
+            except Exception:
+                pass
+
+        if not is_merged:
+            merged_data.append({
+                "box": sorted_box,
+                "poly": current_poly,
+                "results": [{"lang": item.get("lang", "unk"),
+                              "text": item.get("text", ""),
+                              "conf": item.get("conf", 0.0)}]
+            })
+
+    for m in merged_data:
+        m.pop("poly", None)
+
+    return merged_data
+
+
 class PreviewLoader(QRunnable):
     """專門用於大圖預覽的高清背景讀取器 + 幾何碰撞運算器"""
     def __init__(self, file_path, target_size, engine, query, is_precise, orig_w, orig_h):
@@ -346,19 +425,6 @@ class PreviewLoader(QRunnable):
         self.orig_h = orig_h
         self.signals = PreviewSignals()
         self.is_cancelled = False
-
-    def _sort_points(self, box):
-        """背景排序：將 OpenCV 隨機順序的四個點定義為 TL, TR, BR, BL"""
-        import numpy as np
-        pts = np.array(box)
-        rect = np.zeros((4, 2), dtype="float32")
-        s = pts.sum(axis=1)
-        rect[0] = pts[np.argmin(s)]
-        rect[2] = pts[np.argmax(s)]
-        diff = np.diff(pts, axis=1) 
-        rect[1] = pts[np.argmin(diff)]
-        rect[3] = pts[np.argmax(diff)]
-        return rect.tolist()
 
     def run(self):
         if self.is_cancelled: return
@@ -375,64 +441,7 @@ class PreviewLoader(QRunnable):
         # ==========================================
         #  任務 A：背景執行 Shapely 群組合併
         # ==========================================
-        merged_data = []
-        try:
-            from shapely.geometry import Polygon as ShapelyPolygon
-        except ImportError:
-            ShapelyPolygon = None
-
-        if not ShapelyPolygon:
-            #  這裡原本用 self.raw_ocr_data，現在改用剛剛撈出來的 raw_ocr_data
-            for item in raw_ocr_data:
-                merged_data.append({
-                    "box": item.get("box", []),
-                    "results": [{"lang": item.get("lang", "unk"), "text": item.get("text", ""), "conf": item.get("conf", 0.0)}]
-                })
-        else:
-            for item in raw_ocr_data:
-                if self.is_cancelled: return
-                box = item.get("box")
-                # ... (下面的 Shapely 合併邏輯完全維持不變，只要確保迴圈是用 raw_ocr_data 即可) ...
-                if not box or len(box) != 4: continue
-                
-                try:
-                    sorted_box = self._sort_points(box)
-                    current_poly = ShapelyPolygon(sorted_box)
-                    if not current_poly.is_valid or current_poly.area <= 0: continue
-                except: 
-                    continue
-                
-                is_merged = False
-                for existing in merged_data:
-                    existing_poly = existing.get("poly")
-                    if not existing_poly: continue
-                    try:
-                        if current_poly.intersects(existing_poly):
-                            inter_area = current_poly.intersection(existing_poly).area
-                            min_area = min(current_poly.area, existing_poly.area)
-                            if (inter_area / min_area) > 0.85:
-                                existing["results"].append({
-                                    "lang": item.get("lang", "unk"),
-                                    "text": item.get("text", ""),
-                                    "conf": item.get("conf", 0.0)
-                                })
-                                is_merged = True
-                                break
-                    except: pass
-                
-                if not is_merged:
-                    merged_data.append({
-                        "box": sorted_box,
-                        "poly": current_poly,
-                        "results": [{
-                            "lang": item.get("lang", "unk"),
-                            "text": item.get("text", ""),
-                            "conf": item.get("conf", 0.0)
-                        }]
-                    })
-        
-        for m in merged_data:
-            m.pop("poly", None)
+        merged_data = _merge_raw_ocr_shapely(raw_ocr_data)
 
         if self.is_cancelled: return
 
@@ -1884,11 +1893,14 @@ class ImageSearchEngine:
         """
         從指定語系的 ocr_data 中移除符合座標的框。
         box_to_delete 為 4 點列表，允許 ±2px 誤差比對。
+        比對前先排序，與點的儲存順序無關（相容 PaddleOCR 原始順序或 _sort_points 後的順序）。
         """
         def _boxes_match(b1, b2, tol=2):
             try:
+                s1 = sorted(b1, key=lambda p: (p[0], p[1]))
+                s2 = sorted(b2, key=lambda p: (p[0], p[1]))
                 return all(
-                    abs(b1[i][0] - b2[i][0]) < tol and abs(b1[i][1] - b2[i][1]) < tol
+                    abs(s1[i][0] - s2[i][0]) < tol and abs(s1[i][1] - s2[i][1]) < tol
                     for i in range(4)
                 )
             except Exception:
@@ -1932,11 +1944,14 @@ class ImageSearchEngine:
         """
         將指定框的辨識文字更新為 new_text（座標不變）。
         若找不到相符的框，回傳 False。
+        比對前先排序，與點的儲存順序無關（相容 PaddleOCR 原始順序或 _sort_points 後的順序）。
         """
         def _boxes_match(b1, b2, tol=2):
             try:
+                s1 = sorted(b1, key=lambda p: (p[0], p[1]))
+                s2 = sorted(b2, key=lambda p: (p[0], p[1]))
                 return all(
-                    abs(b1[i][0] - b2[i][0]) < tol and abs(b1[i][1] - b2[i][1]) < tol
+                    abs(s1[i][0] - s2[i][0]) < tol and abs(s1[i][1] - s2[i][1]) < tol
                     for i in range(4)
                 )
             except Exception:
@@ -2479,7 +2494,7 @@ class FloatingWidget(QWidget):
         for r in results:
             lang_str = f"[{r.get('lang', 'unk').upper()}]"
             text_str = r.get("text", "")
-            conf_str = f"({r.get('conf', 0.0):.2f})"
+            conf_str = f" {r.get('conf', 0.0):.2f}"
             w = fm_text.boundingRect(f"{lang_str} {text_str} {conf_str} ").width()
             if w > max_w: max_w = w
             total_h += fm_text.height()
@@ -3192,6 +3207,7 @@ class PreviewOverlay(QWidget):
         self._crop_edit.selectAll()
         self._crop_edit.setFocus()
         self._btn_save_crop.setEnabled(bool(combined.strip()))
+        self.floating_tag.hide()   # 編輯模式期間隱藏懸浮標籤，避免重疊
         self._reposition_confirm_bar()
         self._crop_confirm_bar.show()
         self._crop_confirm_bar.raise_()
@@ -3229,6 +3245,7 @@ class PreviewOverlay(QWidget):
         for r in item.get("results", []):
             engine.delete_ocr_box(self.current_preview_path, r.get("lang", "unk"), box)
         self._reload_ocr_data()
+        self._cancel_crop()   # 清除可能殘留的 _edit_mode_item（避免指向已刪除的框）
 
     def _save_edited_box(self):
         """以替換方式更新編輯後的文字到 DB"""
@@ -3242,30 +3259,36 @@ class PreviewOverlay(QWidget):
         item = self._edit_mode_item
         box  = item.get("box")
         engine = self.parent().engine
-        ok = True
+        succeeded = 0
+        failed = 0
         for r in item.get("results", []):
-            if not engine.update_ocr_box_text(
+            if engine.update_ocr_box_text(
                 self.current_preview_path, r.get("lang", "unk"), box, new_text
             ):
-                ok = False
-        if ok:
-            self._reload_ocr_data()
-            self._cancel_crop()
-        else:
+                succeeded += 1
+            else:
+                failed += 1
+
+        # 無論成敗都重新整合畫面，避免 UI 卡死或停留在過期狀態
+        self._reload_ocr_data()
+        self._cancel_crop()
+
+        # 若有部分或全部語言寫入失敗，短暫顯示提示（不阻塞流程）
+        if failed > 0 and succeeded == 0:
             self._crop_status_lbl.setText("更新失敗，請確認圖片已建立索引")
+            self._crop_confirm_bar.show()
+            QTimer.singleShot(3000, self._crop_confirm_bar.hide)
+        elif failed > 0:
+            self._crop_status_lbl.setText(f"部分語言更新失敗（{succeeded} 成功 / {failed} 失敗）")
+            self._crop_confirm_bar.show()
+            QTimer.singleShot(3000, self._crop_confirm_bar.hide)
 
     def _reload_ocr_data(self):
         """從 DB 重新讀取 OCR 資料並更新 image_label（Shift 紅框即時反映新內容）"""
         try:
             engine = self.parent().engine
             raw = engine.get_ocr_data_by_path(self.current_preview_path)
-            merged = [
-                {"box": item["box"],
-                 "results": [{"lang": item.get("lang", ""),
-                               "text": item.get("text", ""),
-                               "conf": item.get("conf", 0.0)}]}
-                for item in raw if item.get("box")
-            ]
+            merged = _merge_raw_ocr_shapely(raw)
             lbl = self.image_label
             lbl.set_precomputed_ocr_data(
                 merged,
@@ -3336,6 +3359,11 @@ class PreviewOverlay(QWidget):
 
     def on_hover_info_changed(self, results, poly, cursor_pos):
         if not results:
+            self.floating_tag.hide()
+            return
+
+        # 確認列開著時（框選 OCR 或編輯模式），不顯示懸浮標籤
+        if self._crop_confirm_bar.isVisible():
             self.floating_tag.hide()
             return
 
