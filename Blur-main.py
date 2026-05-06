@@ -3457,9 +3457,9 @@ class PreviewOverlay(QWidget):
         self.show()
         self.raise_()
         self.setFocus()
-        # 新圖顯示時：保持 is_ocr_locked 的鎖定狀態，但若未鎖定則確保紅框隱藏
+        # 新圖顯示時：保持 is_ocr_locked（toggle）或 _ocr_hold_active（hold）的狀態
         mw = self.parent()
-        locked = getattr(mw, 'is_ocr_locked', False)
+        locked = getattr(mw, 'is_ocr_locked', False) or getattr(mw, '_ocr_hold_active', False)
         self.set_ocr_visible(locked)
         QTimer.singleShot(0, self._reposition_toolbar)
 
@@ -4626,6 +4626,7 @@ class MainWindow(QMainWindow):
         self.current_folder_path = self.config.get("ui_state", {}).get("default_startup_folder", "ALL")
 
         self.is_ocr_locked = False
+        self._ocr_hold_active = False  # hold 模式：Shift 按著時為 True
 
         self.last_search_results = [] # 儲存最近一次檢索回來的原始資料
         self.last_search_stats = {}    # 漏斗各層過濾後的計數統計
@@ -4838,6 +4839,7 @@ class MainWindow(QMainWindow):
 
     def _on_ocr_show(self, visible):
         # hold 模式：按下顯示、放開隱藏（不改變 is_ocr_locked）
+        self._ocr_hold_active = visible
         self.preview_overlay.set_ocr_visible(visible)
 
     def _on_ocr_toggle_lock(self):
@@ -5183,8 +5185,8 @@ class MainWindow(QMainWindow):
                     #  核心修改 2：完整傳遞給顯示層，實現光速預覽！
                     self.preview_overlay.show_image(item, current_query, is_precise, l1_pixmap)
                     
-                    #  [加碼優化] 保持 OCR 鎖定狀態
-                    self.preview_overlay.set_ocr_visible(self.is_ocr_locked)
+                    #  [加碼優化] 保持 OCR 鎖定狀態（toggle 模式 or hold 模式 Shift 按著）
+                    self.preview_overlay.set_ocr_visible(self.is_ocr_locked or self._ocr_hold_active)
 
     
 
