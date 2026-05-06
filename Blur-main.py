@@ -313,17 +313,11 @@ class CropOCRWorker(QRunnable):
                     print(f"[CropOCR Debug] [{lang}] 引擎不存在，跳過")
                     continue
                 ocr_out = engine.ocr(crop, cls=False)
-                used_fallback = False
-                # 偵測無結果時，退而求其次：跳過偵測直接辨識整個框選區
                 if not ocr_out or not ocr_out[0]:
-                    print(f"[CropOCR Debug] [{lang}] 偵測無結果，啟動 fallback ocr_no_det")
-                    ocr_out = engine.ocr_no_det(crop)
-                    used_fallback = True
-                if not ocr_out or not ocr_out[0]:
-                    print(f"[CropOCR Debug] [{lang}] fallback 亦無結果，放棄")
+                    print(f"[CropOCR Debug] [{lang}] 偵測無結果，放棄")
                     continue
                 raw_lines = ocr_out[0]
-                print(f"[CropOCR Debug] [{lang}] {'(no_det)' if used_fallback else '(det)'} 共 {len(raw_lines)} 行原始結果:")
+                print(f"[CropOCR Debug] [{lang}] 共 {len(raw_lines)} 行原始結果:")
                 for idx, line in enumerate(raw_lines):
                     box_local, (text, conf) = line[0], line[1]
                     print(f"[CropOCR Debug]   [{idx}] conf={conf:.4f}  text={repr(text)}")
