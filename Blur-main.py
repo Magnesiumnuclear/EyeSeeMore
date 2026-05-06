@@ -306,15 +306,27 @@ class CropOCRWorker(QRunnable):
             if self.is_cancelled: return
 
             merged = []
+            print(f"[CropOCR Debug] 框選區域: x={x}, y={y}, w={x2-x}, h={y2-y}  |  langs={self.needed_langs}")
             for lang in self.needed_langs:
                 engine = self.shared_engines.get(lang)
                 if engine is None:
+                    print(f"[CropOCR Debug] [{lang}] 引擎不存在，跳過")
                     continue
                 ocr_out = engine.ocr(crop, cls=False)
+                used_fallback = False
+                # 偵測無結果時，退而求其次：跳過偵測直接辨識整個框選區
                 if not ocr_out or not ocr_out[0]:
+                    print(f"[CropOCR Debug] [{lang}] 偵測無結果，啟動 fallback ocr_no_det")
+                    ocr_out = engine.ocr_no_det(crop)
+                    used_fallback = True
+                if not ocr_out or not ocr_out[0]:
+                    print(f"[CropOCR Debug] [{lang}] fallback 亦無結果，放棄")
                     continue
-                for line in ocr_out[0]:
+                raw_lines = ocr_out[0]
+                print(f"[CropOCR Debug] [{lang}] {'(no_det)' if used_fallback else '(det)'} 共 {len(raw_lines)} 行原始結果:")
+                for idx, line in enumerate(raw_lines):
                     box_local, (text, conf) = line[0], line[1]
+                    print(f"[CropOCR Debug]   [{idx}] conf={conf:.4f}  text={repr(text)}")
                     # 把框座標平移回全圖座標
                     box_full = [[int(pt[0]) + x, int(pt[1]) + y] for pt in box_local]
                     merged.append({
@@ -325,6 +337,7 @@ class CropOCRWorker(QRunnable):
                         "conf":    round(float(conf), 4),
                     })
 
+            print(f"[CropOCR Debug] 最終合併結果: {len(merged)} 個框")
             if not self.is_cancelled:
                 self.signals.result.emit(merged)
 

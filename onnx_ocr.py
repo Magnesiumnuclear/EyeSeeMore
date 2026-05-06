@@ -75,6 +75,32 @@ class ONNXOCR:
         
         return [results] if results else [[]]
 
+    def ocr_no_det(self, img_input):
+        """
+        跳過偵測階段，直接對整張輸入圖做辨識。
+        適用於使用者已手動框選好單行文字的情境。
+        輸出格式與 ocr() 一致: [[ [box, (text, score)], ... ]]
+        """
+        if isinstance(img_input, str):
+            img = cv2.imdecode(np.fromfile(img_input, dtype=np.uint8), cv2.IMREAD_COLOR)
+        elif isinstance(img_input, np.ndarray):
+            img = img_input
+        else:
+            return [[]]
+
+        if img is None or img.size == 0:
+            return [[]]
+
+        h, w = img.shape[:2]
+        text, score = self._rec_forward(img)
+
+        if not text.strip():
+            return [[]]
+
+        # 以整張圖的四角當作回傳框（座標系與 ocr() 一致）
+        box = [[0, 0], [w, 0], [w, h], [0, h]]
+        return [[[box, (text, score)]]]
+
     # ==========================================
     #  偵測模型 (Detection) 核心邏輯
     # ==========================================
