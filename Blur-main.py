@@ -4851,7 +4851,7 @@ class MainWindow(QMainWindow):
 
     def _on_close_preview(self):
         self.preview_overlay.hide()
-        self.is_ocr_locked = False
+        # 關閉預覽時保留 is_ocr_locked，下次重新開啟可還原紅框狀態
 
     def _on_copy_toast(self, count):
         if count == 1:
@@ -5126,7 +5126,7 @@ class MainWindow(QMainWindow):
     def toggle_preview(self):
         if self.preview_overlay.isVisible():
             self.preview_overlay.hide()
-            self.is_ocr_locked = False
+            # 關閉預覽時保留 is_ocr_locked，下次重新開啟可還原紅框狀態
         else:
             index = self.list_view.currentIndex()
             if index.isValid():
@@ -5137,7 +5137,8 @@ class MainWindow(QMainWindow):
                         self.preview_overlay.show_funnel_card(item)
                         return
 
-                    self.is_ocr_locked = False
+                    # 保留目前的 is_ocr_locked 狀態（不強制重置）
+                    # show_image() 內部會讀取 is_ocr_locked 並呼叫 set_ocr_visible
                     current_query = self.input.text().strip()
                     is_precise = self.config.get("ui_state", {}).get("precise_ocr_highlight", False)
 
@@ -5146,7 +5147,6 @@ class MainWindow(QMainWindow):
 
                     #  傳遞給顯示層
                     self.preview_overlay.show_image(item, current_query, is_precise, l1_pixmap)
-                    self.preview_overlay.set_ocr_visible(False)
 
     def toggle_inspector(self):
         """控制右側面板的展開與收合"""
