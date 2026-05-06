@@ -53,26 +53,74 @@ class ONNXOCR:
         if img is None:
             return [[]]
 
+        h_orig, w_orig = img.shape[:2]
+
+        # --- 預處理 0：直排旋轉 ---
+        # h/w > 3 視為直排單列，逆時針旋轉 90° 讓 DBNet 以橫排方式偵測
+        # np.rot90(k=1) CCW：shape (H,W) → (W,H)
+        # 正向座標變換 (orig→rot): x_rot = y_orig,  y_rot = W_orig-1 - x_orig
+        # 逆向座標變換 (rot→orig): x_orig = W_orig-1 - y_rot,  y_orig = x_rot
+        #   其中 W_orig = h_rot（旋轉後的高＝原始的寬）
+        VERTICAL_RATIO = 3.0
+        rotated = (h_orig / max(w_orig, 1)) > VERTICAL_RATIO
+        if rotated:
+            img_rot = np.rot90(img, k=1).copy()   # CCW 90°
+        else:
+            img_rot = img
+        h_rot, w_rot = img_rot.shape[:2]   # 旋轉後（或原始）的尺寸
+
+        # --- 預處理 1：加白邊，避免邊緣文字被 DBNet 截斷 ---
+        PAD = 4
+        img_proc = cv2.copyMakeBorder(img_rot, PAD, PAD, PAD, PAD,
+                                      cv2.BORDER_CONSTANT, value=(255, 255, 255))
+
+        # --- 預處理 2：若最小邊 < 128px，等比放大讓 DBNet 有足夠解析度 ---
+        MIN_DET_SIDE = 128
+        h_p, w_p = img_proc.shape[:2]
+        upscale = 1.0
+        if min(h_p, w_p) < MIN_DET_SIDE:
+            upscale = MIN_DET_SIDE / min(h_p, w_p)
+            img_det = cv2.resize(img_proc, None, fx=upscale, fy=upscale,
+                                 interpolation=cv2.INTER_CUBIC)
+        else:
+            img_det = img_proc
+
         # --- 階段 1：文字偵測 (Detection) ---
-        dt_boxes = self._det_forward(img)
+        dt_boxes = self._det_forward(img_det)
         if len(dt_boxes) == 0:
             return [[]]
 
-        # 根據由上到下，由左到右排序框
+        # --- 逆運算：box 座標由 img_det 空間還原至 img_rot 空間 ---
+        if upscale != 1.0:
+            dt_boxes = dt_boxes / upscale
+        dt_boxes[:, :, 0] -= PAD
+        dt_boxes[:, :, 1] -= PAD
+        dt_boxes[:, :, 0] = np.clip(dt_boxes[:, :, 0], 0, w_rot - 1)
+        dt_boxes[:, :, 1] = np.clip(dt_boxes[:, :, 1], 0, h_rot - 1)
+        # dt_boxes 現在是 img_rot 空間的座標
+
         dt_boxes = self._sort_boxes(dt_boxes)
 
         # --- 階段 2：文字辨識 (Recognition) ---
+        # 辨識從 img_rot 裁切（旋轉後文字為橫排，辨識效果最佳）
+        # 回傳的 box 需逆變換回原始圖片座標
         results = []
-        for box in dt_boxes:
-            # 1. 將傾斜的文字框裁切並轉正
-            crop_img = self._get_rotate_crop_image(img, box)
-            # 2. 辨識文字
+        for box_rot in dt_boxes:
+            crop_img = self._get_rotate_crop_image(img_rot, box_rot)
             text, score = self._rec_forward(crop_img)
-            
-            if score > 0.5 and text.strip(): # 信心度大於 0.5 才納入
-                # 輸出格式對齊 PaddleOCR: [[box, (text, score)], ...]
-                results.append([box.tolist(), (text, score)])
-        
+
+            if score > 0.5 and text.strip():
+                if rotated:
+                    # 逆向座標變換 (rot→orig):
+                    # x_orig = W_orig-1 - y_rot  = h_rot-1 - y_rot
+                    # y_orig = x_rot
+                    box_orig = box_rot.copy()
+                    box_orig[:, 0] = h_rot - 1 - box_rot[:, 1]
+                    box_orig[:, 1] = box_rot[:, 0]
+                    results.append([box_orig.tolist(), (text, score)])
+                else:
+                    results.append([box_rot.tolist(), (text, score)])
+
         return [results] if results else [[]]
 
     def ocr_no_det(self, img_input):
