@@ -97,16 +97,18 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         // ── 按鈕感應區（座標已是縮放後實際像素）──
         // 設計書 §4.3
-        if (PtInR(s_close_rect, pt.x, pt.y)) return HTCLOSE;
-        if (PtInR(s_max_rect,   pt.x, pt.y)) return HTMAXBUTTON;   // 觸發 Snap Layouts
-        if (PtInR(s_min_rect,   pt.x, pt.y)) return HTMINBUTTON;
-        if (PtInR(s_pin_rect,   pt.x, pt.y)) return HTCLIENT;      // 釘選由 Qt 處理
+        // 全部回傳 HTCLIENT，讓 Qt 處理按鈕點擊事件與視覺回饋。
+        // HTCLOSE/HTMAXBUTTON/HTMINBUTTON 會觸發 Windows NC 按鈕追蹤，
+        // 導致 Qt 的 QPushButton 無法收到 clicked 訊號。
+        if (PtInR(s_close_rect, pt.x, pt.y)) return HTCLIENT;
+        if (PtInR(s_max_rect,   pt.x, pt.y)) return HTCLIENT;
+        if (PtInR(s_min_rect,   pt.x, pt.y)) return HTCLIENT;
+        if (PtInR(s_pin_rect,   pt.x, pt.y)) return HTCLIENT;
 
-        // ── TopBar 拖動區 ──────────────────────────────────
-        LONG tb_h = static_cast<LONG>(static_cast<float>(s_titlebar_height) * s_dpr);
-        if (pt.y < tb_h)
-            return HTCAPTION;
-
+        // ── TopBar / 客戶端區域 ────────────────────────────
+        // 所有非邊框區域一律回傳 HTCLIENT，讓 Qt 完全控制事件分發。
+        // 視窗拖曳改由 Python event filter 在 TopBar 空白區觸發
+        // ReleaseCapture() + PostMessageW(WM_NCLBUTTONDOWN, HTCAPTION)。
         return HTCLIENT;
     }
 

@@ -4707,6 +4707,12 @@ class MainWindow(QMainWindow):
         ))
         QTimer.singleShot(50, self._update_button_rects)
 
+        # TopBar 空白區拖曳：安裝 event filter，讓點擊 TopBar 背景（非子控件）時觸發原生視窗拖曳
+        _top_bar = self.findChild(QFrame, "TopBar")
+        if _top_bar:
+            self._drag_top_bar = _top_bar
+            _top_bar.installEventFilter(self)
+
         # NavigationManager 需要在 init_ui() 之後建立 (因為依賴 UI 元件)
         from ui.navigation_manager import NavigationManager
         self.nav = NavigationManager(
@@ -5103,6 +5109,23 @@ class MainWindow(QMainWindow):
             self.status.setText(f"Folder: {os.path.basename(path)} ({len(results)} items)")
 
     def eventFilter(self, obj, event):
+        # ── TopBar 空白區拖曳 ────────────────────────────────
+        # installEventFilter 只對「直接送往 top_bar 本身」的事件觸發，
+        # 點擊子控件（按鈕、搜尋欄）的事件不會路由到此，因此不需 widgetAt() 判斷。
+        if hasattr(self, '_drag_top_bar') and obj is self._drag_top_bar:
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    ctypes.windll.user32.ReleaseCapture()
+                    ctypes.windll.user32.PostMessageW(int(self.winId()), 0x00A1, 2, 0)
+                    return True
+            if event.type() == QEvent.Type.MouseButtonDblClick:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    if self.isMaximized():
+                        self.showNormal()
+                    else:
+                        self.showMaximized()
+                    return True
+        # ─────────────────────────────────────────────────────
         ah = self.action_handler
         cfg = ah.get_config()
 
@@ -5222,14 +5245,20 @@ class MainWindow(QMainWindow):
             self.btn_win_max.setToolTip("最大化")
 
     def _update_button_rects(self):
-        """將四個按鈕的座標（相對 MainWindow 客戶端）通知 WndProc 掛鉤。"""
+        """將四個按鈕的座標（相對 MainWindow 客戶端，實體像素）通知 WndProc 掛鉤。"""
         from core import win_titlebar
         if not win_titlebar.is_installed():
             return
 
+        # WM_NCHITTEST 的座標為實體像素，必須乘以 DPR 才能對應 Qt 邏輯像素座標
+        dpr = self.devicePixelRatioF()
+
         def _to_client(btn):
             pos = btn.mapTo(self, btn.rect().topLeft())
-            return (pos.x(), pos.y(), btn.width(), btn.height())
+            return (
+                int(pos.x() * dpr), int(pos.y() * dpr),
+                int(btn.width() * dpr), int(btn.height() * dpr),
+            )
 
         win_titlebar.update_button_rects(
             min_rect=_to_client(self.btn_win_min),
