@@ -4679,7 +4679,10 @@ class MainWindow(QMainWindow):
         # --- 釘選按鈕初始化 ---
         always_on_top = self.config.get("ui_state", {}).get("always_on_top", False)
         if always_on_top:
+            # 此時 Hook 尚未安裝，用 setWindowFlag 不影響 HWND 的 WndProc 狀態。
+            # Hook 安裝後（QTimer 0ms）會在新 HWND 上補裝，維持正常。
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            self.show()
             self.btn_pin.blockSignals(True)
             self.btn_pin.setChecked(True)
             self.btn_pin.setToolTip("取消釘選 (Ctrl+T)")
@@ -5220,12 +5223,22 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.adjust_layout)
 
     def _on_pin_toggled(self, checked: bool):
-        """切換視窗置頂狀態（釘選功能），並持久化設定。"""
-        # setUpdatesEnabled 抑制重繪，避免 show() 引起的視覺閃爍（設計書 §7.2）
-        self.setUpdatesEnabled(False)
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, checked)
-        self.show()
-        self.setUpdatesEnabled(True)
+        """切換視窗置頂狀態（釘選功能），並持久化設定。
+
+        使用 Win32 SetWindowPos 直接切換 TOPMOST，避免 setWindowFlag 重建 HWND
+        導致 WndProc Hook 和 WS_THICKFRAME 失效。
+        """
+        hwnd = int(self.winId())
+        HWND_TOPMOST    = ctypes.c_void_p(-1)
+        HWND_NOTOPMOST  = ctypes.c_void_p(-2)
+        SWP_NOMOVE_NOSIZE = 0x0003  # SWP_NOMOVE | SWP_NOSIZE
+        SWP_FLAGS = SWP_NOMOVE_NOSIZE | 0x0010  # | SWP_NOACTIVATE
+        ctypes.windll.user32.SetWindowPos(
+            hwnd,
+            HWND_TOPMOST if checked else HWND_NOTOPMOST,
+            0, 0, 0, 0,
+            SWP_FLAGS,
+        )
 
         self.btn_pin.setToolTip("取消釘選 (Ctrl+T)" if checked else "釘選視窗至最上層 (Ctrl+T)")
 
