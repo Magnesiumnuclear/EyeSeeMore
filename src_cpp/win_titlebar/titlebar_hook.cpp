@@ -63,17 +63,18 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     // ── 1b. NC 左鍵按下 - 邊框縮放 ────────────────────────
-    // Qt 搭配 FramelessWindowHint 時，其 WndProc 不會把縮放
-    // HT code 轉給 DefWindowProcW，導致縮放迴圈無法啟動。
-    // 直接呼叫 DefWindowProcW，繞過 Qt 的攔截。
+    // DefWindowProcW(WM_NCLBUTTONDOWN, HTcorner) 內部對 NC 位置做驗證，
+    // 因 WM_NCCALCSIZE 回傳 0（NC 區域=0），角落驗證失敗，縮放迴圈不啟動。
+    // 改用 ReleaseCapture + PostMessage(WM_SYSCOMMAND, SC_SIZE+dir) 直接觸發，
+    // 完全繞過位置驗證。
+    // HT code 連續排列：HTLEFT(10)~HTBOTTOMRIGHT(17)，
+    // 對應 WMSZ 方向 1~8，故 dir = wParam - HTLEFT + 1。
     if (msg == WM_NCLBUTTONDOWN) {
-        switch (wParam) {
-            case HTLEFT:      case HTRIGHT:
-            case HTTOP:       case HTBOTTOM:
-            case HTTOPLEFT:   case HTTOPRIGHT:
-            case HTBOTTOMLEFT: case HTBOTTOMRIGHT:
-                return DefWindowProcW(hwnd, msg, wParam, lParam);
-            default: break;
+        if (wParam >= HTLEFT && wParam <= HTBOTTOMRIGHT) {
+            ReleaseCapture();
+            PostMessageW(hwnd, WM_SYSCOMMAND,
+                SC_SIZE | (WPARAM)(wParam - HTLEFT + 1), lParam);
+            return 0;
         }
     }
 
