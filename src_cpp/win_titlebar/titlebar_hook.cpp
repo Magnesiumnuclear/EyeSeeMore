@@ -179,7 +179,14 @@ ESM_API int ESM_InstallHook(HWND hwnd, int titlebar_height, float dpr)
         return 2;  // SetWindowLongPtrW 失敗
     }
 
-    // 2. DWM：將 frame 延伸至整個客戶區 → 補回視窗陰影與 Win11 圓角
+    // 2. 補回 WS_THICKFRAME（Qt FramelessWindowHint 移除了它）
+    //    DefWindowProcW 的縮放迴圈 (SC_SIZE) 依賴此樣式才會啟動；
+    //    視覺上不會顯示系統邊框，因為 WM_NCCALCSIZE 回傳 0 已消除所有 NC 繪製。
+    //    同時補回 WS_CAPTION 以確保 DWM 陰影/圓角正常運作。
+    LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME | WS_CAPTION);
+
+    // 3. DWM：將 frame 延伸至整個客戶區 → 補回視窗陰影與 Win11 圓角
     //    (-1, -1, -1, -1) = 延伸至整個視窗
     MARGINS margins = { -1, -1, -1, -1 };
     DwmExtendFrameIntoClientArea(hwnd, &margins);
