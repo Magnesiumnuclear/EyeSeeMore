@@ -62,6 +62,41 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     if (msg == WM_NCCALCSIZE && wParam == TRUE)
         return 0;
 
+    // ── 1b. NC 左鍵按下 - 邊框縮放 ────────────────────────
+    // Qt 搭配 FramelessWindowHint 時，其 WndProc 不會把縮放
+    // HT code 轉給 DefWindowProcW，導致縮放迴圈無法啟動。
+    // 直接呼叫 DefWindowProcW，繞過 Qt 的攔截。
+    if (msg == WM_NCLBUTTONDOWN) {
+        switch (wParam) {
+            case HTLEFT:      case HTRIGHT:
+            case HTTOP:       case HTBOTTOM:
+            case HTTOPLEFT:   case HTTOPRIGHT:
+            case HTBOTTOMLEFT: case HTBOTTOMRIGHT:
+                return DefWindowProcW(hwnd, msg, wParam, lParam);
+            default: break;
+        }
+    }
+
+    // ── 1c. 縮放游標 ───────────────────────────────────────
+    // Qt (FramelessWindowHint) 攔截 WM_SETCURSOR 並重設為預設箭頭，
+    // 導致邊框 hover 時游標不顯示 ⬌⬍。此處先行回傳正確游標。
+    // MinGW 環境 IDC_* 為 LPSTR，LoadCursorW 需 LPCWSTR；
+    // 使用 MAKEINTRESOURCEW(numeric_id) 繞過型別不符問題。
+    if (msg == WM_SETCURSOR) {
+        WORD cur_id = 0;
+        switch (LOWORD(lParam)) {
+            case HTLEFT:      case HTRIGHT:       cur_id = 32644; break; // IDC_SIZEWE
+            case HTTOP:       case HTBOTTOM:      cur_id = 32645; break; // IDC_SIZENS
+            case HTTOPLEFT:   case HTBOTTOMRIGHT: cur_id = 32642; break; // IDC_SIZENWSE
+            case HTTOPRIGHT:  case HTBOTTOMLEFT:  cur_id = 32643; break; // IDC_SIZENESW
+            default: break;
+        }
+        if (cur_id) {
+            SetCursor(LoadCursorW(NULL, MAKEINTRESOURCEW(cur_id)));
+            return TRUE;
+        }
+    }
+
     // ── 2. Hit-Test 判斷 ───────────────────────────────────
     if (msg == WM_NCHITTEST)
     {
