@@ -85,7 +85,8 @@ class Ui_MainWindow:
         top_bar.setFixedHeight(60)
         top_bar.setObjectName("TopBar")
         header_layout = QHBoxLayout(top_bar)
-        header_layout.setContentsMargins(20, 0, 20, 0)
+        # 右側預留 144px（3 × 48px）給視窗控制按鈕，避免內容與按鈕重疊
+        header_layout.setContentsMargins(20, 0, 144, 0)
         header_layout.setSpacing(15)
 
         # --- 導覽按鈕 ---
@@ -147,33 +148,54 @@ class Ui_MainWindow:
         MainWindow.btn_pin.setToolTip("釘選視窗至最上層 (Ctrl+T)")
         right_actions_layout.addWidget(MainWindow.btn_pin)
 
+        header_layout.addLayout(right_actions_layout)
+
         # --- 視窗控制按鈕（最小化 / 最大化還原 / 關閉） ---
-        # 設計書 §3.1：取代系統原生標題列按鈕
+        # 設計書 §3.1：貼靠右上角，使用絕對定位疊加在 TopBar 上
+        # 不放進 header_layout，改用 QHBoxLayout 疊加在 top_bar 右上角
         MainWindow.btn_win_min = QPushButton("─")
-        MainWindow.btn_win_min.setFixedSize(46, 36)
+        MainWindow.btn_win_min.setFixedSize(48, 48)
         MainWindow.btn_win_min.setCursor(Qt.CursorShape.PointingHandCursor)
         MainWindow.btn_win_min.setObjectName("WinMinBtn")
         MainWindow.btn_win_min.setToolTip("最小化")
         MainWindow.btn_win_min.clicked.connect(MainWindow.showMinimized)
-        right_actions_layout.addWidget(MainWindow.btn_win_min)
+        MainWindow.btn_win_min.setParent(top_bar)
 
         MainWindow.btn_win_max = QPushButton("□")
         MainWindow.btn_win_max.setCheckable(True)
-        MainWindow.btn_win_max.setFixedSize(46, 36)
+        MainWindow.btn_win_max.setFixedSize(48, 48)
         MainWindow.btn_win_max.setCursor(Qt.CursorShape.PointingHandCursor)
         MainWindow.btn_win_max.setObjectName("WinMaxBtn")
         MainWindow.btn_win_max.setToolTip("最大化")
-        right_actions_layout.addWidget(MainWindow.btn_win_max)
+        MainWindow.btn_win_max.setParent(top_bar)
 
         MainWindow.btn_win_close = QPushButton("✕")
-        MainWindow.btn_win_close.setFixedSize(46, 36)
+        MainWindow.btn_win_close.setFixedSize(48, 48)
         MainWindow.btn_win_close.setCursor(Qt.CursorShape.PointingHandCursor)
         MainWindow.btn_win_close.setObjectName("WinCloseBtn")
         MainWindow.btn_win_close.setToolTip("關閉")
         MainWindow.btn_win_close.clicked.connect(MainWindow.close)
-        right_actions_layout.addWidget(MainWindow.btn_win_close)
+        MainWindow.btn_win_close.setParent(top_bar)
 
-        header_layout.addLayout(right_actions_layout)
+        # 將三個按鈕靠右上角排列（在 top_bar resizeEvent 後會由 _reposition_win_buttons 更新）
+        # 初始位置先設定，resizeEvent 時會重算
+        def _reposition_win_buttons(top_bar=top_bar,
+                                    b_min=MainWindow.btn_win_min,
+                                    b_max=MainWindow.btn_win_max,
+                                    b_close=MainWindow.btn_win_close):
+            w = top_bar.width()
+            b_close.move(w - 48, 0)
+            b_max.move(w - 96, 0)
+            b_min.move(w - 144, 0)
+
+        MainWindow._reposition_win_buttons = staticmethod(_reposition_win_buttons)
+        # 安裝 resizeEvent 讓按鈕隨視窗寬度更新位置
+        _orig_resize = top_bar.resizeEvent
+        def _top_bar_resize(event, _orig=_orig_resize):
+            _orig(event)
+            _reposition_win_buttons()
+        top_bar.resizeEvent = _top_bar_resize
+
         right_layout.addWidget(top_bar)
 
         # --- 進度條 ---

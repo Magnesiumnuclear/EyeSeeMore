@@ -168,15 +168,18 @@ QPushButton#PinBtn:hover { background-color: @bg_hover; border-color: @border_li
 QPushButton#PinBtn:checked { background-color: @bg_card; border: 1px solid @primary; color: @primary; }
 
 /* --- 視窗控制按鈕 (WinMinBtn / WinMaxBtn / WinCloseBtn) --- */
+/* 貼靠右上角，48×48，無邊框、無圓角（貼邊） */
 QPushButton#WinMinBtn, QPushButton#WinMaxBtn {
     background-color: transparent; border: none; border-radius: 0px;
     color: @text_sec; font-size: 14px; font-family: "Segoe UI", sans-serif;
+    min-width: 48px; min-height: 48px; max-width: 48px; max-height: 48px;
 }
 QPushButton#WinMinBtn:hover, QPushButton#WinMaxBtn:hover { background-color: @bg_hover; color: @text_main; }
 QPushButton#WinMaxBtn:checked { background-color: @bg_hover; color: @text_main; }
 QPushButton#WinCloseBtn {
-    background-color: transparent; border: none; border-radius: 0px;
+    background-color: transparent; border: none; border-top-right-radius: 8px; border-bottom-right-radius: 0px;
     color: @text_sec; font-size: 14px; font-family: "Segoe UI", sans-serif;
+    min-width: 48px; min-height: 48px; max-width: 48px; max-height: 48px;
 }
 QPushButton#WinCloseBtn:hover { background-color: #c42b1c; color: #ffffff; }
 

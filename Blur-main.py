@@ -4710,6 +4710,10 @@ class MainWindow(QMainWindow):
         ))
         QTimer.singleShot(50, self._update_button_rects)
 
+        # 視窗 show() 後 TopBar 才有正確寬度，呼叫一次重新定位視窗控制按鈕
+        QTimer.singleShot(0, lambda: self._reposition_win_buttons()
+                          if hasattr(self, '_reposition_win_buttons') else None)
+
         # TopBar 空白區拖曳：安裝 event filter，讓點擊 TopBar 背景（非子控件）時觸發原生視窗拖曳
         _top_bar = self.findChild(QFrame, "TopBar")
         if _top_bar:
