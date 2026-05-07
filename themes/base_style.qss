@@ -159,13 +159,21 @@ QLabel#Breadcrumb { color: @text_main; font-family: 'Segoe UI', sans-serif; font
 QPushButton#OcrToggle { background: transparent; border: none; color: @text_muted; font-weight: bold; font-size: 13px; border-radius: 15px; }
 QPushButton#OcrToggle:checked { color: @primary; background-color: @bg_hover; }
 QPushButton#OcrToggle:hover { background-color: @bg_hover; }
-QPushButton#InspectorToggle { background-color: transparent; border: 1px solid @border_main; border-radius: 8px; color: @text_muted; font-size: 16px; }
-QPushButton#InspectorToggle:hover { background-color: @bg_hover; border-color: @border_light; }
-QPushButton#InspectorToggle:checked { background-color: @bg_card; border: 1px solid @primary; }
+QPushButton#InspectorToggle {
+    background-color: transparent; border: none; border-radius: 0px;
+    color: @text_sec; font-size: 16px;
+    min-width: 48px; min-height: 48px; max-width: 48px; max-height: 48px;
+}
+QPushButton#InspectorToggle:hover { background-color: @bg_hover; color: @text_main; }
+QPushButton#InspectorToggle:checked { background-color: @bg_hover; color: @primary; }
 
-QPushButton#PinBtn { background-color: transparent; border: 1px solid @border_main; border-radius: 8px; color: @text_muted; font-size: 16px; }
-QPushButton#PinBtn:hover { background-color: @bg_hover; border-color: @border_light; color: @text_main; }
-QPushButton#PinBtn:checked { background-color: @bg_card; border: 1px solid @primary; color: @primary; }
+QPushButton#PinBtn {
+    background-color: transparent; border: none; border-radius: 0px;
+    color: @text_sec; font-size: 16px;
+    min-width: 48px; min-height: 48px; max-width: 48px; max-height: 48px;
+}
+QPushButton#PinBtn:hover { background-color: @bg_hover; color: @text_main; }
+QPushButton#PinBtn:checked { background-color: @bg_hover; color: @primary; }
 
 /* --- 視窗控制按鈕 (WinMinBtn / WinMaxBtn / WinCloseBtn) --- */
 /* 貼靠右上角，48×48，無邊框、無圓角（貼邊） */
