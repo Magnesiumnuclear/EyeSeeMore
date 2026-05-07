@@ -1,0 +1,181 @@
+// ============================================================
+//  EyeSeeMore — titlebar_hook.cpp
+//  Win32 自定義標題列核心實作
+//
+//  功能：
+//   1. 子類化 WndProc — 攔截 WM_NCCALCSIZE / WM_NCHITTEST
+//   2. WM_NCCALCSIZE  — 移除 Non-Client Area，交由 Qt 全權繪製
+//   3. WM_NCHITTEST   — 回傳正確 Hit-Test code：
+//        - 8 方向邊框縮放（Windows 接管動畫）
+//        - HTMAXBUTTON → 觸發 Windows 11 Snap Layouts
+//        - HTCAPTION   → TopBar 空白區允許拖動
+//   4. DwmExtendFrameIntoClientArea(-1) — 補回 DWM 陰影與 Win11 圓角
+//
+//  設計書參考：DESIGN_CustomTitleBar.md §4
+// ============================================================
+
+#define WIN32_LEAN_AND_MEAN
+// TITLEBARHOOK_EXPORTS 由編譯器命令列 -DTITLEBARHOOK_EXPORTS 注入，
+// 此處不重複 #define，避免 -D 與原始碼雙重定義的 warning
+#include "titlebar_hook.h"
+#include <dwmapi.h>
+#include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM
+
+// DWM 函式庫（MinGW 以 -ldwmapi 連結，MSVC 以 #pragma comment 連結）
+#ifdef _MSC_VER
+#   pragma comment(lib, "dwmapi.lib")
+#   pragma comment(lib, "user32.lib")
+#endif
+
+// ─────────────────────────────────────────────────────────────
+//  模組層級靜態狀態
+//  只支援單一視窗（EyeSeeMore 只有一個 MainWindow）
+// ─────────────────────────────────────────────────────────────
+static HWND   s_hwnd          = NULL;
+static WNDPROC s_old_wndproc  = NULL;
+
+// 按鈕感應矩形（left, top, right, bottom；邏輯像素*dpr後的實際像素）
+static RECT s_close_rect = {};
+static RECT s_max_rect   = {};
+static RECT s_min_rect   = {};
+static RECT s_pin_rect   = {};
+
+static int   s_titlebar_height = 60;   // 邏輯像素
+static float s_dpr             = 1.0f; // devicePixelRatio
+
+// ─────────────────────────────────────────────────────────────
+//  工具函式
+// ─────────────────────────────────────────────────────────────
+static inline BOOL PtInR(const RECT& r, LONG x, LONG y)
+{
+    return (x >= r.left) && (x < r.right) && (y >= r.top) && (y < r.bottom);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  自訂 WndProc
+// ─────────────────────────────────────────────────────────────
+static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    // ── 1. 移除 Non-Client Area ────────────────────────────
+    // 設計書 §4.4：回傳 0 告訴 Windows 不繪製系統標題列框架，
+    // DWM 仍負責視窗陰影與 Win11 圓角
+    if (msg == WM_NCCALCSIZE && wParam == TRUE)
+        return 0;
+
+    // ── 2. Hit-Test 判斷 ───────────────────────────────────
+    if (msg == WM_NCHITTEST)
+    {
+        // 螢幕座標 → 客戶端座標
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ScreenToClient(hwnd, &pt);
+
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        LONG w = rc.right;
+        LONG h = rc.bottom;
+
+        // 邊框縮放感應寬度（已依 DPI 縮放）
+        LONG bw = static_cast<LONG>(6.0f * s_dpr);
+        if (bw < 1) bw = 1;
+
+        BOOL on_left   = (pt.x < bw);
+        BOOL on_right  = (pt.x >= w - bw);
+        BOOL on_top    = (pt.y < bw);
+        BOOL on_bottom = (pt.y >= h - bw);
+
+        // 四個角（斜向縮放，優先判斷）
+        if (on_top    && on_left)  return HTTOPLEFT;
+        if (on_top    && on_right) return HTTOPRIGHT;
+        if (on_bottom && on_left)  return HTBOTTOMLEFT;
+        if (on_bottom && on_right) return HTBOTTOMRIGHT;
+
+        // 四條邊
+        if (on_left)   return HTLEFT;
+        if (on_right)  return HTRIGHT;
+        if (on_top)    return HTTOP;
+        if (on_bottom) return HTBOTTOM;
+
+        // ── 按鈕感應區（座標已是縮放後實際像素）──
+        // 設計書 §4.3
+        if (PtInR(s_close_rect, pt.x, pt.y)) return HTCLOSE;
+        if (PtInR(s_max_rect,   pt.x, pt.y)) return HTMAXBUTTON;   // 觸發 Snap Layouts
+        if (PtInR(s_min_rect,   pt.x, pt.y)) return HTMINBUTTON;
+        if (PtInR(s_pin_rect,   pt.x, pt.y)) return HTCLIENT;      // 釘選由 Qt 處理
+
+        // ── TopBar 拖動區 ──────────────────────────────────
+        LONG tb_h = static_cast<LONG>(static_cast<float>(s_titlebar_height) * s_dpr);
+        if (pt.y < tb_h)
+            return HTCAPTION;
+
+        return HTCLIENT;
+    }
+
+    // 其餘訊息交回原始 WndProc
+    return CallWindowProcW(s_old_wndproc, hwnd, msg, wParam, lParam);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  公開 C ABI 實作
+// ─────────────────────────────────────────────────────────────
+extern "C" {
+
+ESM_API int ESM_InstallHook(HWND hwnd, int titlebar_height, float dpr)
+{
+    if (!hwnd || !IsWindow(hwnd))
+        return 1;  // 無效 HWND
+
+    if (s_hwnd != NULL)
+        return 0;  // 已安裝，冪等
+
+    s_hwnd             = hwnd;
+    s_titlebar_height  = titlebar_height;
+    s_dpr              = (dpr > 0.0f) ? dpr : 1.0f;
+
+    // 1. 子類化 WndProc
+    //    SetWindowLongPtrW 回傳舊 WndProc 的 LONG_PTR（64-bit 上即 64-bit 指標）
+    //    必須轉為 WNDPROC 而非 LONG 以避免 32-bit 截斷（ctypes 版的 bug 根源）
+    s_old_wndproc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(HookWndProc))
+    );
+    if (!s_old_wndproc) {
+        s_hwnd = NULL;
+        return 2;  // SetWindowLongPtrW 失敗
+    }
+
+    // 2. DWM：將 frame 延伸至整個客戶區 → 補回視窗陰影與 Win11 圓角
+    //    (-1, -1, -1, -1) = 延伸至整個視窗
+    MARGINS margins = { -1, -1, -1, -1 };
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+
+    // 3. 通知 Windows 重新計算視窗框架（觸發 WM_NCCALCSIZE）
+    SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+    return 0;
+}
+
+ESM_API void ESM_SetButtonRects(
+    int close_l, int close_t, int close_w, int close_h,
+    int max_l,   int max_t,   int max_w,   int max_h,
+    int min_l,   int min_t,   int min_w,   int min_h,
+    int pin_l,   int pin_t,   int pin_w,   int pin_h)
+{
+    // 儲存為 RECT（left, top, right, bottom）
+    // 輸入為 left, top, width, height（與 Qt geometry() 一致）
+    s_close_rect = { close_l, close_t, close_l + close_w, close_t + close_h };
+    s_max_rect   = { max_l,   max_t,   max_l   + max_w,   max_t   + max_h   };
+    s_min_rect   = { min_l,   min_t,   min_l   + min_w,   min_t   + min_h   };
+    s_pin_rect   = { pin_l,   pin_t,   pin_l   + pin_w,   pin_t   + pin_h   };
+}
+
+ESM_API void ESM_UninstallHook(HWND hwnd)
+{
+    if (!s_old_wndproc || s_hwnd != hwnd)
+        return;
+
+    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(s_old_wndproc));
+    s_old_wndproc = NULL;
+    s_hwnd        = NULL;
+}
+
+} // extern "C"

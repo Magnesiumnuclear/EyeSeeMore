@@ -138,6 +138,41 @@ class Ui_MainWindow:
         MainWindow.btn_toggle_inspector.clicked.connect(MainWindow.toggle_inspector)
         right_actions_layout.addWidget(MainWindow.btn_toggle_inspector)
 
+        # --- 釘選按鈕 ---
+        MainWindow.btn_pin = QPushButton("📌")
+        MainWindow.btn_pin.setCheckable(True)
+        MainWindow.btn_pin.setFixedSize(36, 36)
+        MainWindow.btn_pin.setCursor(Qt.CursorShape.PointingHandCursor)
+        MainWindow.btn_pin.setObjectName("PinBtn")
+        MainWindow.btn_pin.setToolTip("釘選視窗至最上層 (Ctrl+T)")
+        right_actions_layout.addWidget(MainWindow.btn_pin)
+
+        # --- 視窗控制按鈕（最小化 / 最大化還原 / 關閉） ---
+        # 設計書 §3.1：取代系統原生標題列按鈕
+        MainWindow.btn_win_min = QPushButton("─")
+        MainWindow.btn_win_min.setFixedSize(46, 36)
+        MainWindow.btn_win_min.setCursor(Qt.CursorShape.PointingHandCursor)
+        MainWindow.btn_win_min.setObjectName("WinMinBtn")
+        MainWindow.btn_win_min.setToolTip("最小化")
+        MainWindow.btn_win_min.clicked.connect(MainWindow.showMinimized)
+        right_actions_layout.addWidget(MainWindow.btn_win_min)
+
+        MainWindow.btn_win_max = QPushButton("□")
+        MainWindow.btn_win_max.setCheckable(True)
+        MainWindow.btn_win_max.setFixedSize(46, 36)
+        MainWindow.btn_win_max.setCursor(Qt.CursorShape.PointingHandCursor)
+        MainWindow.btn_win_max.setObjectName("WinMaxBtn")
+        MainWindow.btn_win_max.setToolTip("最大化")
+        right_actions_layout.addWidget(MainWindow.btn_win_max)
+
+        MainWindow.btn_win_close = QPushButton("✕")
+        MainWindow.btn_win_close.setFixedSize(46, 36)
+        MainWindow.btn_win_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        MainWindow.btn_win_close.setObjectName("WinCloseBtn")
+        MainWindow.btn_win_close.setToolTip("關閉")
+        MainWindow.btn_win_close.clicked.connect(MainWindow.close)
+        right_actions_layout.addWidget(MainWindow.btn_win_close)
+
         header_layout.addLayout(right_actions_layout)
         right_layout.addWidget(top_bar)
 

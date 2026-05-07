@@ -21,3 +21,17 @@ add_executable(EyeSeeMore_Setup installer/main_installer.cpp)
 
 # 讓 Setup 連結 Windows 建立捷徑所需的底層函式庫
 target_link_libraries(EyeSeeMore_Setup ole32 uuid)
+
+# 2. 自定義標題列 DLL（設計書 §4）
+#    提供 ESM_InstallHook / ESM_SetButtonRects / ESM_UninstallHook 給 Python ctypes 呼叫
+add_library(EyeSeeMoreWin SHARED
+    win_titlebar/titlebar_hook.cpp
+)
+target_include_directories(EyeSeeMoreWin PRIVATE win_titlebar)
+target_link_libraries(EyeSeeMoreWin dwmapi user32)
+# 保持 C ABI 輸出名稱，不加 lib 前綴
+set_target_properties(EyeSeeMoreWin PROPERTIES PREFIX "")
+# DLL 輸出到 build/ 根目錄（與 Launcher/Setup 同層）
+set_target_properties(EyeSeeMoreWin PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)

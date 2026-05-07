@@ -4616,7 +4616,10 @@ class MainWindow(QMainWindow):
         
         self.config = config
         self.setWindowTitle(WINDOW_TITLE)
-        
+
+        # 自定義標題列：移除 Windows 原生 Non-Client Area
+        # WndProc 掛鉤負責補回邊框縮放與 DWM 陰影（由 win_titlebar 模組處理）
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
 
         self.engine = None
 
@@ -4672,6 +4675,37 @@ class MainWindow(QMainWindow):
         self._empty_state_overlay = EmptyStateOverlay(self.list_view)
         # 讓狀態列 QLabel 支援 PointingHand 游標 (實際點擊邏輯在 eventFilter)
         self.status.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        # --- 釘選按鈕初始化 ---
+        always_on_top = self.config.get("ui_state", {}).get("always_on_top", False)
+        if always_on_top:
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            self.btn_pin.blockSignals(True)
+            self.btn_pin.setChecked(True)
+            self.btn_pin.setToolTip("取消釘選 (Ctrl+T)")
+            self.btn_pin.blockSignals(False)
+        self.btn_pin.toggled.connect(self._on_pin_toggled)
+        QShortcut(QKeySequence("Ctrl+T"), self).activated.connect(
+            lambda: self.btn_pin.setChecked(not self.btn_pin.isChecked())
+        )
+
+        # --- 最大化 / 還原按鈕 ---
+        self.btn_win_max.toggled.connect(self._on_win_max_toggled)
+        if self.isMaximized():
+            self.btn_win_max.blockSignals(True)
+            self.btn_win_max.setChecked(True)
+            self.btn_win_max.setText("❐")
+            self.btn_win_max.setToolTip("還原")
+            self.btn_win_max.blockSignals(False)
+
+        # --- 安裝 Win32 WndProc 掛鉤（補回邊框縮放與 DWM 陰影）---
+        from core import win_titlebar
+        QTimer.singleShot(0, lambda: win_titlebar.install(
+            int(self.winId()),
+            titlebar_height=60,
+            dpr=self.devicePixelRatioF(),
+        ))
+        QTimer.singleShot(50, self._update_button_rects)
 
         # NavigationManager 需要在 init_ui() 之後建立 (因為依賴 UI 元件)
         from ui.navigation_manager import NavigationManager
@@ -5161,6 +5195,48 @@ class MainWindow(QMainWindow):
             
         # 開關面板會改變畫廊寬度，必須通知 QListView 重新計算網格排版
         QTimer.singleShot(0, self.adjust_layout)
+
+    def _on_pin_toggled(self, checked: bool):
+        """切換視窗置頂狀態（釘選功能），並持久化設定。"""
+        # setUpdatesEnabled 抑制重繪，避免 show() 引起的視覺閃爍（設計書 §7.2）
+        self.setUpdatesEnabled(False)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, checked)
+        self.show()
+        self.setUpdatesEnabled(True)
+
+        self.btn_pin.setToolTip("取消釘選 (Ctrl+T)" if checked else "釘選視窗至最上層 (Ctrl+T)")
+
+        ui_state = self.config.get("ui_state", {})
+        ui_state["always_on_top"] = checked
+        self.config.set("ui_state", ui_state)
+
+    def _on_win_max_toggled(self, checked: bool):
+        """最大化 / 還原視窗，並同步按鈕圖示。"""
+        if checked:
+            self.showMaximized()
+            self.btn_win_max.setText("❐")
+            self.btn_win_max.setToolTip("還原")
+        else:
+            self.showNormal()
+            self.btn_win_max.setText("□")
+            self.btn_win_max.setToolTip("最大化")
+
+    def _update_button_rects(self):
+        """將四個按鈕的座標（相對 MainWindow 客戶端）通知 WndProc 掛鉤。"""
+        from core import win_titlebar
+        if not win_titlebar.is_installed():
+            return
+
+        def _to_client(btn):
+            pos = btn.mapTo(self, btn.rect().topLeft())
+            return (pos.x(), pos.y(), btn.width(), btn.height())
+
+        win_titlebar.update_button_rects(
+            min_rect=_to_client(self.btn_win_min),
+            max_rect=_to_client(self.btn_win_max),
+            close_rect=_to_client(self.btn_win_close),
+            pin_rect=_to_client(self.btn_pin),
+        )
 
     def on_selection_changed(self, current, previous):
         # 1. 更新右側面板資訊 (如果面板存在且有選取項目)
@@ -5906,6 +5982,19 @@ class MainWindow(QMainWindow):
         # [關鍵] 視窗大小改變時，Viewport 寬度也會變，必須重算
         QTimer.singleShot(0, self.adjust_layout)
 
+        # 同步 WndProc 按鈕感應座標
+        QTimer.singleShot(0, self._update_button_rects)
+
+        # 最大化 / 還原時同步按鈕圖示
+        if hasattr(self, 'btn_win_max'):
+            is_max = self.isMaximized()
+            if self.btn_win_max.isChecked() != is_max:
+                self.btn_win_max.blockSignals(True)
+                self.btn_win_max.setChecked(is_max)
+                self.btn_win_max.setText("❐" if is_max else "□")
+                self.btn_win_max.setToolTip("還原" if is_max else "最大化")
+                self.btn_win_max.blockSignals(False)
+
     def showEvent(self, event):
         super().showEvent(event)
         # 延遲觸發，確保 Qt 的幾何運算已經完成
@@ -5936,6 +6025,11 @@ class MainWindow(QMainWindow):
 
         # 一次性原子寫入，避免兩次 set 之間的狀態不一致
         self.config.set("ui_state", ui_state)
+
+        # 移除 WndProc 掛鉤，還原系統視窗程序
+        from core import win_titlebar
+        win_titlebar.uninstall(int(self.winId()))
+
         super().closeEvent(event)
 
 

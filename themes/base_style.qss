@@ -163,6 +163,23 @@ QPushButton#InspectorToggle { background-color: transparent; border: 1px solid @
 QPushButton#InspectorToggle:hover { background-color: @bg_hover; border-color: @border_light; }
 QPushButton#InspectorToggle:checked { background-color: @bg_card; border: 1px solid @primary; }
 
+QPushButton#PinBtn { background-color: transparent; border: 1px solid @border_main; border-radius: 8px; color: @text_muted; font-size: 16px; }
+QPushButton#PinBtn:hover { background-color: @bg_hover; border-color: @border_light; color: @text_main; }
+QPushButton#PinBtn:checked { background-color: @bg_card; border: 1px solid @primary; color: @primary; }
+
+/* --- 視窗控制按鈕 (WinMinBtn / WinMaxBtn / WinCloseBtn) --- */
+QPushButton#WinMinBtn, QPushButton#WinMaxBtn {
+    background-color: transparent; border: none; border-radius: 0px;
+    color: @text_sec; font-size: 14px; font-family: "Segoe UI", sans-serif;
+}
+QPushButton#WinMinBtn:hover, QPushButton#WinMaxBtn:hover { background-color: @bg_hover; color: @text_main; }
+QPushButton#WinMaxBtn:checked { background-color: @bg_hover; color: @text_main; }
+QPushButton#WinCloseBtn {
+    background-color: transparent; border: none; border-radius: 0px;
+    color: @text_sec; font-size: 14px; font-family: "Segoe UI", sans-serif;
+}
+QPushButton#WinCloseBtn:hover { background-color: #c42b1c; color: #ffffff; }
+
 /* --- 全域滾動條 (ScrollBar) --- */
 QScrollBar:vertical, QScrollBar:horizontal { border: none; background: @bg_app; width: 14px; height: 14px; margin: 0px; }
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: @border_light; min-height: 30px; min-width: 30px; border-radius: 7px; margin: 2px; }

@@ -57,6 +57,7 @@ if not exist "User_Environment\" (
 set LAUNCHER_SRC=src_cpp/launcher/main_launcher.cpp
 set INSTALLER_SRC=src_cpp/installer/main_installer.cpp
 set RESOURCE_RC=src_cpp/resources/resource.rc
+set TITLEBAR_SRC=src_cpp/win_titlebar/titlebar_hook.cpp
 set PACK_SCRIPT=pack_release.py
 
 echo.
@@ -73,20 +74,37 @@ if not exist "%BUILD_DIR%" (
     mkdir "%BUILD_DIR%"
 )
 
-:: ── Stage 0: 編譯圖示資源 (0 %% → 25 %%) ──────────────
+:: ── Stage 0: 編譯圖示資源 (0 %% → 20 %%) ──────────────
 echo.
-echo [1/4] 正在編譯程式圖示資源 (resource.rc) ...
+echo [1/5] 正在編譯程式圖示資源 (resource.rc) ...
 windres "%RESOURCE_RC%" -O coff -o "%BUILD_DIR%\app_icon.res"
 if %errorlevel% neq 0 (
     echo.
     echo [錯誤] 圖示資源編譯失敗！請確認 src_cpp/resources/ 有 .ico 圖片且 windres 在 PATH 中。
     goto :fail
 )
-call :DrawBar 25 "resource.rc  → app_icon.res [OK]"
+call :DrawBar 20 "resource.rc  → app_icon.res [OK]"
 
-:: ── Stage 1: 編譯 Launcher (25 %% → 50 %%) ────────────
+:: ── Stage 0b: 編譯自定義標題列 DLL (20 %% → 40 %%) ────
 echo.
-echo [2/4] 正在編譯啟動器 (EyeSeeMore_Launcher.exe) ...
+echo [2/5] 正在編譯自定義標題列 DLL (EyeSeeMoreWin.dll) ...
+g++ "%TITLEBAR_SRC%" ^
+    -o "%BUILD_DIR%\EyeSeeMoreWin.dll" ^
+    -shared ^
+    -static -static-libgcc -static-libstdc++ ^
+    -Isrc_cpp/win_titlebar ^
+    -DTITLEBARHOOK_EXPORTS ^
+    -ldwmapi -luser32
+if %errorlevel% neq 0 (
+    echo.
+    echo [錯誤] 自定義標題列 DLL 編譯失敗！
+    goto :fail
+)
+call :DrawBar 40 "titlebar_hook.cpp → EyeSeeMoreWin.dll [OK]"
+
+:: ── Stage 1: 編譯 Launcher (40 %% → 60 %%) ────────────
+echo.
+echo [3/5] 正在編譯啟動器 (EyeSeeMore_Launcher.exe) ...
 g++ "%LAUNCHER_SRC%" "%BUILD_DIR%\app_icon.res" ^
     -o "%BUILD_DIR%\EyeSeeMore_Launcher.exe" ^
     -static -static-libgcc -static-libstdc++ ^
@@ -96,11 +114,11 @@ if %errorlevel% neq 0 (
     echo [錯誤] Launcher 編譯失敗！
     goto :fail
 )
-call :DrawBar 50 "main_launcher.cpp → Launcher.exe [OK]"
+call :DrawBar 60 "main_launcher.cpp → Launcher.exe [OK]"
 
-:: ── Stage 2: 編譯 Installer (50 %% → 75 %%) ───────────
+:: ── Stage 2: 編譯 Installer (60 %% → 75 %%) ───────────
 echo.
-echo [3/4] 正在編譯安裝程式 (EyeSeeMore_Setup.exe) ...
+echo [4/5] 正在編譯安裝程式 (EyeSeeMore_Setup.exe) ...
 g++ "%INSTALLER_SRC%" "%BUILD_DIR%\app_icon.res" ^
     -o "%BUILD_DIR%\EyeSeeMore_Setup.exe" ^
     -static -static-libgcc -static-libstdc++ ^
@@ -114,7 +132,7 @@ call :DrawBar 75 "main_installer.cpp → Setup.exe  [OK]"
 
 :: ── Stage 3: 打包發佈套件 (75 %% → 100 %%) ────────────
 echo.
-echo [4/7 ~ 7/7] 正在執行發佈打包腳本 (pack_release.py) ...
+echo [5/5 → 5/8 ~ 8/8] 正在執行發佈打包腳本 (pack_release.py) ...
 echo.
 
 :: 搜尋可用的 Python 直譯器（優先使用 .venv\Scripts\python.exe）
