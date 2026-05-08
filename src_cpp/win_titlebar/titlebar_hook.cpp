@@ -62,18 +62,25 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     if (msg == WM_NCCALCSIZE && wParam == TRUE)
         return 0;
 
-    // ── 1b. NC 左鍵按下 - 邊框縮放 ────────────────────────
-    // DefWindowProcW(WM_NCLBUTTONDOWN, HTcorner) 內部對 NC 位置做驗證，
-    // 因 WM_NCCALCSIZE 回傳 0（NC 區域=0），角落驗證失敗，縮放迴圈不啟動。
-    // 改用 ReleaseCapture + PostMessage(WM_SYSCOMMAND, SC_SIZE+dir) 直接觸發，
-    // 完全繞過位置驗證。
-    // HT code 連續排列：HTLEFT(10)~HTBOTTOMRIGHT(17)，
-    // 對應 WMSZ 方向 1~8，故 dir = wParam - HTLEFT + 1。
+    // ── 1b. NC 左鍵按下 ────────────────────────────────────
     if (msg == WM_NCLBUTTONDOWN) {
+        // 邊框縮放：
+        // DefWindowProcW(WM_NCLBUTTONDOWN, HTcorner) 對 NC 位置做驗證，
+        // 因 WM_NCCALCSIZE 回傳 0 導致角落驗證失敗。
+        // 改用 ReleaseCapture + PostMessage(WM_SYSCOMMAND, SC_SIZE+dir)。
         if (wParam >= HTLEFT && wParam <= HTBOTTOMRIGHT) {
             ReleaseCapture();
             PostMessageW(hwnd, WM_SYSCOMMAND,
                 SC_SIZE | (WPARAM)(wParam - HTLEFT + 1), lParam);
+            return 0;
+        }
+        // 最大化按鈕直接點擊（未選擇 Snap Layout）：
+        // 使用 WM_SYSCOMMAND SC_MAXIMIZE/SC_RESTORE 讓 OS 直接處理最大化，
+        // Qt 的 resizeEvent 會自動偵測狀態變化並同步按鈕圖示。
+        if (wParam == HTMAXBUTTON) {
+            ReleaseCapture();
+            BOOL is_max = IsZoomed(hwnd);
+            PostMessageW(hwnd, WM_SYSCOMMAND, is_max ? SC_RESTORE : SC_MAXIMIZE, lParam);
             return 0;
         }
     }
@@ -133,13 +140,12 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         // ── 按鈕感應區（座標已是縮放後實際像素）──
         // 設計書 §4.3
-        // 全部回傳 HTCLIENT，讓 Qt 處理按鈕點擊事件與視覺回饋。
-        // HTCLOSE/HTMAXBUTTON/HTMINBUTTON 會觸發 Windows NC 按鈕追蹤，
-        // 導致 Qt 的 QPushButton 無法收到 clicked 訊號。
-        if (PtInR(s_close_rect, pt.x, pt.y)) return HTCLIENT;
-        if (PtInR(s_max_rect,   pt.x, pt.y)) return HTCLIENT;
-        if (PtInR(s_min_rect,   pt.x, pt.y)) return HTCLIENT;
-        if (PtInR(s_pin_rect,   pt.x, pt.y)) return HTCLIENT;
+        if (PtInR(s_close_rect, pt.x, pt.y)) return HTCLIENT;   // Qt 處理關閉
+        // HTMAXBUTTON：讓 Windows 11 彈出 Snap Layouts 選單（hover 觸發）
+        // 點擊後由 WM_NCLBUTTONDOWN 攔截，透過 WM_APP+1 通知 Python
+        if (PtInR(s_max_rect,   pt.x, pt.y)) return HTMAXBUTTON;
+        if (PtInR(s_min_rect,   pt.x, pt.y)) return HTCLIENT;   // Qt 處理最小化
+        if (PtInR(s_pin_rect,   pt.x, pt.y)) return HTCLIENT;   // Qt 處理釘選
 
         // ── TopBar / 客戶端區域 ────────────────────────────
         // 所有非邊框區域一律回傳 HTCLIENT，讓 Qt 完全控制事件分發。
@@ -180,12 +186,15 @@ ESM_API int ESM_InstallHook(HWND hwnd, int titlebar_height, float dpr)
         return 2;  // SetWindowLongPtrW 失敗
     }
 
-    // 2. 補回 WS_THICKFRAME（Qt FramelessWindowHint 移除了它）
-    //    DefWindowProcW 的縮放迴圈 (SC_SIZE) 依賴此樣式才會啟動；
-    //    視覺上不會顯示系統邊框，因為 WM_NCCALCSIZE 回傳 0 已消除所有 NC 繪製。
-    //    同時補回 WS_CAPTION 以確保 DWM 陰影/圓角正常運作。
+    // 2. 補回 Windows 樣式（Qt FramelessWindowHint 全部移除了）
+    //    WS_THICKFRAME   — DefWindowProcW 縮放迴圈依賴此樣式
+    //    WS_CAPTION      — DWM 陰影/圓角正常運作
+    //    WS_MAXIMIZEBOX  — Windows 11 Snap Layouts 需要此樣式才會顯示選單
+    //    WS_MINIMIZEBOX  — 最小化按鈕 NC 追蹤（選用，保持一致性）
+    //    視覺上不顯示系統框：WM_NCCALCSIZE 回傳 0 已消除所有 NC 繪製。
     LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-    SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME | WS_CAPTION);
+    SetWindowLongPtrW(hwnd, GWL_STYLE,
+        style | WS_THICKFRAME | WS_CAPTION | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
 
     // 3. DWM：將 frame 延伸至整個客戶區 → 補回視窗陰影與 Win11 圓角
     //    (-1, -1, -1, -1) = 延伸至整個視窗

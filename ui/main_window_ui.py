@@ -193,7 +193,8 @@ class Ui_MainWindow:
             b_pin.move(w - 192,  0)
             b_inspector.move(w - 240, 0)
 
-        MainWindow._reposition_win_buttons = staticmethod(_reposition_win_buttons)
+        # 儲存為普通 callable（不用 staticmethod，避免 instance 屬性上 staticmethod 無法自動 unpack）
+        MainWindow._reposition_win_buttons = _reposition_win_buttons
         # 安裝 resizeEvent 讓按鈕隨視窗寬度更新位置
         _orig_resize = top_bar.resizeEvent
         def _top_bar_resize(event, _orig=_orig_resize):
