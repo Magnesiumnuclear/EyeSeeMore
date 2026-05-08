@@ -184,6 +184,7 @@ QPushButton#WinMinBtn, QPushButton#WinMaxBtn {
 }
 QPushButton#WinMinBtn:hover, QPushButton#WinMaxBtn:hover { background-color: @bg_hover; color: @text_main; }
 QPushButton#WinMaxBtn:checked { background-color: @bg_hover; color: @text_main; }
+QPushButton#WinMaxBtn[nc_hover="true"] { background-color: @bg_hover; color: @text_main; }
 QPushButton#WinCloseBtn {
     background-color: transparent; border: none; border-top-right-radius: 8px; border-bottom-right-radius: 0px;
     color: @text_sec; font-size: 14px; font-family: "Segoe UI", sans-serif;

@@ -39,8 +39,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QStyledItemDelegate, QStyle, QFileIconProvider, QAbstractItemView, QListView,
                              QRadioButton, QGroupBox, QStackedWidget, QTabWidget, QGridLayout, QSplitter
                              , QSlider)
-from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QPoint, QPointF, QRect, QRectF, QSize, QEvent, 
-                          QFileInfo, QTimer, QAbstractListModel, QRunnable, QThreadPool, QObject, QModelIndex, QByteArray)
+from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QPoint, QPointF, QRect, QRectF, QSize, QEvent,
+                          QFileInfo, QTimer, QAbstractListModel, QRunnable, QThreadPool, QObject, QModelIndex, QByteArray,
+                          QAbstractNativeEventFilter)
 from PyQt6.QtGui import (QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, 
                          QShortcut, QFontMetrics, QPainter, QBrush, QPen, QIcon, QPainterPath, QPolygon, QImageReader
                          , QDrag, QRegion)
@@ -4604,6 +4605,37 @@ class EmptyStateOverlay(QWidget):
             self.resize(self.parent().size())
 
 
+# ── WinMaxBtn NC hover 通知機制 ──────────────────────────────────────────────
+# DLL 在 WM_NCMOUSEMOVE/WM_NCMOUSELEAVE 時發送 WM_APP+1 至視窗訊息佇列。
+# Python 端用 QAbstractNativeEventFilter 攔截，再透過 Qt property 刷新 QSS。
+_WM_MAX_HOVER = 0x8001  # WM_APP + 1
+
+class _MSG(ctypes.Structure):
+    """Windows MSG 結構，供 nativeEventFilter 解析。"""
+    _fields_ = [
+        ('hwnd',    ctypes.c_void_p),
+        ('message', ctypes.c_uint),
+        ('wParam',  ctypes.c_size_t),
+        ('lParam',  ctypes.c_ssize_t),
+        ('time',    ctypes.c_ulong),
+        ('pt_x',    ctypes.c_long),
+        ('pt_y',    ctypes.c_long),
+    ]
+
+class WinMaxHoverFilter(QAbstractNativeEventFilter):
+    """攔截 DLL 的 WM_APP+1，通知 WinMaxBtn 刷新 NC hover 外觀。"""
+    def __init__(self, callback):
+        super().__init__()
+        self._cb = callback
+
+    def nativeEventFilter(self, event_type, message):
+        if event_type == b"windows_generic_MSG":
+            msg = ctypes.cast(int(message), ctypes.POINTER(_MSG)).contents
+            if msg.message == _WM_MAX_HOVER:
+                self._cb(bool(msg.wParam))
+        return False, 0
+
+
 class MainWindow(QMainWindow):
     # 定義訊號
     random_data_ready = pyqtSignal(list)
@@ -4709,6 +4741,12 @@ class MainWindow(QMainWindow):
             dpr=self.devicePixelRatioF(),
         ))
         QTimer.singleShot(50, self._update_button_rects)
+
+        # --- NC hover filter（WinMaxBtn hover 補丁）---
+        # DLL 回傳 HTMAXBUTTON 時 Windows 接管 NC 滑鼠事件，Qt :hover 不觸發。
+        # 改用 WM_APP+1 訊息橋接：DLL → WinMaxHoverFilter → _on_max_btn_hover。
+        self._max_hover_filter = WinMaxHoverFilter(self._on_max_btn_hover)
+        QApplication.instance().installNativeEventFilter(self._max_hover_filter)
 
         # 視窗 show() 後 TopBar 才有正確寬度，呼叫一次重新定位視窗控制按鈕
         QTimer.singleShot(0, lambda: self._reposition_win_buttons())
@@ -5259,6 +5297,12 @@ class MainWindow(QMainWindow):
             self.showNormal()
             self.btn_win_max.setText("□")
             self.btn_win_max.setToolTip("最大化")
+
+    def _on_max_btn_hover(self, hovered: bool):
+        """DLL WM_APP+1 通知 → 刷新 WinMaxBtn NC hover 外觀。"""
+        self.btn_win_max.setProperty("nc_hover", hovered)
+        self.btn_win_max.style().unpolish(self.btn_win_max)
+        self.btn_win_max.style().polish(self.btn_win_max)
 
     def _update_button_rects(self):
         """將四個按鈕的座標（相對 MainWindow 客戶端，實體像素）通知 WndProc 掛鉤。"""
@@ -6070,6 +6114,10 @@ class MainWindow(QMainWindow):
 
         # 一次性原子寫入，避免兩次 set 之間的狀態不一致
         self.config.set("ui_state", ui_state)
+
+        # 移除 NC hover filter
+        if hasattr(self, '_max_hover_filter'):
+            QApplication.instance().removeNativeEventFilter(self._max_hover_filter)
 
         # 移除 WndProc 掛鉤，還原系統視窗程序
         from core import win_titlebar

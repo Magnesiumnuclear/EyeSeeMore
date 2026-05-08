@@ -42,6 +42,7 @@ static RECT s_pin_rect   = {};
 
 static int   s_titlebar_height = 60;   // 邏輯像素
 static float s_dpr             = 1.0f; // devicePixelRatio
+static bool  s_max_hover       = false; // NC hover 追蹤（WM_APP+1 通知 Python）
 
 // ─────────────────────────────────────────────────────────────
 //  工具函式
@@ -82,6 +83,30 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             BOOL is_max = IsZoomed(hwnd);
             PostMessageW(hwnd, WM_SYSCOMMAND, is_max ? SC_RESTORE : SC_MAXIMIZE, lParam);
             return 0;
+        }
+    }
+
+    // ── 1c. NC Mouse Move/Leave → 通知 Python WinMaxBtn hover 狀態 ──────────
+    // WM_NCMOUSEMOVE.wParam == HTMAXBUTTON 表示滑鼠在最大化按鈕 NC 區域移動，
+    // 發 WM_APP+1(wParam=1) 讓 Python 開啟 hover 視覺；
+    // 滑鼠移往其他 NC 區或完全離開 NC 區時，發 WM_APP+1(wParam=0) 關閉。
+    if (msg == WM_NCMOUSEMOVE) {
+        bool over_max = (wParam == HTMAXBUTTON);
+        if (over_max && !s_max_hover) {
+            s_max_hover = true;
+            PostMessageW(hwnd, WM_APP + 1, 1, 0);
+            // 申請 WM_NCMOUSELEAVE 通知（鼠標完全離開 NC 區域時觸發）
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_NONCLIENT | TME_LEAVE, hwnd, 0 };
+            TrackMouseEvent(&tme);
+        } else if (!over_max && s_max_hover) {
+            s_max_hover = false;
+            PostMessageW(hwnd, WM_APP + 1, 0, 0);
+        }
+    }
+    if (msg == WM_NCMOUSELEAVE) {
+        if (s_max_hover) {
+            s_max_hover = false;
+            PostMessageW(hwnd, WM_APP + 1, 0, 0);
         }
     }
 
@@ -230,6 +255,7 @@ ESM_API void ESM_UninstallHook(HWND hwnd)
     SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(s_old_wndproc));
     s_old_wndproc = NULL;
     s_hwnd        = NULL;
+    s_max_hover   = false;
 }
 
 } // extern "C"
