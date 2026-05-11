@@ -33,6 +33,12 @@ _dll = None          # ctypes.CDLL 實例
 _installed = False   # 是否已成功安裝 WndProc 掛鉤
 _hwnd: int = 0       # 已安裝掛鉤的 HWND
 
+# ──────────────────────────────────────────
+#  自定義系統選單項目 ID 常數（與 C++ 端同步）
+# ──────────────────────────────────────────
+IDM_PAUSE_SCAN  = 0xA000  # 暫停 / 繼續 掃描圖片
+IDM_CANCEL_SCAN = 0xA001  # 取消掃描
+
 
 def _load_dll() -> bool:
     """嘗試載入 DLL，成功回傳 True，失敗靜默回傳 False。"""
@@ -79,6 +85,10 @@ def _configure_abi():
     # ESM_UninstallHook(HWND hwnd) -> void
     _dll.ESM_UninstallHook.argtypes = [ctypes.c_void_p]
     _dll.ESM_UninstallHook.restype  = None
+
+    # ESM_SetMenuState(int item_id, BOOL checked) -> void
+    _dll.ESM_SetMenuState.argtypes = [ctypes.c_int, ctypes.c_bool]
+    _dll.ESM_SetMenuState.restype  = None
 
 
 # ──────────────────────────────────────────
@@ -178,3 +188,18 @@ def uninstall(hwnd: int):
 
 def is_installed() -> bool:
     return _installed
+
+
+def set_menu_state(item_id: int, checked: bool) -> None:
+    """
+    更新系統選單項目的勾選符號狀態。
+
+    :param item_id:  IDM_PAUSE_SCAN 或 IDM_CANCEL_SCAN
+    :param checked:  True = 顯示勾選符號，False = 移除勾選符號
+    """
+    if not _installed or _dll is None:
+        return
+    try:
+        _dll.ESM_SetMenuState(ctypes.c_int(item_id), ctypes.c_bool(checked))
+    except Exception as e:
+        print(f"[WinTitlebar] set_menu_state() 例外：{e}")
