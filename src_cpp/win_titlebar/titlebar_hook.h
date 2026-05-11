@@ -7,9 +7,26 @@
 //    ESM_InstallHook   — 安裝 WndProc 掛鉤、補回 DWM 陰影
 //    ESM_SetButtonRects— 更新四個按鈕的感應座標
 //    ESM_UninstallHook — 還原原始 WndProc（程式關閉時呼叫）
+//    ESM_SetMenuState  — 更新系統選單勾選狀態（供 Python 呼叫）
 // ============================================================
 
 #include <windows.h>
+
+// ──────────────────────────────────────────────────────────────
+//  自定義系統選單項目 ID
+//  必須避開 Windows 保留的 SC_* 範圍（0xF000 以上）
+// ──────────────────────────────────────────────────────────────
+#define IDM_PAUSE_SCAN   0xA000   // 暫停 / 繼續 掃描圖片
+#define IDM_CANCEL_SCAN  0xA001   // 取消掃描
+
+// ──────────────────────────────────────────────────────────────
+//  WM_APP 通知碼（DLL → Python）
+//   WM_APP+1 (0x8001): 已用於最大化按鈕 hover
+//   WM_APP+2 (0x8002): 使用者點擊「暫停/繼續掃描」
+//   WM_APP+3 (0x8003): 使用者點擊「取消掃描」
+// ──────────────────────────────────────────────────────────────
+#define WM_ESM_PAUSE_SCAN   (WM_APP + 2)
+#define WM_ESM_CANCEL_SCAN  (WM_APP + 3)
 
 #ifdef TITLEBARHOOK_EXPORTS
 #   define ESM_API __declspec(dllexport)
@@ -40,6 +57,11 @@ ESM_API void ESM_SetButtonRects(
 
 // ── 移除 WndProc 掛鉤 ─────────────────────────────────────
 ESM_API void ESM_UninstallHook(HWND hwnd);
+
+// ── 更新系統選單項目的勾選狀態 ─────────────────────────────
+// item_id : IDM_PAUSE_SCAN 或 IDM_CANCEL_SCAN
+// checked : TRUE = 顯示勾選符號，FALSE = 移除勾選符號
+ESM_API void ESM_SetMenuState(int item_id, BOOL checked);
 
 #ifdef __cplusplus
 } // extern "C"

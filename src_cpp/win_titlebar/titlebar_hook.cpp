@@ -230,6 +230,17 @@ ESM_API int ESM_InstallHook(HWND hwnd, int titlebar_height, float dpr)
     SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
+    // ───────────────────────────────────────────────────────────────
+    // 4. 插入自定義系統選單項目
+    // 原生 WndProc 裝好後才取得 hSysMenu，確保選單句柄正確對應此視窗。
+    // ───────────────────────────────────────────────────────────────
+    HMENU hSysMenu = GetSystemMenu(hwnd, FALSE);
+    if (hSysMenu) {
+        AppendMenuW(hSysMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(hSysMenu, MF_STRING, IDM_PAUSE_SCAN,  L"暫停 / 繼續 掃描圖片");
+        AppendMenuW(hSysMenu, MF_STRING, IDM_CANCEL_SCAN, L"取消掃描");
+    }
+
     return 0;
 }
 
@@ -256,6 +267,18 @@ ESM_API void ESM_UninstallHook(HWND hwnd)
     s_old_wndproc = NULL;
     s_hwnd        = NULL;
     s_max_hover   = false;
+}
+
+ESM_API void ESM_SetMenuState(int item_id, BOOL checked)
+{
+    // 更新系統選單項目的勾選符號狀態
+    // Python 端在暫停/繼續切換後呼叫此函式同步選單視覺
+    if (!s_hwnd) return;
+    HMENU hSysMenu = GetSystemMenu(s_hwnd, FALSE);
+    if (!hSysMenu) return;
+
+    UINT uCheck = checked ? (MF_BYCOMMAND | MF_CHECKED) : (MF_BYCOMMAND | MF_UNCHECKED);
+    CheckMenuItem(hSysMenu, static_cast<UINT>(item_id), uCheck);
 }
 
 } // extern "C"
