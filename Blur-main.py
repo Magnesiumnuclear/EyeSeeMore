@@ -4894,7 +4894,7 @@ def _do_register_jump_list() -> None:
         except Exception:
             return None
         args_str = f'"{script}" {flag}'
-        _com_vtcall(sl, 19, ctypes.HRESULT, ctypes.c_wchar_p)(py_exe)     # SetPath (vtable[19])
+        _com_vtcall(sl, 20, ctypes.HRESULT, ctypes.c_wchar_p)(py_exe)     # SetPath (vtable[20])
         _com_vtcall(sl, 11, ctypes.HRESULT, ctypes.c_wchar_p)(args_str)   # SetArguments
         _com_vtcall(sl,  9, ctypes.HRESULT, ctypes.c_wchar_p)(work_dir)   # SetWorkingDirectory
         _com_vtcall(sl, 15, ctypes.HRESULT, ctypes.c_int)(0)              # SetShowCmd(SW_HIDE)
