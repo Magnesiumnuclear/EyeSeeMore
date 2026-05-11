@@ -1,4 +1,35 @@
 import sys
+
+# ── 跨進程指令官：Jump List 次要實例的即時退出块（必須在任何大影 import 之前）───────
+# Windows Shell 在跨跳躍清單項目被點擊時會以
+#   python.exe "Blur-main.py" --esm-cmd=pause
+# 啟動次要實例。這小段不引入任何內容，幾幾順時退出。
+if __name__ == "__main__":
+    _esm = next((a for a in sys.argv[1:] if a.startswith('--esm-cmd=')), None)
+    if _esm is not None:
+        import ctypes as _c
+        _cmd = _esm.split('=', 1)[1].strip()
+        _TITLE  = "EyeSeeMore-(Alpha)"
+        _MAGIC  = 0x45534D43
+        _WM_CD  = 0x004A
+        _u32    = _c.windll.user32
+        _u32.FindWindowW.restype  = _c.c_void_p
+        _u32.FindWindowW.argtypes = [_c.c_wchar_p, _c.c_wchar_p]
+        _u32.SendMessageW.argtypes = [_c.c_void_p, _c.c_uint, _c.c_size_t, _c.c_ssize_t]
+        _u32.SendMessageW.restype  = _c.c_ssize_t
+        _hwnd = _u32.FindWindowW(None, _TITLE)
+        if _hwnd:
+            class _CDS(_c.Structure):
+                _fields_ = [('dwData', _c.c_size_t),
+                             ('cbData', _c.c_ulong),
+                             ('lpData', _c.c_void_p)]
+            _d   = _cmd.encode('utf-16-le')
+            _buf = _c.create_string_buffer(_d)
+            _cds = _CDS(_MAGIC, len(_d), _c.cast(_buf, _c.c_void_p).value)
+            _u32.SendMessageW(_hwnd, _WM_CD, 0, _c.addressof(_cds))
+        sys.exit(0)
+# ─────────────────────────────────────────────────────────────────────────
+
 import os
 import time
 import sqlite3
@@ -4665,20 +4696,33 @@ def _send_esm_cmd(cmd: str) -> bool:
     找到正在執行的 EyeSeeMore 視窗，透過 WM_COPYDATA 傳送指令字串。
     由跳躍清單次要實例呼叫，傳送完畢後主呼叫端應立即 sys.exit(0)。
     cmd : 'pause' 或 'cancel'
+
+    注意：lParam 必須宣告為 c_ssize_t（64-bit 有號指標），否則 ctypes 預設
+    truncate 成 32-bit c_int，導致高位元被截掉、WM_COPYDATA 傳到錯誤位址。
     """
     if sys.platform != 'win32':
         return False
     try:
         user32 = ctypes.windll.user32
+        user32.FindWindowW.restype  = ctypes.c_void_p
+        user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        user32.SendMessageW.argtypes = [
+            ctypes.c_void_p,   # HWND
+            ctypes.c_uint,     # Msg
+            ctypes.c_size_t,   # wParam (WPARAM = UINT_PTR)
+            ctypes.c_ssize_t,  # lParam (LPARAM = LONG_PTR) — 64-bit 必要！
+        ]
+        user32.SendMessageW.restype = ctypes.c_ssize_t
         hwnd = user32.FindWindowW(None, WINDOW_TITLE)
         if not hwnd:
+            print(f"[ESM-Cmd] 找不到視窗 '{WINDOW_TITLE}'")
             return False
         data = cmd.encode('utf-16-le')
         buf  = ctypes.create_string_buffer(data)
         cds  = _COPYDATASTRUCT()
         cds.dwData = _ESM_MAGIC
         cds.cbData = len(data)
-        cds.lpData = ctypes.cast(buf, ctypes.c_void_p)
+        cds.lpData = ctypes.cast(buf, ctypes.c_void_p).value
         user32.SendMessageW(hwnd, _WM_COPYDATA, 0, ctypes.addressof(cds))
         return True
     except Exception as e:
@@ -4850,7 +4894,7 @@ def _do_register_jump_list() -> None:
         except Exception:
             return None
         args_str = f'"{script}" {flag}'
-        _com_vtcall(sl, 20, ctypes.HRESULT, ctypes.c_wchar_p)(py_exe)     # SetPath
+        _com_vtcall(sl, 19, ctypes.HRESULT, ctypes.c_wchar_p)(py_exe)     # SetPath (vtable[19])
         _com_vtcall(sl, 11, ctypes.HRESULT, ctypes.c_wchar_p)(args_str)   # SetArguments
         _com_vtcall(sl,  9, ctypes.HRESULT, ctypes.c_wchar_p)(work_dir)   # SetWorkingDirectory
         _com_vtcall(sl, 15, ctypes.HRESULT, ctypes.c_int)(0)              # SetShowCmd(SW_HIDE)
@@ -4981,11 +5025,13 @@ class WinScanCtrlFilter(QAbstractNativeEventFilter):
             elif m == _WM_CANCEL_SCAN:
                 self._cancel_cb()
             elif m == _WM_SYSCOMMAND:
-                wp = msg.wParam & 0xFFF0   # 低 4 bits 是系統保留的 Hit-Test 值，需 mask
-                if wp == _IDM_PAUSE_SCAN:
+                # 使用精確比對（不用 & 0xFFF0 mask）。
+                # & 0xFFF0 mask 僅適用於 SC_* 系統指令；
+                # IDM_PAUSE_SCAN=0xA000 / IDM_CANCEL_SCAN=0xA001 北天確別
+                if msg.wParam == _IDM_PAUSE_SCAN:
                     self._pause_cb()
                     return True, 0
-                elif wp == _IDM_CANCEL_SCAN:
+                elif msg.wParam == _IDM_CANCEL_SCAN:
                     self._cancel_cb()
                     return True, 0
             elif m == _WM_COPYDATA:
@@ -6772,14 +6818,7 @@ class SettingsDialog(QDialog):
         self._ai_page.ai_tabs.setCurrentIndex(1)  # OCR 分頁 = index 1
 
 if __name__ == "__main__":
-    # ── 跳躍清單指令處理（工作列右鍵任務觸發的次要實例）────────────────────
-    # 次要實例只做 IPC 傳訊，不啟動 UI，傳完立刻退出。
-    _esm_flags = [a for a in sys.argv[1:] if a.startswith('--esm-cmd=')]
-    if _esm_flags:
-        _cmd = _esm_flags[0].split('=', 1)[1].strip()
-        if _cmd in ('pause', 'cancel'):
-            _send_esm_cmd(_cmd)
-        sys.exit(0)
+    # 注意：--esm-cmd 快速退出已移至檔案最頂端（import 之前），此處不再重複。
     # ── 主實例正常啟動 ────────────────────────────────────────────────────
 
     app_config = ConfigManager()
