@@ -208,6 +208,14 @@ def pack_app_code(project_root: Path, out_dir: Path, build_dir: Path) -> bool:
         return False
     pairs.append((launcher, "EyeSeeMore_Launcher.exe"))
 
+    # ── 加入自定義標題列 DLL ────────────────────────────────────────────────
+    titlebar_dll = build_dir / "EyeSeeMoreWin.dll"
+    if not titlebar_dll.exists():
+        print(f"\n  [錯誤] 找不到 {titlebar_dll}")
+        print("  請先完成 C++ 編譯後再執行打包步驟。")
+        return False
+    pairs.append((titlebar_dll, "build/EyeSeeMoreWin.dll"))
+
     print(f"  準備打包 App_Code.zip（{len(pairs)} 個檔案）...")
     _zip_with_progress("App_Code.zip", pairs, out_zip)
     return True
