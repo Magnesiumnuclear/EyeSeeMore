@@ -72,7 +72,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              , QSlider)
 from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QPoint, QPointF, QRect, QRectF, QSize, QEvent,
                           QFileInfo, QTimer, QAbstractListModel, QRunnable, QThreadPool, QObject, QModelIndex, QByteArray,
-                          QAbstractNativeEventFilter)
+                          QAbstractNativeEventFilter, QPropertyAnimation, QEasingCurve)
 from PyQt6.QtGui import (QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeySequence, 
                          QShortcut, QFontMetrics, QPainter, QBrush, QPen, QIcon, QPainterPath, QPolygon, QImageReader
                          , QDrag, QRegion)
@@ -5105,6 +5105,7 @@ class MainWindow(QMainWindow):
 
         # 模式 2： PID假計時器
         self._eta_T_fake:           float|None = None
+        self._eta_T_total:          float|None = None  # 鎖定首次估計的總耗時，用於反算假進度 %
         self._eta_pid_Kp:           float = 0.30
         self._eta_pid_Ki:           float = 0.01
         self._eta_pid_Kd:           float = 0.05
@@ -6080,6 +6081,7 @@ class MainWindow(QMainWindow):
         # 模式 2：第一次收到有效 T_real 時初始化假計時器
         if self._eta_mode == 2 and self._eta_T_fake is None and t_real > 0:
             self._eta_T_fake         = t_real
+            self._eta_T_total        = t_real  # 鎖定基準總耗時，後續不覆蓋
             self._eta_pid_integral   = 0.0
             self._eta_pid_last_error = 0.0
             if not self._eta_timer.isActive():
@@ -6121,11 +6123,31 @@ class MainWindow(QMainWindow):
 
         self.status.setText(f"{self._eta_stage_msg} {eta_suffix}")
 
+        # ── 用 PID 假時間反算假進度 %，推進進度條 ──
+        if self._eta_T_total and self._eta_T_total > 0:
+            _SCALE = 1000
+            p = 1.0 - (self._eta_T_fake / self._eta_T_total)
+            p = max(0.0, min(0.98, p))   # 上限 98%，真實完成事件才推到 100
+            self.progress.setValue(int(p * _SCALE))
+
     def update_progress(self, current, total):
         self.progress.show()
-        self.progress.setRange(0, total)
-        self.progress.setValue(current)
-        
+
+        if self._eta_mode == 2:
+            # ── 模式 2：只負責確保進度條可見與刻度正確，數值由 _on_eta_tick 每 100ms 寫入 ──
+            if hasattr(self, '_progress_anim'):
+                self._progress_anim.stop()
+            if self.progress.maximum() != 1000:
+                self.progress.setRange(0, 1000)
+                self.progress.setValue(0)
+        else:
+            # ── 其他模式：直接設定，不做動畫 ──
+            if hasattr(self, '_progress_anim'):
+                self._progress_anim.stop()
+            if self.progress.maximum() != total:
+                self.progress.setRange(0, total)
+            self.progress.setValue(current)
+
         # [修改] 暫停中維持黃色進度條，正常執行才更新為綠色
         if not getattr(self.indexer_worker, '_paused', False):
             self.taskbar_ctrl.set_state(TBPF_NORMAL)
@@ -6143,6 +6165,7 @@ class MainWindow(QMainWindow):
         # 停止 PID 假計時器並重置狀態
         self._eta_timer.stop()
         self._eta_T_fake         = None
+        self._eta_T_total        = None
         self._eta_T_real         = 0.0
         self._eta_pid_integral   = 0.0
         self._eta_pid_last_error = 0.0
@@ -6159,6 +6182,10 @@ class MainWindow(QMainWindow):
         self._eta_accumulated = 0.0
         self._eta_paused      = False
 
+        # 停止平滑動畫，再帶到滿格後隱藏
+        if hasattr(self, '_progress_anim'):
+            self._progress_anim.stop()
+        self.progress.setValue(self.progress.maximum())
         self.progress.hide()
 
         # [新增] 索引任務結束，關閉工作列進度條
