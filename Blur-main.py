@@ -617,24 +617,24 @@ class ThumbnailLoader(QRunnable):
 
 class SearchResultsModel(QAbstractListModel):
     """核心 Model：管理搜尋結果列表與圖片快取 (完全原生虛擬化)"""
-    def __init__(self, item_size):
+    def __init__(self, item_size, perf_config=None):
         super().__init__()
-        #  瘦身 1：只保留唯一的 all_items 陣列
-        self.all_items = []  
-        self._pending_batch_requests = OrderedDict() # 收集同一幀內的所有讀圖請求
-        self._batch_timer_active = False # 確保單幀只啟動一次計時器
-        
-        self.item_size = item_size 
+        self.all_items = []
+        self._pending_batch_requests = OrderedDict()
+        self._batch_timer_active = False
+
+        self.item_size = item_size
         self._thumbnail_cache = OrderedDict()
-        
-        # 快取大小維持 1000 確保回滾流暢
-        self.CACHE_SIZE = 1000 
-        
-        self._loading_set = set() 
-        self._active_workers = {} 
-        
+
+        cfg = perf_config or {}
+        self._base_cache_size = int(cfg.get("thumbnail_cache_size", 1000))
+        self.CACHE_SIZE = self._base_cache_size
+
+        self._loading_set = set()
+        self._active_workers = {}
+
         self.thread_pool = QThreadPool.globalInstance()
-        self.thread_pool.setMaxThreadCount(8)
+        self.thread_pool.setMaxThreadCount(int(cfg.get("thumbnail_thread_count", 8)))
 
         self._pending_updates = set()
         self.update_timer = QTimer()
@@ -645,13 +645,11 @@ class SearchResultsModel(QAbstractListModel):
     def update_target_size(self, new_size):
         self.item_size = new_size
         
-        #  智慧記憶體管理：防止 XL 的高清大圖塞爆記憶體
-        # 如果卡片寬度大於 256px (代表是 XL 模式)，快取數量縮小到 250 張
-        # 其餘模式維持 1000 張
+        # XL 模式（卡片寬 > 256px）將快取縮減至設定值的 1/4，至少保留 100 張
         if new_size.width() > 256:
-            self.CACHE_SIZE = 250
+            self.CACHE_SIZE = max(100, self._base_cache_size // 4)
         else:
-            self.CACHE_SIZE = 1000
+            self.CACHE_SIZE = self._base_cache_size
             
         self._thumbnail_cache.clear()
         self._loading_set.clear()

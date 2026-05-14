@@ -12,12 +12,18 @@ class ConfigManager:
         # [升級] 在這裡把所有我們最近新增的 UI 狀態都補上預設值
         # ==========================================
         self.default_config = {
-            "source_folders": [], 
+            "source_folders": [],
             "model_name": "xlm-roberta-large-ViT-H-14",
             "pretrained": "frozen_laion5b_s13b_b90k",
             "search_limit": 50,
             "use_ocr": True,
             "use_gpu_ocr": False,
+            "performance": {
+                "indexing_batch_size":    4,     # 每批送 AI 的圖片數
+                "db_commit_threshold":    24,    # 每幾張寫一次 DB
+                "thumbnail_cache_size":   1000,  # 記憶體縮圖快取張數
+                "thumbnail_thread_count": 8,     # 縮圖載入執行緒數
+            },
             "ui_state": {
                 "window_width": 1280,
                 "window_height": 900,
@@ -56,6 +62,13 @@ class ConfigManager:
                     for sub_k, sub_v in self.default_config["ui_state"].items():
                         if sub_k not in loaded["ui_state"]:
                             loaded["ui_state"][sub_k] = sub_v
+
+                if "performance" not in loaded:
+                    loaded["performance"] = self.default_config["performance"]
+                else:
+                    for sub_k, sub_v in self.default_config["performance"].items():
+                        if sub_k not in loaded["performance"]:
+                            loaded["performance"][sub_k] = sub_v
                 
                 # 3. [升級] 將舊的 use_ocr (布林值) 無縫轉移為 enabled_langs (陣列)
                 new_folders = []

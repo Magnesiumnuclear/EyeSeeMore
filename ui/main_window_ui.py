@@ -230,7 +230,10 @@ class Ui_MainWindow:
         MainWindow.current_thumb_size = QSize(CARD_SIZE[0], THUMBNAIL_SIZE[1])
         MainWindow.current_view_mode = "large"
 
-        MainWindow.model = SearchResultsModel(MainWindow.current_thumb_size)
+        MainWindow.model = SearchResultsModel(
+            MainWindow.current_thumb_size,
+            perf_config=MainWindow.config.get("performance", {}),
+        )
         MainWindow.delegate = ImageDelegate(MainWindow.current_card_size, THUMBNAIL_SIZE[1], MainWindow)
 
         MainWindow.list_view.setModel(MainWindow.model)
