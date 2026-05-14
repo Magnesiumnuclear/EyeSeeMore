@@ -3954,8 +3954,89 @@ class DroppableFolderButton(QPushButton):
             event.ignore()
 
 
+class CollectionHoverMenu(QWidget):
+    """
+    二級懸浮選單：虛擬資料夾 (Collections) — 收合模式專用。
+    行為與 FolderHoverMenu 對稱，每個 collection 以 emoji 圖示顯示。
+    """
+    collection_clicked = pyqtSignal(str)   # 'col:{id}'
+    files_dropped = pyqtSignal(int, list)  # (collection_id, [file_paths])
+
+    mouse_entered = pyqtSignal()
+    mouse_left = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
+
+        self.container_frame = QFrame()
+        self.container_frame.setObjectName("MenuContainer")
+
+        self.container_layout = QHBoxLayout(self.container_frame)
+        self.container_layout.setContentsMargins(5, 5, 5, 5)
+        self.container_layout.setSpacing(5)
+        self.container_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self.main_layout.addWidget(self.container_frame)
+
+    def enterEvent(self, event):
+        self.mouse_entered.emit()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.mouse_left.emit()
+        super().leaveEvent(event)
+
+    def update_menu(self, collections):
+        """collections: list of (col_id, name, icon, count)"""
+        while self.container_layout.count():
+            item = self.container_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        btn_size = 48
+        for col_id, name, icon, count in collections:
+            btn = DroppableFolderButton(col_id)
+            btn.setFixedSize(btn_size, btn_size)
+            display_icon = icon or str(col_id)
+            btn.setText(display_icon)
+            btn.setStyleSheet(btn.styleSheet() + " font-size: 20px; font-family: 'Segoe UI Emoji';")
+            btn.setToolTip(f"<div style='font-family: \"Segoe UI\", sans-serif; font-size: 14px; font-weight: normal;'>{name}<br>({count} 張圖片)</div>")
+            btn.collection_selected.connect(self._on_collection_clicked)
+            btn.files_dropped.connect(self.files_dropped)
+            self.container_layout.addWidget(btn)
+
+    def _on_collection_clicked(self, path):
+        self.collection_clicked.emit(path)
+        self.close()
+
+    def show_at(self, global_pos, height):
+        self.container_frame.setFixedHeight(height)
+
+        btn_count = self.container_layout.count()
+        btn_width = 48
+        spacing = 5
+        margin = 5
+
+        if btn_count > 0:
+            total_width = (margin * 2) + (btn_count * btn_width) + ((btn_count - 1) * spacing)
+            total_width += 4
+        else:
+            total_width = 100
+
+        self.resize(total_width, height)
+        self.container_frame.setFixedSize(total_width, height)
+        self.move(global_pos)
+        self.show()
+
+
 class SidebarWidget(QFrame):
-    folder_selected = pyqtSignal(str) 
+    folder_selected = pyqtSignal(str)
     toggled = pyqtSignal(bool)
     add_folder_requested = pyqtSignal()
     refresh_requested = pyqtSignal()
@@ -4041,6 +4122,27 @@ class SidebarWidget(QFrame):
 
         self.hover_menu.mouse_entered.connect(self.hover_timer.stop)
         self.hover_menu.mouse_left.connect(lambda: self.hover_timer.start(150))
+
+        # [新增] 虛擬資料夾單一圖示按鈕（收合模式專用，對稱於 btn_all_images）
+        self.btn_col_icon = QPushButton()
+        self.btn_col_icon.setObjectName("Row1")
+        self.btn_col_icon.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_col_icon.setFixedHeight(60)
+        self.btn_col_icon.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_col_icon.hide()
+        self.btn_col_icon.installEventFilter(self)
+        self.layout.addWidget(self.btn_col_icon)
+
+        self.col_hover_timer = QTimer(self)
+        self.col_hover_timer.setSingleShot(True)
+        self.col_hover_timer.timeout.connect(self.check_and_hide_col_menu)
+
+        # [新增] 虛擬資料夾懸浮選單（收合模式專用）
+        self.col_hover_menu = CollectionHoverMenu(self)
+        self.col_hover_menu.collection_clicked.connect(self.folder_selected.emit)
+        self.col_hover_menu.files_dropped.connect(self.files_dropped_to_collection)
+        self.col_hover_menu.mouse_entered.connect(self.col_hover_timer.stop)
+        self.col_hover_menu.mouse_left.connect(lambda: self.col_hover_timer.start(150))
 
         # ─── Collections 容器（Phase 13）───────────────────────────────
         self._col_separator = QFrame()
@@ -4153,13 +4255,21 @@ class SidebarWidget(QFrame):
     def toggle_sidebar(self):
         self.is_expanded = not self.is_expanded
         self.setFixedWidth(self.expanded_width if self.is_expanded else self.collapsed_width)
-        # [修正] 切換時清除殘留的懸浮選單
         self.hide_hover_menu()
-        # 收合時同步關閉手風琴展開區與標題
+        self.hide_col_hover_menu()
         if not self.is_expanded:
+            # 收合模式：隱藏所有展開態元件，讓各區塊只剩單一圖示按鈕
             self.btn_entity_header.setVisible(False)
             self.sub_folders_container.setVisible(False)
             self.btn_col_header.setVisible(False)
+            self._col_container.setVisible(False)
+            self._col_separator.hide()
+        else:
+            # 展開模式：收起 btn_col_icon，還原 collections 展開態元件
+            self.btn_col_icon.setVisible(False)
+            has_collections = self._col_layout.count() > 0
+            self._col_separator.setVisible(has_collections)
+            self._col_container.setVisible(has_collections)
         self.update_ui_text()
         self.toggled.emit(self.is_expanded)
 
@@ -4167,15 +4277,18 @@ class SidebarWidget(QFrame):
         if self.is_expanded:
             self.btn_all_images.setText(getattr(self, 'all_images_text', "  All Images"))
             self.btn_settings.setText("  設定 (Settings)")
-            # 標題在有實體資料夾時才顯示
             has_folders = self._sub_folders_layout.count() > 0
             self.btn_entity_header.setVisible(has_folders)
+            self.btn_col_icon.setVisible(False)
         else:
             self.btn_all_images.setText("")
             self.btn_settings.setText("")
             self.btn_entity_header.setVisible(False)
+            # 收合模式：有 collections 才顯示圖示按鈕
+            has_collections = self._col_layout.count() > 0
+            self.btn_col_icon.setVisible(has_collections)
 
-        # Collections header 隨展開狀態顯示/隱藏（有資料才顯示，不依賴容器是否展開）
+        # Collections header 隨展開狀態顯示/隱藏
         has_collections = self._col_layout.count() > 0
         self.btn_col_header.setVisible(self.is_expanded and has_collections)
 
@@ -4208,14 +4321,20 @@ class SidebarWidget(QFrame):
     def eventFilter(self, obj, event):
         if obj == self.btn_all_images:
             if event.type() == QEvent.Type.Enter:
-                # [邏輯分流] 只有在「收合狀態」下才允許懸停觸發 HoverMenu
                 if not self.is_expanded:
                     self.hover_timer.stop()
                     self.show_hover_menu()
             elif event.type() == QEvent.Type.Leave:
-                # 收合模式才起動關閉計時，展開模式下不需要
                 if not self.is_expanded:
                     self.hover_timer.start(150)
+        elif obj == self.btn_col_icon:
+            if event.type() == QEvent.Type.Enter:
+                if not self.is_expanded:
+                    self.col_hover_timer.stop()
+                    self.show_col_hover_menu()
+            elif event.type() == QEvent.Type.Leave:
+                if not self.is_expanded:
+                    self.col_hover_timer.start(150)
         return super().eventFilter(obj, event)
 
     #  顯示、隱藏與檢查邏輯
@@ -4230,6 +4349,36 @@ class SidebarWidget(QFrame):
 
     def hide_hover_menu(self):
         self.hover_menu.close()
+
+    def show_col_hover_menu(self):
+        sidebar_global_pos = self.mapToGlobal(QPoint(0, 0))
+        btn_col_y = self.btn_col_icon.mapToParent(QPoint(0, 0)).y()
+        target_x = sidebar_global_pos.x() + self.width() - 1
+        target_y = sidebar_global_pos.y() + btn_col_y
+        self.col_hover_menu.show_at(QPoint(target_x, target_y), 60)
+
+    def hide_col_hover_menu(self):
+        self.col_hover_menu.close()
+
+    def check_and_hide_col_menu(self):
+        cursor_pos = QCursor.pos()
+        if self.col_hover_menu.isVisible() and self.col_hover_menu.geometry().contains(cursor_pos):
+            return
+        btn_rect = QRect(self.btn_col_icon.mapToGlobal(QPoint(0, 0)), self.btn_col_icon.size())
+        if btn_rect.contains(cursor_pos):
+            return
+        self.hide_col_hover_menu()
+
+    def _refresh_col_icon(self):
+        """設定 btn_col_icon 的 emoji 圖示（固定用 🏷️ 代表 Collections）。"""
+        px = QPixmap(28, 28)
+        px.fill(Qt.GlobalColor.transparent)
+        p = QPainter(px)
+        p.setFont(QFont("Segoe UI Emoji", 16))
+        p.drawText(px.rect(), Qt.AlignmentFlag.AlignCenter, "🏷️")
+        p.end()
+        self.btn_col_icon.setIcon(QIcon(px))
+        self.btn_col_icon.setIconSize(QSize(22, 22))
 
     def check_and_hide_menu(self):
         """ 150ms 倒數結束後的絕對座標防呆檢查"""
@@ -4275,11 +4424,19 @@ class SidebarWidget(QFrame):
             self._col_separator.hide()
             self.btn_col_header.hide()
             self._col_container.hide()
+            self.btn_col_icon.hide()
+            self.col_hover_menu.update_menu([])
             return
 
-        self._col_separator.show()
+        # 根據展開/收合狀態分流：展開模式顯示完整清單，收合模式只顯示圖示按鈕
+        self._col_separator.setVisible(self.is_expanded)
         self.btn_col_header.setVisible(self.is_expanded)
-        self._col_container.show()
+        self._col_container.setVisible(self.is_expanded)
+        self.btn_col_icon.setVisible(not self.is_expanded)
+
+        # 同步更新收合模式的懸浮選單與圖示按鈕
+        self.col_hover_menu.update_menu(collections)
+        self._refresh_col_icon()
 
         for col_id, name, icon, count in collections:
             btn = DroppableFolderButton(col_id)
