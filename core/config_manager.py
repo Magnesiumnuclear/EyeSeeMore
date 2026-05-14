@@ -29,7 +29,9 @@ class ConfigManager:
                 "ocr_deduplication": True,        # 多語系重疊防護
                 "preview_wasd_mode": "nav",       # 空白鍵預覽 WASD 模式
                 "ocr_shift_mode": "hold",         # Shift 鍵觸發邏輯
-                "ocr_tag_mode": "anchored"        # OCR 懸浮標籤顯示方式
+                "ocr_tag_mode": "anchored",        # OCR 懸浮標籤顯示方式
+                "folders_accordion_open": False,   # 實體資料夾手風琴展開狀態
+                "collections_accordion_open": False # 虛擬資料夾手風琴展開狀態
             }
         }
         self.config = self.load_config()

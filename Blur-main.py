@@ -4042,13 +4042,17 @@ class SidebarWidget(QFrame):
     refresh_requested = pyqtSignal()
     settings_requested = pyqtSignal()
     files_dropped_to_collection = pyqtSignal(int, list)  # (collection_id, [file_paths])
+    folders_accordion_changed = pyqtSignal(bool)      # 實體資料夾手風琴開/關
+    collections_accordion_changed = pyqtSignal(bool)  # 虛擬資料夾手風琴開/關
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.expanded_width = 240
-        self.collapsed_width = 60 
+        self.collapsed_width = 60
         self.is_expanded = True
         self.stats_cache = []
+        self._folders_accordion_open = False      # 實體資料夾手風琴展開狀態
+        self._collections_accordion_open = False  # 虛擬資料夾手風琴展開狀態
         
         self.setObjectName("Sidebar")
         
@@ -4265,11 +4269,13 @@ class SidebarWidget(QFrame):
             self._col_container.setVisible(False)
             self._col_separator.hide()
         else:
-            # 展開模式：收起 btn_col_icon，還原 collections 展開態元件
+            # 展開模式：收起 btn_col_icon，依照記錄的手風琴狀態還原各容器
             self.btn_col_icon.setVisible(False)
+            has_folders = self._sub_folders_layout.count() > 0
+            self.sub_folders_container.setVisible(has_folders and self._folders_accordion_open)
             has_collections = self._col_layout.count() > 0
             self._col_separator.setVisible(has_collections)
-            self._col_container.setVisible(has_collections)
+            self._col_container.setVisible(has_collections and self._collections_accordion_open)
         self.update_ui_text()
         self.toggled.emit(self.is_expanded)
 
@@ -4397,12 +4403,26 @@ class SidebarWidget(QFrame):
         self.hide_hover_menu()
 
     def _toggle_sub_folders(self):
-        """btn_entity_header 點擊事件：切換手風琴區塊的顯示/隱藏。"""
-        self.sub_folders_container.setVisible(not self.sub_folders_container.isVisible())
+        """btn_entity_header 點擊事件：切換手風琴區塊的顯示/隱藏，並記錄狀態。"""
+        self._folders_accordion_open = not self._folders_accordion_open
+        self.sub_folders_container.setVisible(self._folders_accordion_open)
+        self.folders_accordion_changed.emit(self._folders_accordion_open)
 
     def _toggle_col_container(self):
-        """btn_col_header 點擊事件：切換 Collections 區塊的顯示/隱藏。"""
-        self._col_container.setVisible(not self._col_container.isVisible())
+        """btn_col_header 點擊事件：切換 Collections 區塊的顯示/隱藏，並記錄狀態。"""
+        self._collections_accordion_open = not self._collections_accordion_open
+        self._col_container.setVisible(self._collections_accordion_open)
+        self.collections_accordion_changed.emit(self._collections_accordion_open)
+
+    def set_accordion_states(self, folders_open: bool, collections_open: bool):
+        """從外部（config 還原）設定手風琴的展開狀態，只在展開模式下更新可見性。"""
+        self._folders_accordion_open = folders_open
+        self._collections_accordion_open = collections_open
+        if self.is_expanded:
+            has_folders = self._sub_folders_layout.count() > 0
+            self.sub_folders_container.setVisible(has_folders and folders_open)
+            has_collections = self._col_layout.count() > 0
+            self._col_container.setVisible(has_collections and collections_open)
 
     def on_row1_clicked(self):
         # 只負責發出 ALL 訊號，手風琴切換由上方的分類標題負責
@@ -6193,6 +6213,13 @@ class MainWindow(QMainWindow):
             self.refresh_sidebar()
             self.sidebar.reload_collections(self.engine.get_collections())
 
+            # 還原手風琴展開狀態（在資料填充完成後套用）
+            ui_state = self.config.get("ui_state", {})
+            self.sidebar.set_accordion_states(
+                folders_open=ui_state.get("folders_accordion_open", False),
+                collections_open=ui_state.get("collections_accordion_open", False),
+            )
+
             self._apply_folder_filter(self.current_folder_path)
     
     def update_status(self, text):
@@ -6770,6 +6797,8 @@ class MainWindow(QMainWindow):
 
         # 其餘 UI 狀態
         ui_state["sidebar_expanded"] = self.sidebar.is_expanded
+        ui_state["folders_accordion_open"] = self.sidebar._folders_accordion_open
+        ui_state["collections_accordion_open"] = self.sidebar._collections_accordion_open
         ui_state["view_mode"] = getattr(self, 'current_view_mode', 'large')
         ui_state["inspector_visible"] = self.inspector_panel.isVisible()
 
