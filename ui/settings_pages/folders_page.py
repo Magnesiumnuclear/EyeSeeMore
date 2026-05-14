@@ -26,8 +26,9 @@ from ui.widgets.drag_list import TransparentDragListWidget
 
 
 class FoldersPage(QWidget):
-    addCollectionRequested    = pyqtSignal(str, str)  # name, icon
-    removeCollectionRequested = pyqtSignal(int)        # collection_id
+    addCollectionRequested         = pyqtSignal(str, str)  # name, icon
+    removeCollectionRequested      = pyqtSignal(int)        # collection_id
+    updateCollectionIconRequested  = pyqtSignal(int, str)   # collection_id, icon
 
     def __init__(self, ctx: dict):
         super().__init__()
@@ -102,6 +103,8 @@ class FoldersPage(QWidget):
         self.collection_list.setObjectName("FolderSettingsList")
         self.collection_list.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
         self.collection_list.setMinimumHeight(80)
+        self.collection_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.collection_list.customContextMenuRequested.connect(self._show_collection_context_menu)
         tab_col_layout.addWidget(self.collection_list, stretch=1)
 
         col_btn_layout = QHBoxLayout()
@@ -271,3 +274,32 @@ class FoldersPage(QWidget):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.removeCollectionRequested.emit(col_id)
+
+    def _show_collection_context_menu(self, pos):
+        item = self.collection_list.itemAt(pos)
+        if not item:
+            return
+        self.collection_list.setCurrentItem(item)
+        menu = QMenu(self)
+        menu.setStyleSheet("QMenu { font-size: 14px; } QMenu::item { padding: 8px 30px; }")
+        action_edit = QAction("✏️ 編輯圖示", self)
+        action_edit.triggered.connect(self._on_edit_collection_icon)
+        menu.addAction(action_edit)
+        menu.exec(self.collection_list.mapToGlobal(pos))
+
+    def _on_edit_collection_icon(self):
+        item = self.collection_list.currentItem()
+        if not item:
+            return
+        col_id = item.data(Qt.ItemDataRole.UserRole)
+        icon, ok = QInputDialog.getText(
+            self, "編輯圖示",
+            "請輸入 1 個 Emoji (或最多 2 個英數字)：\n建議按 Win + . 叫出表情符號小鍵盤"
+        )
+        if ok:
+            icon = icon.strip()
+            if len(icon) > 4:
+                icon = icon[:4]
+            if not icon:
+                return
+            self.updateCollectionIconRequested.emit(col_id, icon)

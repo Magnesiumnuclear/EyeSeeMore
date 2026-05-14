@@ -2168,6 +2168,20 @@ class ImageSearchEngine:
             print(f"[Engine] remove_collection error: {e}")
             return False
 
+    def update_collection_icon(self, collection_id: int, icon: str) -> bool:
+        """更新虛擬資料夾的 emoji 圖示。"""
+        try:
+            with self.get_db_conn() as conn:
+                self._ensure_icon_column(conn)
+                conn.execute(
+                    "UPDATE collections SET icon = ? WHERE id = ?",
+                    (icon, collection_id),
+                )
+            return True
+        except Exception as e:
+            print(f"[Engine] update_collection_icon error: {e}")
+            return False
+
     def create_virtual_folder(self, name):
         """建立新的虛擬資料夾"""
         conn = self.get_db_conn()
@@ -5472,6 +5486,9 @@ class MainWindow(QMainWindow):
         fp.removeCollectionRequested.connect(
             lambda col_id: self._on_remove_collection_requested(fp, col_id)
         )
+        fp.updateCollectionIconRequested.connect(
+            lambda col_id, icon: self._on_update_collection_icon_requested(fp, col_id, icon)
+        )
 
         dialog.exec()
 
@@ -5489,6 +5506,13 @@ class MainWindow(QMainWindow):
         if not self.engine:
             return
         self.engine.remove_collection(col_id)
+        folders_page.refresh_collections()
+        self.sidebar.reload_collections(self.engine.get_collections())
+
+    def _on_update_collection_icon_requested(self, folders_page, col_id: int, icon: str):
+        if not self.engine:
+            return
+        self.engine.update_collection_icon(col_id, icon)
         folders_page.refresh_collections()
         self.sidebar.reload_collections(self.engine.get_collections())
 
