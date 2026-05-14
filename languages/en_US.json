@@ -47,7 +47,17 @@
     },
     "performance": {
         "page_title": "⚡ Performance",
-        "wip_text": "🚧 Work in Progress: Animation & Resource Control"
+        "wip_text": "🚧 Work in Progress: Animation & Resource Control",
+        "grp_scan": "Scan Performance  (Takes effect on next scan)",
+        "grp_display": "Display Performance  (Takes effect after restart)",
+        "lbl_batch": "Images per batch",
+        "hint_batch": "Larger = faster but uses more memory. GPU: 8–16, CPU: 2–4 recommended.",
+        "lbl_commit": "Save progress every N images",
+        "hint_commit": "Smaller = safer (less loss on interrupt), larger = faster. Range: 16–64.",
+        "lbl_cache": "Thumbnail cache size (images)",
+        "hint_cache": "More = smoother scrolling, but uses more memory. Range: 500–2000.",
+        "lbl_threads": "Concurrent thumbnail threads",
+        "hint_threads": "More = faster loading but uses more CPU. This PC supports up to {count} threads."
     },
     "auto_tasks": {
         "page_title": "🕒 Automated Tasks",

@@ -47,7 +47,17 @@
     },
     "performance": {
         "page_title": "⚡ 效能調整 (Performance)",
-        "wip_text": "🚧 施工中：動畫效果與系統資源控制"
+        "wip_text": "🚧 施工中：動畫效果與系統資源控制",
+        "grp_scan": "掃描效能　（下次掃描生效）",
+        "grp_display": "顯示效能　（重新啟動後生效）",
+        "lbl_batch": "每批處理幾張圖片",
+        "hint_batch": "越大越快，但需要更多記憶體。GPU 用戶建議 8–16，CPU 用戶建議 2–4。",
+        "lbl_commit": "每幾張才記錄一次進度",
+        "hint_commit": "越小越安全（中斷損失少），越大越快。建議範圍：16–64。",
+        "lbl_cache": "記憶體縮圖快取張數",
+        "hint_cache": "越多捲動越順暢，但佔用更多記憶體。建議範圍：500–2000。",
+        "lbl_threads": "同時載入縮圖的執行緒數",
+        "hint_threads": "越多載入越快，但佔用更多 CPU。此電腦最多 {count} 個執行緒。"
     },
     "auto_tasks": {
         "page_title": "🕒 自動任務 (Automated Tasks)",

@@ -28,48 +28,56 @@ class PerformancePage(QWidget):
         layout.addWidget(sep)
 
         # ── 掃描效能 ──────────────────────────────────────────────────────
-        grp_scan = QGroupBox("掃描效能　（下次掃描生效）")
+        grp_scan = QGroupBox(trans.t("performance", "grp_scan", "掃描效能　（下次掃描生效）"))
         grp_scan_layout = QVBoxLayout(grp_scan)
         grp_scan_layout.setSpacing(10)
         grp_scan_layout.setContentsMargins(16, 12, 16, 16)
 
         self.spin_batch = self._row(
             grp_scan_layout,
-            label="每批處理幾張圖片",
-            hint="越大越快，但需要更多記憶體。GPU 用戶建議 8–16，CPU 用戶建議 2–4。",
+            label=trans.t("performance", "lbl_batch", "每批處理幾張圖片"),
+            hint=trans.t("performance", "hint_batch",
+                         "越大越快，但需要更多記憶體。GPU 用戶建議 8–16，CPU 用戶建議 2–4。"),
             lo=1, hi=32, step=1,
             val=perf.get("indexing_batch_size", 4),
         )
         self.spin_commit = self._row(
             grp_scan_layout,
-            label="每幾張才記錄一次進度",
-            hint="越小越安全（中斷損失少），越大越快。建議範圍：16–64。",
+            label=trans.t("performance", "lbl_commit", "每幾張才記錄一次進度"),
+            hint=trans.t("performance", "hint_commit",
+                         "越小越安全（中斷損失少），越大越快。建議範圍：16–64。"),
             lo=4, hi=256, step=4,
             val=perf.get("db_commit_threshold", 24),
         )
         layout.addWidget(grp_scan)
 
         # ── 顯示效能 ──────────────────────────────────────────────────────
-        grp_display = QGroupBox("顯示效能　（重新啟動後生效）")
+        grp_display = QGroupBox(trans.t("performance", "grp_display", "顯示效能　（重新啟動後生效）"))
         grp_display_layout = QVBoxLayout(grp_display)
         grp_display_layout.setSpacing(10)
         grp_display_layout.setContentsMargins(16, 12, 16, 16)
 
         self.spin_cache = self._row(
             grp_display_layout,
-            label="記憶體縮圖快取張數",
-            hint="越多捲動越順暢，但佔用更多記憶體。建議範圍：500–2000。",
+            label=trans.t("performance", "lbl_cache", "記憶體縮圖快取張數"),
+            hint=trans.t("performance", "hint_cache",
+                         "越多捲動越順暢，但佔用更多記憶體。建議範圍：500–2000。"),
             lo=100, hi=5000, step=100,
             val=perf.get("thumbnail_cache_size", 1000),
         )
+
         cpu_count = os.cpu_count() or 1
         saved_threads = self._safe_int(
             perf.get("thumbnail_thread_count", 8), 8, 1, cpu_count
         )
+        thread_hint_tpl = trans.t(
+            "performance", "hint_threads",
+            "越多載入越快，但佔用更多 CPU。此電腦最多 {count} 個執行緒。"
+        )
         self.spin_threads = self._row(
             grp_display_layout,
-            label="同時載入縮圖的執行緒數",
-            hint=f"越多載入越快，但佔用更多 CPU。此電腦最多 {cpu_count} 個執行緒。",
+            label=trans.t("performance", "lbl_threads", "同時載入縮圖的執行緒數"),
+            hint=thread_hint_tpl.format(count=cpu_count),
             lo=1, hi=cpu_count, step=1,
             val=saved_threads,
         )
