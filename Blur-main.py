@@ -55,6 +55,7 @@ import faiss
 from core.search_orchestrator import SearchOrchestrator
 from core.image_action_manager import ImageActionManager
 from core.pin_manager import PinManager
+from core.ocr_repository import OcrRepository
 from utils.translator import Translator
 
 # [New] 引入設定管理器
@@ -1280,6 +1281,10 @@ class ImageSearchEngine:
             data_store_provider=lambda: self.data_store,
         )
 
+        # [Refactor Phase 1-B] OCR 框資料存取委派至 OcrRepository
+        # 採內建 WAL 連線（與 get_db_conn 行為一致），完全獨立於引擎其他狀態
+        self.ocr_repo = OcrRepository(db_path=self.config.db_path)
+
         # 1. 初始化資料庫
         print(f"[Engine] Initializing Database...")
         if os.path.exists(self.config.db_path):
@@ -1796,205 +1801,26 @@ class ImageSearchEngine:
         except Exception as e:
             print(f"[Error] Image search failed: {e}"); return []
         
+    # ==========================================
+    # OCR 框資料 — 已委派至 self.ocr_repo (OcrRepository)
+    # 保留原方法簽章作為 Thin Delegation Layer，確保 PreviewOverlay、
+    # PreviewLoader、inspector_panel 等呼叫端完全向後相容（Phase 1-B）。
+    # ==========================================
     def get_ocr_data_by_path(self, file_path):
-        """ [新增] 懶加載通道：只有在預覽時，才去資料庫把這張圖片的座標 JSON 撈出來"""
-        conn = self.get_db_conn()
-        cursor = conn.cursor()
-        ocr_boxes = []
-        try:
-            cursor.execute("""
-                SELECT o.lang, o.ocr_data 
-                FROM ocr_results o
-                JOIN files f ON o.file_id = f.id
-                WHERE f.file_path = ?
-            """, (file_path,))
-            
-            rows = cursor.fetchall()
-            for lang, data_json in rows:
-                if data_json and data_json != "[]" and data_json != "[NULL]":
-                    try:
-                        parsed_data = json.loads(data_json)
-                        if isinstance(parsed_data, list):
-                            for item in parsed_data:
-                                item["lang"] = lang
-                                ocr_boxes.append(item)
-                    except Exception:
-                        pass
-        except Exception as e:
-            print(f"[Engine] Lazy load OCR data error: {e}")
-        finally:
-            conn.close()
-        return ocr_boxes
+        """[委派] 懶加載通道：只有在預覽時，才去資料庫把這張圖片的座標 JSON 撈出來。"""
+        return self.ocr_repo.get_by_path(file_path)
 
     def upsert_crop_ocr(self, file_path: str, new_items: list) -> bool:
-        """
-        將框選 OCR 結果合併寫入資料庫。
-        new_items 格式: [{"lang": str, "box": [[x,y]...], "text": str, "conf": float}, ...]
-        每個 lang 單獨處理：取出舊 ocr_data，追加新框，回寫。
-        """
-        if not new_items:
-            return False
-        try:
-            conn = self.get_db_conn()
-            cur  = conn.cursor()
-            # 取 file_id
-            cur.execute("SELECT id FROM files WHERE file_path=?", (file_path,))
-            row = cur.fetchone()
-            if not row:
-                conn.close()
-                return False
-            file_id = row[0]
-
-            # 把 new_items 按語系分組
-            by_lang: dict[str, list] = {}
-            for item in new_items:
-                lang = item.get("lang", "unk")
-                by_lang.setdefault(lang, []).append({
-                    "box":  item["box"],
-                    "text": item["text"],
-                    "conf": item["conf"],
-                })
-
-            for lang, items in by_lang.items():
-                cur.execute(
-                    "SELECT id, ocr_text, ocr_data FROM ocr_results WHERE file_id=? AND lang=?",
-                    (file_id, lang)
-                )
-                existing = cur.fetchone()
-
-                if existing:
-                    row_id, old_text, old_data_json = existing
-                    try:
-                        old_data = json.loads(old_data_json) if old_data_json else []
-                    except Exception:
-                        old_data = []
-                    merged_data = old_data + items
-                    merged_text = (old_text or "") + " " + " ".join(i["text"] for i in items)
-                    cur.execute(
-                        "UPDATE ocr_results SET ocr_text=?, ocr_data=? WHERE id=?",
-                        (merged_text.strip(), json.dumps(merged_data, ensure_ascii=False), row_id)
-                    )
-                else:
-                    ocr_text = " ".join(i["text"] for i in items)
-                    ocr_data = json.dumps(items, ensure_ascii=False)
-                    cur.execute(
-                        "INSERT INTO ocr_results (file_id, lang, ocr_text, ocr_data, confidence) VALUES (?,?,?,?,?)",
-                        (file_id, lang, ocr_text, ocr_data, 1.0)
-                    )
-
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            print(f"[Engine] upsert_crop_ocr error: {e}")
-            return False
+        """[委派] 將框選 OCR 結果合併寫入資料庫（每語系獨立處理 upsert）。"""
+        return self.ocr_repo.upsert(file_path, new_items)
 
     def delete_ocr_box(self, file_path: str, lang: str, box_to_delete: list) -> bool:
-        """
-        從指定語系的 ocr_data 中移除符合座標的框。
-        box_to_delete 為 4 點列表，允許 ±2px 誤差比對。
-        比對前先排序，與點的儲存順序無關（相容 PaddleOCR 原始順序或 _sort_points 後的順序）。
-        """
-        def _boxes_match(b1, b2, tol=2):
-            try:
-                s1 = sorted(b1, key=lambda p: (p[0], p[1]))
-                s2 = sorted(b2, key=lambda p: (p[0], p[1]))
-                return all(
-                    abs(s1[i][0] - s2[i][0]) < tol and abs(s1[i][1] - s2[i][1]) < tol
-                    for i in range(4)
-                )
-            except Exception:
-                return False
-        try:
-            conn = self.get_db_conn()
-            cur  = conn.cursor()
-            cur.execute("SELECT id FROM files WHERE file_path=?", (file_path,))
-            row = cur.fetchone()
-            if not row:
-                conn.close(); return False
-            file_id = row[0]
-            cur.execute(
-                "SELECT id, ocr_text, ocr_data FROM ocr_results WHERE file_id=? AND lang=?",
-                (file_id, lang)
-            )
-            existing = cur.fetchone()
-            if not existing:
-                conn.close(); return False
-            row_id, old_text, old_data_json = existing
-            try:
-                items = json.loads(old_data_json) if old_data_json else []
-            except Exception:
-                items = []
-            new_items = [it for it in items if not _boxes_match(it.get("box", []), box_to_delete)]
-            if len(new_items) == len(items):
-                conn.close(); return False  # 沒找到相符的框
-            new_text = " ".join(it.get("text", "") for it in new_items)
-            cur.execute(
-                "UPDATE ocr_results SET ocr_text=?, ocr_data=? WHERE id=?",
-                (new_text, json.dumps(new_items, ensure_ascii=False), row_id)
-            )
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            print(f"[Engine] delete_ocr_box error: {e}")
-            return False
+        """[委派] 從指定語系的 ocr_data 中移除符合座標的框（±2px 容忍度比對）。"""
+        return self.ocr_repo.delete_box(file_path, lang, box_to_delete)
 
     def update_ocr_box_text(self, file_path: str, lang: str, box_to_match: list, new_text: str) -> bool:
-        """
-        將指定框的辨識文字更新為 new_text（座標不變）。
-        若找不到相符的框，回傳 False。
-        比對前先排序，與點的儲存順序無關（相容 PaddleOCR 原始順序或 _sort_points 後的順序）。
-        """
-        def _boxes_match(b1, b2, tol=2):
-            try:
-                s1 = sorted(b1, key=lambda p: (p[0], p[1]))
-                s2 = sorted(b2, key=lambda p: (p[0], p[1]))
-                return all(
-                    abs(s1[i][0] - s2[i][0]) < tol and abs(s1[i][1] - s2[i][1]) < tol
-                    for i in range(4)
-                )
-            except Exception:
-                return False
-        try:
-            conn = self.get_db_conn()
-            cur  = conn.cursor()
-            cur.execute("SELECT id FROM files WHERE file_path=?", (file_path,))
-            row = cur.fetchone()
-            if not row:
-                conn.close(); return False
-            file_id = row[0]
-            cur.execute(
-                "SELECT id, ocr_data FROM ocr_results WHERE file_id=? AND lang=?",
-                (file_id, lang)
-            )
-            existing = cur.fetchone()
-            if not existing:
-                conn.close(); return False
-            row_id, old_data_json = existing
-            try:
-                items = json.loads(old_data_json) if old_data_json else []
-            except Exception:
-                items = []
-            matched = False
-            for it in items:
-                if _boxes_match(it.get("box", []), box_to_match):
-                    it["text"] = new_text
-                    it["conf"] = 1.0
-                    matched = True
-            if not matched:
-                conn.close(); return False
-            full_text = " ".join(it.get("text", "") for it in items)
-            cur.execute(
-                "UPDATE ocr_results SET ocr_text=?, ocr_data=? WHERE id=?",
-                (full_text, json.dumps(items, ensure_ascii=False), row_id)
-            )
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            print(f"[Engine] update_ocr_box_text error: {e}")
-            return False
+        """[委派] 將指定框的辨識文字更新為 new_text，座標不變（±2px 容忍度比對）。"""
+        return self.ocr_repo.update_box_text(file_path, lang, box_to_match, new_text)
 
     def get_text_vector(self, text):
         """瞬間產生文字的 1024 維特徵 (約 0.05 秒)"""
