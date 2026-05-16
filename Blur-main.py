@@ -59,6 +59,7 @@ from core.ocr_repository import OcrRepository
 from core.collection_manager import CollectionManager
 from core.search_history_manager import SearchHistoryManager
 from core.eta_progress_controller import EtaProgressController
+from core.indexing_lifecycle import IndexingLifecycleHandler
 from utils.translator import Translator
 
 # [New] 引入設定管理器
@@ -4919,7 +4920,7 @@ class MainWindow(QMainWindow):
     # 定義訊號
     random_data_ready = pyqtSignal(list)
     ai_ready = pyqtSignal()
-    db_reloaded = pyqtSignal()
+    # [Refactor Phase 2-C] db_reloaded 訊號已移至 IndexingLifecycleHandler 內部
 
     def __init__(self, config: ConfigManager):
         # [關鍵修正] 這行一定要在第一行，且不能漏掉！
@@ -4975,6 +4976,21 @@ class MainWindow(QMainWindow):
         # 此時才能將 EtaProgressController 的訊號連接到 UI 元件
         self.eta_ctrl.status_text_changed.connect(self.status.setText)
         self.eta_ctrl.progress_updated.connect(self._on_eta_progress)
+
+        # [Refactor Phase 2-C] 索引生命週期管理器
+        # engine 與 indexer_worker 採延遲注入（兩者於下方才建立）
+        self.indexing_handler = IndexingLifecycleHandler(
+            eta_ctrl=self.eta_ctrl,
+            parent=self,
+        )
+        self.indexing_handler.scan_status_changed.connect(self.status.setText)
+        self.indexing_handler.gallery_refresh_requested.connect(
+            lambda: self._apply_folder_filter(self.current_folder_path)
+        )
+        self.indexing_handler.sidebar_refresh_requested.connect(self.refresh_sidebar)
+        self.indexing_handler.taskbar_state_changed.connect(self.taskbar_ctrl.set_state)
+        self.indexing_handler.pause_menu_state_changed.connect(self._on_pause_menu_state)
+        self.indexing_handler.progress_completed.connect(self._on_progress_completed)
 
         # 空狀態診斷覆蓋層 (疊在 list_view 上方)
         self._empty_state_overlay = EmptyStateOverlay(self.list_view)
@@ -5070,6 +5086,8 @@ class MainWindow(QMainWindow):
         self.indexer_worker.scan_finished.connect(self.on_scan_finished)
         self.indexer_worker.all_finished.connect(self.on_indexing_finished)
         self.indexer_worker.eta_updated.connect(self._on_eta_updated)
+        # [Refactor Phase 2-C] indexer_worker 注入給 handler 以支援 pause/cancel
+        self.indexing_handler.indexer_worker = self.indexer_worker
 
         self.search_orch = SearchOrchestrator(SearchWorker, parent=self)
         self.search_orch.results_ready.connect(self.set_base_results)
@@ -5080,7 +5098,7 @@ class MainWindow(QMainWindow):
         # [修改 2] 連接訊號：當 AI 準備好時，執行 on_ai_loaded
         self.random_data_ready.connect(self.set_base_results)
         self.ai_ready.connect(self.on_ai_loaded)
-        self.db_reloaded.connect(self.on_db_reloaded)
+        # [Refactor Phase 2-C] db_reloaded 訊號移至 IndexingLifecycleHandler 內部處理
 
         from ui.action_handler import ActionHandler
         self.action_handler = ActionHandler(self)
@@ -5972,108 +5990,47 @@ class MainWindow(QMainWindow):
             self.taskbar_ctrl.set_state(TBPF_NORMAL)
         self.taskbar_ctrl.set_progress(current, total)
 
+    # ==========================================
+    # 索引生命週期 — 已委派至 self.indexing_handler (IndexingLifecycleHandler)
+    # 6 個原方法簽章保留作為 Thin Delegation Layer (Phase 2-C)
+    # ==========================================
     def on_scan_finished(self, added, deleted):
-        if added > 0 or deleted > 0:
-            print(f"[Indexer] Scan found {added} new, {deleted} deleted.")
-            #  [防呆修復] 移除原本這裡同步呼叫 load_data_from_db 的動作
-            # 避免在開始索引前卡死畫面，統一交給 on_indexing_finished 處理！
-        else:
-            print("[Indexer] No changes detected.")
+        """[委派] IndexerWorker.scan_finished 接收端。"""
+        self.indexing_handler.on_scan_finished(added, deleted)
 
     def on_indexing_finished(self):
-        # [Refactor Phase 2-B] 在 reset 前先取得 mode 1 所需的總耗時
-        # （reset 會清空累計，先讀再重置）
-        if self.eta_ctrl.mode == 1:
-            total_sec = int(self.eta_ctrl.total_elapsed())
-            _m, _s = divmod(total_sec, 60)
-            self.status.setText(f"索引完成!總耗時:{_m:02d} 分 {_s:02d} 秒")
-        else:
-            self.status.setText("Index Updated.")
+        """[委派] IndexerWorker.all_finished 接收端（觸發雙緩衝 reload）。"""
+        self.indexing_handler.on_indexing_finished()
 
-        # 一次性重置所有 ETA 狀態（timer 停止、T_fake/T_total/累計全部清空）
-        self.eta_ctrl.reset()
+    def toggle_scan_pause(self):
+        """[委派] 切換掃描暫停／繼續。"""
+        self.indexing_handler.toggle_scan_pause()
 
+    def cancel_indexing(self):
+        """[委派] 強制中止索引任務。"""
+        self.indexing_handler.cancel_indexing()
+
+    def trigger_background_db_reload(self):
+        """[委派] 觸發雙緩衝背景資料庫重載。"""
+        self.indexing_handler.trigger_background_db_reload()
+
+    def on_db_reloaded(self):
+        """[委派] 背景重載完畢回呼（透過 handler 內部訊號路由）。"""
+        self.indexing_handler.on_db_reloaded()
+
+    # ── IndexingLifecycleHandler 訊號接收 slot ─────────────────────────
+    def _on_pause_menu_state(self, checked: bool):
+        """接收 handler.pause_menu_state_changed → 更新 Win32 系統選單勾選。"""
+        from core import win_titlebar
+        win_titlebar.set_menu_state(win_titlebar.IDM_PAUSE_SCAN, checked)
+
+    def _on_progress_completed(self):
+        """接收 handler.progress_completed → 進度條收尾動作。"""
         # 停止平滑動畫，再帶到滿格後隱藏
         if hasattr(self, '_progress_anim'):
             self._progress_anim.stop()
         self.progress.setValue(self.progress.maximum())
         self.progress.hide()
-
-        # [新增] 索引任務結束，關閉工作列進度條
-        self.taskbar_ctrl.set_state(TBPF_NOPROGRESS)
-        self.trigger_background_db_reload() #  觸發雙緩衝背景載入
-
-    # ── 掃描控制 API（由 WinScanCtrlFilter 驅動）────────────────────────────
-    def toggle_scan_pause(self):
-        """
-        切換 IndexerWorker 暫停 / 繼續狀態。
-        - 暫停：工作列轉為黃色；系統選單顯示勾選符號。
-        - 繼續：工作列恢復녹色；系統選單移除勾選符號。
-        """
-        if not self.indexer_worker.isRunning():
-            return
-
-        from core import win_titlebar
-
-        if self.indexer_worker._paused:
-            # ── 繼續 ──
-            self.indexer_worker._paused = False
-            self.indexer_worker._resume_event.set()
-            self.taskbar_ctrl.set_state(TBPF_NORMAL)
-            self.eta_ctrl.set_paused_flag(False)
-            win_titlebar.set_menu_state(win_titlebar.IDM_PAUSE_SCAN, False)
-            print("[ScanCtrl] 掃描已繼續。")
-        else:
-            # ── 暫停 ──
-            self.indexer_worker._paused = True
-            self.indexer_worker._resume_event.clear()
-            self.taskbar_ctrl.set_state(TBPF_PAUSED)
-            self.eta_ctrl.set_paused_flag(True)
-            win_titlebar.set_menu_state(win_titlebar.IDM_PAUSE_SCAN, True)
-            print("[ScanCtrl] 掃描已暫停。")
-
-    def cancel_indexing(self):
-        """
-        強制中止 IndexerWorker 並清空目前任務。
-        若 Worker 處於暫停狀態，先解除暫停以確保執行緒能正常結束。
-        """
-        if not self.indexer_worker.isRunning():
-            return
-
-        from core import win_titlebar
-
-        # 若暫停中，先解除暫停讓 Worker 執行緒能往前跑到 cancel 檢查點
-        if self.indexer_worker._paused:
-            self.indexer_worker._paused = False
-            self.indexer_worker._resume_event.set()
-
-        self.indexer_worker._cancelled = True
-        self.taskbar_ctrl.set_state(TBPF_NOPROGRESS)
-        self.eta_ctrl.set_paused_flag(False)
-        win_titlebar.set_menu_state(win_titlebar.IDM_PAUSE_SCAN, False)
-        print("[ScanCtrl] 取消掃描指令已發出，等待 Worker 結束目前批次…")
-
-    def trigger_background_db_reload(self):
-        """ [方案 B：雙緩衝核心] 在背景執行緒讀取資料庫，確保 UI 與搜尋功能不中斷"""
-        if not self.engine: return
-        self.status.setText("Synchronizing database in background...")
-        
-        def bg_reload():
-            print("[Engine] Reloading engine data in background (Double Buffering)...")
-            self.engine.load_data_from_db() # 此處內部已實作 Atomic Swap
-            
-            #  [關鍵修復] 改為發送空訊號，讓主執行緒自己去撈，徹底杜絕跨執行緒崩潰
-            self.db_reloaded.emit()
-            
-        threading.Thread(target=bg_reload, daemon=True).start()
-    
-    def on_db_reloaded(self):
-        """背景載入完畢，安全跳回主執行緒更新畫面"""
-        if not self.engine: return
-        
-        #  [修正] 不要強制切回 ALL，而是維持目前所在的資料夾並重新整理！
-        self._apply_folder_filter(self.current_folder_path)
-        self.refresh_sidebar()
 
     # 右鍵選單邏輯
     def show_context_menu(self, pos):
@@ -6251,6 +6208,8 @@ class MainWindow(QMainWindow):
             self.engine = ImageSearchEngine(self.config)
             self.search_orch.engine = self.engine   # 將引擎注入 Orchestrator
             self.img_actions.engine = self.engine   # 將引擎注入 ActionManager
+            # [Refactor Phase 2-C] 將引擎注入 IndexingLifecycleHandler
+            self.indexing_handler.engine = self.engine
             
             #self.status.setText("Rendering Gallery...")
             # 呼叫排序方法
