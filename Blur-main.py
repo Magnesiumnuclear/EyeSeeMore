@@ -56,6 +56,7 @@ from core.search_orchestrator import SearchOrchestrator
 from core.image_action_manager import ImageActionManager
 from core.pin_manager import PinManager
 from core.ocr_repository import OcrRepository
+from core.collection_manager import CollectionManager
 from utils.translator import Translator
 
 # [New] 引入設定管理器
@@ -1285,6 +1286,14 @@ class ImageSearchEngine:
         # 採內建 WAL 連線（與 get_db_conn 行為一致），完全獨立於引擎其他狀態
         self.ocr_repo = OcrRepository(db_path=self.config.db_path)
 
+        # [Refactor Phase 1-C] 虛擬資料夾管理委派至 CollectionManager
+        # 採 by-reference 共享 data_store；配套 load_data_from_db 已改為
+        # 就地 clear()+extend() 以保證 data_store 參照永遠新鮮。
+        self.collection_mgr = CollectionManager(
+            db_path=self.config.db_path,
+            data_store=self.data_store,
+        )
+
         # 1. 初始化資料庫
         print(f"[Engine] Initializing Database...")
         if os.path.exists(self.config.db_path):
@@ -1457,14 +1466,17 @@ class ImageSearchEngine:
             if temp_data_store and temp_embeddings_list:
                 temp_emb_matrix = np.stack(temp_embeddings_list)
                 self.stored_embeddings = temp_emb_matrix
-                self.data_store = temp_data_store
+                # [Refactor Phase 1-C] 改為就地修改 list，保留 PinManager /
+                # CollectionManager 持有的同一個 list 參照（避免 rebinding）
+                self.data_store.clear()
+                self.data_store.extend(temp_data_store)
                 self.path_map = temp_path_map
                 self.build_faiss_index(temp_emb_matrix)
                 self.pin_manager.reload()
                 print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
             else:
                 self.stored_embeddings = None
-                self.data_store = []
+                self.data_store.clear()  # 就地清空，維持 list 參照不變
                 self.path_map = {}
                 self.pin_manager.pinned_paths = set()
                 
@@ -1890,173 +1902,47 @@ class ImageSearchEngine:
         return self._merge_pinned(results)
     
     # ==========================================
-    #  [NEW] 虛擬資料夾 (Collections) 管理 API
+    #  虛擬資料夾 (Collections) 管理 API
+    #  已委派至 self.collection_mgr (CollectionManager)
+    #  保留原方法簽章作為 Thin Delegation Layer，確保 MainWindow 及
+    #  ui/settings_pages/folders_page.py 等呼叫端完全向後相容（Phase 1-C）。
     # ==========================================
 
     def _ensure_icon_column(self, conn):
-        """冪等遷移：若 collections 尚無 icon 欄位則自動新增。"""
-        cols = [row[1] for row in conn.execute("PRAGMA table_info(collections)").fetchall()]
-        if "icon" not in cols:
-            conn.execute("ALTER TABLE collections ADD COLUMN icon TEXT DEFAULT '🏷️'")
-            conn.commit()
+        """[委派] 冪等遷移：若 collections 尚無 icon 欄位則自動新增。"""
+        self.collection_mgr._ensure_icon_column(conn)
 
     def add_collection(self, name: str, icon: str = "🏷️") -> bool:
-        """新增一個虛擬資料夾（含 icon 欄位自動遷移）。"""
-        try:
-            with self.get_db_conn() as conn:
-                self._ensure_icon_column(conn)
-                conn.execute(
-                    "INSERT INTO collections (name, icon, created_at) VALUES (?, ?, ?)",
-                    (name, icon, __import__("time").time()),
-                )
-            return True
-        except Exception as e:
-            print(f"[Engine] add_collection error: {e}")
-            return False
+        """[委派] 新增一個虛擬資料夾（含 icon 欄位自動遷移）。"""
+        return self.collection_mgr.add_collection(name, icon)
 
     def get_collections(self) -> list:
-        """回傳 [(id, name, icon, count), ...]，供 UI 載入。"""
-        try:
-            conn = self.get_db_conn()
-            try:
-                self._ensure_icon_column(conn)
-                rows = conn.execute("""
-                    SELECT c.id,
-                           c.name,
-                           COALESCE(c.icon, '🏷️') AS icon,
-                           COUNT(ci.file_path)       AS cnt
-                    FROM collections c
-                    LEFT JOIN collection_items ci ON c.id = ci.collection_id
-                    GROUP BY c.id
-                    ORDER BY c.created_at ASC
-                """).fetchall()
-                return rows
-            finally:
-                conn.close()
-        except Exception as e:
-            print(f"[Engine] get_collections error: {e}")
-            return []
+        """[委派] 回傳 [(id, name, icon, count), ...]，供 UI 載入。"""
+        return self.collection_mgr.get_collections()
 
     def remove_collection(self, collection_id: int) -> bool:
-        """刪除虛擬資料夾，並清除所有關聯的 collection_items。"""
-        try:
-            conn = self.get_db_conn()
-            try:
-                # 啟用外鍵約束，確保 ON DELETE CASCADE 生效
-                conn.execute("PRAGMA foreign_keys = ON")
-                conn.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
-                # 儀式防呆：若 PRAGMA 未生效，手動清理子表
-                conn.execute("DELETE FROM collection_items WHERE collection_id = ?", (collection_id,))
-                conn.commit()
-                return True
-            finally:
-                conn.close()
-        except Exception as e:
-            print(f"[Engine] remove_collection error: {e}")
-            return False
+        """[委派] 刪除虛擬資料夾，並清除所有關聯的 collection_items。"""
+        return self.collection_mgr.remove_collection(collection_id)
 
     def update_collection_icon(self, collection_id: int, icon: str) -> bool:
-        """更新虛擬資料夾的 emoji 圖示。"""
-        try:
-            with self.get_db_conn() as conn:
-                self._ensure_icon_column(conn)
-                conn.execute(
-                    "UPDATE collections SET icon = ? WHERE id = ?",
-                    (icon, collection_id),
-                )
-            return True
-        except Exception as e:
-            print(f"[Engine] update_collection_icon error: {e}")
-            return False
+        """[委派] 更新虛擬資料夾的 emoji 圖示。"""
+        return self.collection_mgr.update_collection_icon(collection_id, icon)
 
     def create_virtual_folder(self, name):
-        """建立新的虛擬資料夾"""
-        conn = self.get_db_conn()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO collections (name, created_at) VALUES (?, ?)", (name, time.time()))
-            conn.commit()
-            return True, cursor.lastrowid
-        except sqlite3.IntegrityError:
-            return False, "該名稱已存在！"
-        except Exception as e:
-            return False, str(e)
-        finally:
-            conn.close()
+        """[委派] 建立新的虛擬資料夾（舊版 API，回傳 (success, id_or_error)）。"""
+        return self.collection_mgr.create_virtual_folder(name)
 
     def get_virtual_folders(self):
-        """取得所有虛擬資料夾與其包含的圖片數量"""
-        conn = self.get_db_conn()
-        try:
-            cursor = conn.cursor()
-            # 瞬間算出每個虛擬資料夾裡面有幾張圖 (COUNT)
-            cursor.execute("""
-                SELECT c.id, c.name, COUNT(ci.file_path)
-                FROM collections c
-                LEFT JOIN collection_items ci ON c.id = ci.collection_id
-                GROUP BY c.id
-                ORDER BY c.created_at ASC
-            """)
-            return cursor.fetchall() # 回傳 [(id, name, count), ...]
-        except Exception as e:
-            print(f"[Engine] get_virtual_folders error: {e}")
-            return []
-        finally:
-            conn.close()
+        """[委派] 取得所有虛擬資料夾與其包含的圖片數量（舊版 API，不含 icon）。"""
+        return self.collection_mgr.get_virtual_folders()
 
     def add_to_virtual_folder(self, collection_id, file_paths):
-        """將多張圖片加入虛擬資料夾 (支援拖曳寫入)"""
-        if not file_paths: return False
-        conn = self.get_db_conn()
-        try:
-            cursor = conn.cursor()
-            # [防禦] 寫入前統一正規化路徑：os.path.normpath 修正斜線，os.path.abspath 統一大小寫磁碟代號
-            normalized = [os.path.normpath(os.path.abspath(p)) for p in file_paths]
-            data = [(collection_id, p) for p in normalized]
-            # 使用 INSERT OR IGNORE，重複把同一張圖丟進同一個資料夾也不會報錯
-            cursor.executemany("INSERT OR IGNORE INTO collection_items (collection_id, file_path) VALUES (?, ?)", data)
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"[Engine] add_to_virtual_folder error: {e}")
-            return False
-        finally:
-            conn.close()
-            
-    def get_virtual_folder_images(self, collection_id):
-        """取得特定虛擬資料夾內的所有圖片，用於顯示在畫廊"""
-        conn = self.get_db_conn()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT file_path FROM collection_items WHERE collection_id = ?", (collection_id,))
-            raw_paths = [row[0] for row in cursor.fetchall()]
-            # [防禦] 建立正規化查詢表：同時收錄原始路徑與正規化路徑，相容歷史舊資料
-            paths = set()
-            for p in raw_paths:
-                paths.add(p)
-                paths.add(os.path.normpath(os.path.abspath(p)))
+        """[委派] 將多張圖片加入虛擬資料夾（支援拖曳寫入）。"""
+        return self.collection_mgr.add_to_virtual_folder(collection_id, file_paths)
 
-            # 直接從 O(1) 的記憶體 data_store 中把圖片資訊抽出來！極度快速！
-            results = []
-            for item in self.data_store:
-                item_path = item["path"]
-                item_path_norm = os.path.normpath(os.path.abspath(item_path))
-                if item_path in paths or item_path_norm in paths:
-                    results.append({
-                        "score": 0.0, "clip_score": 0.0, "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
-                        "path": item["path"], "filename": item["filename"],
-                        "mtime": item.get("mtime", 0),
-                        "width": item.get("width", 0),
-                        "height": item.get("height", 0)
-                    })
-            # 按時間排序 (最新修改的排前面)
-            results.sort(key=lambda x: x["mtime"], reverse=True)
-            return results
-        except Exception as e:
-            print(f"[Engine] get_virtual_folder_images error: {e}")
-            return []
-        finally:
-            conn.close()
+    def get_virtual_folder_images(self, collection_id):
+        """[委派] 取得特定虛擬資料夾內的所有圖片，用於顯示在畫廊。"""
+        return self.collection_mgr.get_virtual_folder_images(collection_id)
 
 from indexer import IndexerService # 確保引入
 
