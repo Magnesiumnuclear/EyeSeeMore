@@ -58,6 +58,7 @@ from core.pin_manager import PinManager
 from core.ocr_repository import OcrRepository
 from core.collection_manager import CollectionManager
 from core.search_history_manager import SearchHistoryManager
+from core.eta_progress_controller import EtaProgressController
 from utils.translator import Translator
 
 # [New] 引入設定管理器
@@ -2008,10 +2009,9 @@ class IndexerWorker(QThread):
         total_tasks = len(files_full) + len(files_emb_only) + len(files_ocr_only)
         self.status_update.emit(f"Indexing {total_tasks} images...")
 
-        # 通知主執行緒啟動累計計時
-        self.main_window._eta_accumulated = 0.0
-        self.main_window._eta_paused      = False
-        self.main_window._eta_run_start   = time.time()
+        # [Refactor Phase 2-B] 改透過 EtaProgressController 的公開介面啟動
+        # session，不再直接觸碰 MainWindow 內部屬性
+        self.main_window.eta_ctrl.start_session()
         
         # ==========================================
         # [新增] ETA 預估時間專用變數 (滑動視窗測速)
@@ -2044,7 +2044,7 @@ class IndexerWorker(QThread):
             last_current[0] = current
 
             clean_msg = msg.replace("...", "")
-            mode = self.main_window._eta_mode
+            mode = self.main_window.eta_ctrl.mode
 
             if current < total:
                 if len(speed_history) >= 2:
@@ -4961,33 +4961,20 @@ class MainWindow(QMainWindow):
         self.taskbar_ctrl = TaskbarController(self.winId())
 
         # ── ETA 顯示模式與 PID Clock Slewing ───────────────────────────────
-        # 模式 1=真實跳動  2=PID假時間  3=經數  4=測試
-        self._eta_mode: int = self.config.get("eta_display_mode", 1)
-
-        # 共用狀態（所有模式共用）
-        self._eta_T_real:      float       = 0.0
-        self._eta_stage_msg:   str         = ""
-
-        # 模式 1：累計運行時間（預留 pause/resume 接口）
-        self._eta_run_start:   float       = 0.0   # 最近一次 resume 的 wall-clock
-        self._eta_accumulated: float       = 0.0   # 暂停期間累計秒數
-        self._eta_paused:      bool        = False
-
-        # 模式 2： PID假計時器
-        self._eta_T_fake:           float|None = None
-        self._eta_T_total:          float|None = None  # 鎖定首次估計的總耗時，用於反算假進度 %
-        self._eta_pid_Kp:           float = 0.30
-        self._eta_pid_Ki:           float = 0.01
-        self._eta_pid_Kd:           float = 0.05
-        self._eta_pid_integral:     float = 0.0
-        self._eta_pid_last_error:   float = 0.0
-        self._eta_timer = QTimer(self)
-        self._eta_timer.setInterval(100)
-        self._eta_timer.timeout.connect(self._on_eta_tick)
+        # [Refactor Phase 2-B] 所有 ETA 狀態與 PID 邏輯封裝在 EtaProgressController
+        # 模式 1=真實跳動  2=PID假時間  3=計數  4=測試
+        # 訊號連接需等 init_ui() 建立好 self.status / self.progress 後才做
+        eta_mode = self.config.get("eta_display_mode", 1)
+        self.eta_ctrl = EtaProgressController(mode=eta_mode, parent=self)
 
         # [Refactor Phase 2-A] history_mgr 已於建構時自動載入，
         # load_history() 仍保留為公開介面但不再於初始化時呼叫
         self.init_ui()
+
+        # [Refactor Phase 2-B] init_ui 已建立 self.status / self.progress，
+        # 此時才能將 EtaProgressController 的訊號連接到 UI 元件
+        self.eta_ctrl.status_text_changed.connect(self.status.setText)
+        self.eta_ctrl.progress_updated.connect(self._on_eta_progress)
 
         # 空狀態診斷覆蓋層 (疊在 list_view 上方)
         self._empty_state_overlay = EmptyStateOverlay(self.list_view)
@@ -5927,106 +5914,50 @@ class MainWindow(QMainWindow):
             self._apply_folder_filter(self.current_folder_path)
     
     def update_status(self, text):
-        self._eta_stage_msg = text
-        # 模式 2 的 PID timer 正在執行時，狀態欄由 _on_eta_tick 控制
-        if not (self._eta_mode == 2 and self._eta_timer.isActive()):
+        # [Refactor Phase 2-B] 委派至 eta_ctrl：回傳 True 表示模式允許
+        # 直接更新狀態列，False 表示 PID timer 控制中應交由 tick 訊號處理
+        if self.eta_ctrl.set_stage_message(text):
             self.status.setText(text)
 
-    # ── ETA 公用方法 ────────────────────────────────────────────────
+    # ==========================================
+    # ETA 進度 — 已委派至 self.eta_ctrl (EtaProgressController)
+    # 6 個原方法簽章保留作為 Thin Delegation Layer (Phase 2-B)
+    # ==========================================
     def apply_eta_mode(self, mode: int):
-        """設定頁即時切換模式；模式切離 2 時自動停止 PID timer"""
-        old = self._eta_mode
-        self._eta_mode = mode
-        if old == 2 and mode != 2:
-            self._eta_timer.stop()
+        """[委派] 設定頁即時切換模式；模式切離 2 時自動停止 PID timer。"""
+        self.eta_ctrl.apply_mode(mode)
 
     def pause_eta_timer(self):
-        """暂停 ETA 計時（預留給未來 Pause/Resume 功能）"""
-        if not self._eta_paused:
-            self._eta_accumulated += time.time() - self._eta_run_start
-            self._eta_paused = True
-            self._eta_timer.stop()
+        """[委派] 暫停 ETA 計時（預留給未來 Pause/Resume 功能）。"""
+        self.eta_ctrl.pause_timer()
 
     def resume_eta_timer(self):
-        """繼續 ETA 計時（預留給未來 Pause/Resume 功能）"""
-        if self._eta_paused:
-            self._eta_run_start = time.time()
-            self._eta_paused = False
-            if self._eta_mode == 2 and self._eta_T_fake is not None:
-                self._eta_timer.start()
+        """[委派] 繼續 ETA 計時（預留給未來 Pause/Resume 功能）。"""
+        self.eta_ctrl.resume_timer()
 
     def _eta_total_elapsed(self) -> float:
-        """回傳累計運行秒數（暂停期間不包含）"""
-        if self._eta_paused:
-            return self._eta_accumulated
-        return self._eta_accumulated + (time.time() - self._eta_run_start)
+        """[委派] 回傳累計運行秒數（暫停期間不包含）。"""
+        return self.eta_ctrl.total_elapsed()
 
     def _on_eta_updated(self, t_real: float):
-        """收到 IndexerWorker 計算出的真實剩餘時間（T_real）"""
-        if t_real < 0:
-            return  # 暖機中，樣本不足
-        self._eta_T_real = t_real
-        # 模式 2：第一次收到有效 T_real 時初始化假計時器
-        if self._eta_mode == 2 and self._eta_T_fake is None and t_real > 0:
-            self._eta_T_fake         = t_real
-            self._eta_T_total        = t_real  # 鎖定基準總耗時，後續不覆蓋
-            self._eta_pid_integral   = 0.0
-            self._eta_pid_last_error = 0.0
-            if not self._eta_timer.isActive():
-                self._eta_timer.start()
+        """[委派] 收到 IndexerWorker 計算出的真實剩餘時間 (T_real)。"""
+        self.eta_ctrl.on_real_eta(t_real)
 
-    def _on_eta_tick(self):
-        """每 100ms 以 PID 控制器更新假計時器，並將假時間寫入 status bar"""
-        if self._eta_T_fake is None:
-            return
-
-        DT    = 0.1
-        error = self._eta_T_real - self._eta_T_fake   # 正 = 假時間超前需減速；負 = 落後需加速
-
-        p_term = self._eta_pid_Kp * error
-        self._eta_pid_integral += error * DT
-        self._eta_pid_integral  = max(-20.0, min(20.0, self._eta_pid_integral))
-        i_term = self._eta_pid_Ki * self._eta_pid_integral
-        d_term = self._eta_pid_Kd * (error - self._eta_pid_last_error) / DT
-        self._eta_pid_last_error = error
-
-        pid_output   = p_term + i_term + d_term
-        speed_factor = max(0.2, min(3.0, 1.0 - pid_output))   # 正 error → 減速
-        self._eta_T_fake = max(0.0, self._eta_T_fake - DT * speed_factor)
-
-        # Endgame 狀態機
-        if self._eta_T_fake <= 1.0 and self._eta_T_real > 10.0:
-            self._eta_T_fake = 1.0
-            eta_suffix = "(即將完成...)"
-        elif self._eta_T_fake <= 5.0 and self._eta_T_real > 30.0:
-            self._eta_T_fake = 5.0
-            eta_suffix = "(最後步驟...)"
-        else:
-            _ms_total = int(self._eta_T_fake * 1000)
-            _ms  = _ms_total % 1000
-            _sec = (_ms_total // 1000) % 60
-            _min = (_ms_total // 60000) % 60
-            _hr  = _ms_total // 3600000
-            eta_suffix = f"(剩餘時間: {_hr:02d}:{_min:02d}:{_sec:02d}:{_ms:03d})"
-
-        self.status.setText(f"{self._eta_stage_msg} {eta_suffix}")
-
-        # ── 用 PID 假時間反算假進度 %，推進進度條 ──
-        if self._eta_T_total and self._eta_T_total > 0:
-            _SCALE = 1000
-            p = 1.0 - (self._eta_T_fake / self._eta_T_total)
-            p = max(0.0, min(0.98, p))   # 上限 98%，真實完成事件才推到 100
-            self.progress.setValue(int(p * _SCALE))
+    def _on_eta_progress(self, current: int, total: int):
+        """接收 eta_ctrl.progress_updated 訊號，更新進度條 value（不動 range）。
+        range 已在 update_progress 進入 mode 2 時設為 (0, PROGRESS_SCALE)。
+        """
+        self.progress.setValue(current)
 
     def update_progress(self, current, total):
         self.progress.show()
 
-        if self._eta_mode == 2:
-            # ── 模式 2：只負責確保進度條可見與刻度正確，數值由 _on_eta_tick 每 100ms 寫入 ──
+        if self.eta_ctrl.mode == 2:
+            # ── 模式 2：只負責確保進度條可見與刻度正確，數值由 eta_ctrl tick 訊號寫入 ──
             if hasattr(self, '_progress_anim'):
                 self._progress_anim.stop()
-            if self.progress.maximum() != 1000:
-                self.progress.setRange(0, 1000)
+            if self.progress.maximum() != self.eta_ctrl.PROGRESS_SCALE:
+                self.progress.setRange(0, self.eta_ctrl.PROGRESS_SCALE)
                 self.progress.setValue(0)
         else:
             # ── 其他模式：直接設定，不做動畫 ──
@@ -6050,25 +5981,17 @@ class MainWindow(QMainWindow):
             print("[Indexer] No changes detected.")
 
     def on_indexing_finished(self):
-        # 停止 PID 假計時器並重置狀態
-        self._eta_timer.stop()
-        self._eta_T_fake         = None
-        self._eta_T_total        = None
-        self._eta_T_real         = 0.0
-        self._eta_pid_integral   = 0.0
-        self._eta_pid_last_error = 0.0
-
-        # 模式 1：完成時顯示總消耗時間
-        if self._eta_mode == 1:
-            total_sec = int(self._eta_total_elapsed())
+        # [Refactor Phase 2-B] 在 reset 前先取得 mode 1 所需的總耗時
+        # （reset 會清空累計，先讀再重置）
+        if self.eta_ctrl.mode == 1:
+            total_sec = int(self.eta_ctrl.total_elapsed())
             _m, _s = divmod(total_sec, 60)
-            self.status.setText(f"索引完成！總耗時：{_m:02d} 分 {_s:02d} 秒")
+            self.status.setText(f"索引完成!總耗時:{_m:02d} 分 {_s:02d} 秒")
         else:
             self.status.setText("Index Updated.")
 
-        # 重置計時器
-        self._eta_accumulated = 0.0
-        self._eta_paused      = False
+        # 一次性重置所有 ETA 狀態（timer 停止、T_fake/T_total/累計全部清空）
+        self.eta_ctrl.reset()
 
         # 停止平滑動畫，再帶到滿格後隱藏
         if hasattr(self, '_progress_anim'):
@@ -6097,7 +6020,7 @@ class MainWindow(QMainWindow):
             self.indexer_worker._paused = False
             self.indexer_worker._resume_event.set()
             self.taskbar_ctrl.set_state(TBPF_NORMAL)
-            self._eta_paused = False
+            self.eta_ctrl.set_paused_flag(False)
             win_titlebar.set_menu_state(win_titlebar.IDM_PAUSE_SCAN, False)
             print("[ScanCtrl] 掃描已繼續。")
         else:
@@ -6105,7 +6028,7 @@ class MainWindow(QMainWindow):
             self.indexer_worker._paused = True
             self.indexer_worker._resume_event.clear()
             self.taskbar_ctrl.set_state(TBPF_PAUSED)
-            self._eta_paused = True
+            self.eta_ctrl.set_paused_flag(True)
             win_titlebar.set_menu_state(win_titlebar.IDM_PAUSE_SCAN, True)
             print("[ScanCtrl] 掃描已暫停。")
 
@@ -6126,7 +6049,7 @@ class MainWindow(QMainWindow):
 
         self.indexer_worker._cancelled = True
         self.taskbar_ctrl.set_state(TBPF_NOPROGRESS)
-        self._eta_paused = False
+        self.eta_ctrl.set_paused_flag(False)
         win_titlebar.set_menu_state(win_titlebar.IDM_PAUSE_SCAN, False)
         print("[ScanCtrl] 取消掃描指令已發出，等待 Worker 結束目前批次…")
 
