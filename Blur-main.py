@@ -54,6 +54,7 @@ import faiss
 
 from core.search_orchestrator import SearchOrchestrator
 from core.image_action_manager import ImageActionManager
+from core.pin_manager import PinManager
 from utils.translator import Translator
 
 # [New] 引入設定管理器
@@ -1263,12 +1264,21 @@ class ImageSearchEngine:
         self.model = None
         self.preprocess = None
         self.tokenizer = None
-        
+
         # [修正] 預先定義 stored_embeddings
-        self.stored_embeddings = None 
+        self.stored_embeddings = None
         self.data_store = []
 
         self.shared_ocr_engines = {}
+
+        # [Refactor Phase 1-A] 釘選功能委派至 PinManager
+        # 採 callable 模式取得 data_store，避免 load_data_from_db 重新指派後
+        # PinManager 持有過期參照。get_db_conn 共享 WAL 連線設定。
+        self.pin_manager = PinManager(
+            db_path=self.config.db_path,
+            db_conn_factory=self.get_db_conn,
+            data_store_provider=lambda: self.data_store,
+        )
 
         # 1. 初始化資料庫
         print(f"[Engine] Initializing Database...")
@@ -1445,13 +1455,13 @@ class ImageSearchEngine:
                 self.data_store = temp_data_store
                 self.path_map = temp_path_map
                 self.build_faiss_index(temp_emb_matrix)
-                self._reload_pinned_cache()
+                self.pin_manager.reload()
                 print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
             else:
                 self.stored_embeddings = None
                 self.data_store = []
                 self.path_map = {}
-                self.pinned_paths = set()
+                self.pin_manager.pinned_paths = set()
                 
         except sqlite3.Error as e:
             print(f"[Error] Database query failed: {e}")
@@ -1459,76 +1469,29 @@ class ImageSearchEngine:
             if conn: conn.close()
 
     # ==========================================
-    # 釘選 (Pinning) 功能
+    # 釘選 (Pinning) 功能 — 已委派至 self.pin_manager (PinManager)
+    # 保留原方法簽章作為 Thin Delegation Layer，確保 MainWindow 與其他
+    # 呼叫端的程式碼完全向後相容（refactor Phase 1-A）。
     # ==========================================
     def _reload_pinned_cache(self):
-        """從 pinned 資料表重新載入所有釘選路徑到記憶體集合。"""
-        self.pinned_paths = set()
-        if not os.path.exists(self.config.db_path):
-            return
-        try:
-            conn = self.get_db_conn()
-            rows = conn.execute("SELECT file_path FROM pinned").fetchall()
-            conn.close()
-            for (fp,) in rows:
-                self.pinned_paths.add(os.path.normpath(fp))
-        except Exception as e:
-            print(f"[Engine] _reload_pinned_cache error: {e}")
+        """[委派] 從 pinned 資料表重新載入所有釘選路徑到記憶體集合。"""
+        self.pin_manager.reload()
 
     def toggle_pin(self, file_path: str) -> bool:
-        """切換圖片釘選狀態。回傳 True 表示現在已釘選，False 表示已取消。"""
-        if not hasattr(self, 'pinned_paths'):
-            self._reload_pinned_cache()
-        norm = os.path.normpath(file_path)
-        try:
-            conn = self.get_db_conn()
-            if norm in self.pinned_paths:
-                conn.execute("DELETE FROM pinned WHERE file_path = ?", (file_path,))
-                conn.commit()
-                conn.close()
-                self.pinned_paths.discard(norm)
-                return False
-            else:
-                conn.execute("INSERT OR IGNORE INTO pinned (file_path) VALUES (?)", (file_path,))
-                conn.commit()
-                conn.close()
-                self.pinned_paths.add(norm)
-                return True
-        except Exception as e:
-            print(f"[Engine] toggle_pin error: {e}")
-            return norm in self.pinned_paths
+        """[委派] 切換圖片釘選狀態。回傳 True 表示現在已釘選，False 表示已取消。"""
+        return self.pin_manager.toggle(file_path)
 
     def is_pinned(self, file_path: str) -> bool:
-        """回傳指定路徑是否處於釘選狀態。"""
-        if not hasattr(self, 'pinned_paths'):
-            self._reload_pinned_cache()
-        return os.path.normpath(file_path) in self.pinned_paths
+        """[委派] 回傳指定路徑是否處於釘選狀態。"""
+        return self.pin_manager.is_pinned(file_path)
 
     def _get_pinned_results(self) -> list:
-        """將所有釘選圖片轉換為搜尋結果格式（無視資料夾範圍）。"""
-        if not hasattr(self, 'pinned_paths') or not self.pinned_paths:
-            return []
-        results = []
-        for item in self.data_store:
-            if os.path.normpath(item["path"]) in self.pinned_paths:
-                results.append({
-                    "score": 0.0, "clip_score": 0.0, "ocr_bonus": 0.0, "name_bonus": 0.0,
-                    "is_ocr_match": False, "is_pinned": True,
-                    "path": item["path"], "filename": item["filename"],
-                    "mtime": item.get("mtime", 0),
-                    "width": item.get("width", 0),
-                    "height": item.get("height", 0),
-                })
-        return results
+        """[委派] 將所有釘選圖片轉換為搜尋結果格式（無視資料夾範圍）。"""
+        return self.pin_manager.get_pinned_results()
 
     def _merge_pinned(self, results: list) -> list:
-        """將釘選圖片置頂，與搜尋結果合併去重。"""
-        pinned = self._get_pinned_results()
-        if not pinned:
-            return results
-        pinned_paths_set = {r["path"] for r in pinned}
-        deduped = [r for r in results if r["path"] not in pinned_paths_set]
-        return pinned + deduped
+        """[委派] 將釘選圖片置頂，與搜尋結果合併去重。"""
+        return self.pin_manager.merge_pinned_to_top(results)
 
     def get_folder_stats(self):
         if not os.path.exists(self.config.db_path): return []
