@@ -60,6 +60,7 @@ from core.collection_manager import CollectionManager
 from core.search_history_manager import SearchHistoryManager
 from core.eta_progress_controller import EtaProgressController
 from core.indexing_lifecycle import IndexingLifecycleHandler
+from ui.gallery_view_controller import GalleryViewController
 from utils.translator import Translator
 
 # [New] 引入設定管理器
@@ -4944,10 +4945,9 @@ class MainWindow(QMainWindow):
         self.is_ocr_locked = False
         self._ocr_hold_active = False  # hold 模式：Shift 按著時為 True
 
-        self.last_search_results = [] # 儲存最近一次檢索回來的原始資料
-        self.last_search_stats = {}    # 漏斗各層過濾後的計數統計
-        self.is_in_search_mode = False # True = 搜尋結果模式；False = 資料夾瀏覽模式
-        self.active_time_range = None  # 目前選取的時間區間 (start_ts, end_ts)
+        # [Refactor Phase 2-D] 以下 4 個屬性已移至 GalleryViewController
+        # (last_search_results / last_search_stats / is_in_search_mode /
+        #  active_time_range) — 外部存取改走 self.gallery_ctrl.X
 
         self.current_image_search_path = None
         self.current_multi_vector_features = None  # (pos_features, neg_features)
@@ -5079,7 +5079,32 @@ class MainWindow(QMainWindow):
                 self.btn_forward.setEnabled(f),
             ),
         )
-        
+
+        # [Refactor Phase 2-D] 畫廊視圖控制器（過濾 / 排序 / 視圖模式 / 佈局）
+        # 初始尺寸由 main_window_ui.py 在 init_ui() 階段已賦值到 MainWindow，
+        # 透過建構子顯式傳入避免雙向耦合
+        self.gallery_ctrl = GalleryViewController(
+            list_view=self.list_view,
+            model=self.model,
+            delegate=self.delegate,
+            inspector_panel=self.inspector_panel,
+            config=self.config,
+            empty_state_overlay=self._empty_state_overlay,
+            nav=self.nav,
+            initial_view_mode=self.current_view_mode,
+            initial_card_size=self.current_card_size,
+            initial_thumb_size=self.current_thumb_size,
+            parent=self,
+        )
+        self.gallery_ctrl.status_text_changed.connect(self.status.setText)
+        self.gallery_ctrl.status_highlight_changed.connect(self._on_status_highlight)
+        self.gallery_ctrl.search_input_cleared.connect(lambda: self.input.setText(""))
+
+        # 還原儲存的視圖模式（從 main_window_ui.py 搬過來，因為現在需要 gallery_ctrl）
+        saved_view_mode = self.config.get("ui_state", {}).get("view_mode", "large")
+        if saved_view_mode != "large":
+            self.gallery_ctrl.change_view_mode(saved_view_mode)
+
         self.indexer_worker = IndexerWorker(self.config, self)  # 加入 self 參數
         self.indexer_worker.status_update.connect(self.update_status) # 稍微改一下 status label 的用法
         self.indexer_worker.progress_update.connect(self.update_progress)
@@ -5397,7 +5422,7 @@ class MainWindow(QMainWindow):
         if not self.engine: return
 
         self.current_folder_path = path
-        self.is_in_search_mode = False  # 資料夾瀏覽模式，停用診斷覆蓋層
+        self.gallery_ctrl.is_in_search_mode = False  # 資料夾瀏覽模式，停用診斷覆蓋層
         
         #  [修改] 根據側邊欄自動切換下拉選單預設值
         self.inspector_panel.combo_search_scope.blockSignals(True)
@@ -5531,8 +5556,8 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.Type.MouseButtonPress:
             # 狀態列點擊：顯示漏斗統計預覽 (搜尋模式，或有任何過濾器啟用時皆有效)
             _has_filters = self.inspector_panel.btn_clear_all.isVisible()
-            if obj is self.status and (getattr(self, 'is_in_search_mode', False) or _has_filters):
-                stats = getattr(self, 'last_search_stats', {})
+            if obj is self.status and (self.gallery_ctrl.is_in_search_mode or _has_filters):
+                stats = self.gallery_ctrl.last_search_stats
                 if stats:
                     fi = FunnelCardItem(
                         raw_count=stats.get('raw_count', 0),
@@ -5682,187 +5707,44 @@ class MainWindow(QMainWindow):
     
 
 
+    # ==========================================
+    # 畫廊視圖 — 已委派至 self.gallery_ctrl (GalleryViewController)
+    # 8 個原方法簽章保留作為 Thin Delegation Layer (Phase 2-D)
+    # ==========================================
     def apply_gallery_sort(self):
-        """對目前的 Gallery 圖片進行洗牌排序"""
-        # 如果目前畫面上沒圖片，就不需要排
-        #  [修正] 將 self.model.items 改為 self.model.all_items
-        if not hasattr(self, 'model') or not self.model.all_items:
-            return
+        """[委派] 對目前 Gallery 圖片進行排序（釘選永遠置頂）。"""
+        self.gallery_ctrl.apply_gallery_sort()
 
-        # 1. 取得使用者的設定狀態
-        sort_by = self.inspector_panel.combo_sort.currentText()
-        is_descending = (self.inspector_panel.btn_sort_order.text() == "↓")
-
-        import os
-
-        # 2. 根據不同的條件，定義 Python list sort 的 key 函數
-        # is_pinned 作為所有排序模式的第一優先鍵，確保釘選圖永遠置頂
-        if sort_by == "搜尋相關度":
-            key_func = lambda item: (item.is_pinned, item.is_ocr_match, item.score)
-        elif sort_by == "日期":
-            key_func = lambda item: (item.is_pinned, item.mtime)
-        elif sort_by == "名稱":
-            key_func = lambda item: (item.is_pinned, item.filename.lower())
-        elif sort_by == "類型":
-            key_func = lambda item: (item.is_pinned, os.path.splitext(item.filename)[1].lower())
-        elif sort_by == "大小":
-            def get_size(item):
-                try:
-                    return item.is_pinned, os.path.getsize(item.path)
-                except:
-                    return item.is_pinned, 0
-            key_func = get_size
-        else:
-            key_func = lambda item: (item.is_pinned, item.mtime)
-
-        # 3. 呼叫 Model 的排序方法
-        self.model.sort_items(key_func, reverse=is_descending)
-        
-        #  4. 防禦：還原滾輪期間不回頂，其他情況才自動滾回最上方
-        if not getattr(self, '_nav_restoring_scroll', False) and self.nav.pending_scroll_pos is None:
-            self.list_view.scrollToTop()
-
-    # ==========================================
-    #  [NEW] 核心過濾器與資料派發機制
-    # ==========================================
     def set_base_results(self, results):
-        """所有搜尋或載入資料的統一入口，保存最原始的結果，並自動套用目前的過濾器"""
-        self.last_search_results = results
-        self.apply_current_filters_and_show()
-        self._update_search_diagnostics()
+        """[委派] 所有搜尋或載入資料的統一入口，自動套用過濾器。"""
+        self.gallery_ctrl.set_base_results(results)
 
     def apply_current_filters_and_show(self, test_mode=False):
-        """套用時間等過濾器到 self.last_search_results，然後丟給 Model 顯示"""
-        filtered = self.last_search_results
-        raw_count = len(filtered)
-
-        # 1. 時間區間過濾
-        if self.active_time_range:
-            start_ts, end_ts = self.active_time_range
-            filtered = [item for item in filtered if start_ts <= item["mtime"] <= end_ts]
-        after_date = len(filtered)
-
-        # 2. 長寬比過濾 (容差 5%)
-        aspect_mode = self.inspector_panel.combo_aspect.currentText()
-        if aspect_mode != "不限比例":
-            temp_filtered = []
-            for item in filtered:
-                w, h = item.get("width", 0), item.get("height", 0)
-                if w > 0 and h > 0:
-                    ratio = w / h
-                    if aspect_mode == "橫圖 (Landscape)" and ratio > 1.05:
-                        temp_filtered.append(item)
-                    elif aspect_mode == "直圖 (Portrait)" and ratio < 0.95:
-                        temp_filtered.append(item)
-                    elif aspect_mode == "正方形 (Square)" and 0.95 <= ratio <= 1.05:
-                        temp_filtered.append(item)
-            filtered = temp_filtered
-        after_aspect = len(filtered)
-
-        # ==========================================
-        #  3. UI 顯示數量限制 (Limit Truncation)
-        # 這是實作「超額抓取 + 精準裁切」的最關鍵一步
-        # ==========================================
-        limit_text = self.inspector_panel.combo_limit_panel.currentText()
-        if limit_text != "All":
-            limit_val = int(limit_text)
-            filtered = filtered[:limit_val]
-        final_count = len(filtered)
-
-        # 更新漏斗統計 (僅在正式顯示模式下更新，測試模式不污染統計)
-        if not test_mode:
-            self.last_search_stats = {
-                "raw_count": raw_count,
-                "after_date": after_date,
-                "after_aspect": after_aspect,
-                "final_count": final_count,
-            }
-
-        if test_mode:
-            return final_count
-
-        # 4. 丟給畫面更新
-        self.model.set_search_results(filtered)
-
-        # 5. 如果有滾輪還原需求，先預先排程（在 sort 之前），避免被 scrollToTop 覆蓋
-        if self.nav.pending_scroll_pos is not None:
-            pos = self.nav.pending_scroll_pos
-            self.nav.pending_scroll_pos = None
-            self._nav_restoring_scroll = True
-            def _do_restore():
-                self.list_view.verticalScrollBar().setValue(pos)
-                self._nav_restoring_scroll = False
-            QTimer.singleShot(80, _do_restore)
-
-        # 6. 順便套用目前的排序設定
-        self.apply_gallery_sort()
-
-        return final_count
+        """[委派] 套用時間/長寬比/Limit 過濾器並顯示。"""
+        return self.gallery_ctrl.apply_current_filters_and_show(test_mode)
 
     def apply_time_filter_to_gallery(self, start_ts, end_ts):
-        """點擊 [套用結果]：測試過濾數量，若為 0 顯示防呆警告，否則套用"""
-        # 先暫存原本的時間區間 (為了防呆退回)
-        old_range = self.active_time_range
-        self.active_time_range = (start_ts, end_ts)
-        
-        # 進入 Test Mode 測試這刀切下去剩幾張圖
-        count = self.apply_current_filters_and_show(test_mode=True)
-        
-        if count > 0:
-            # 成功！正式更新畫面
-            self.apply_current_filters_and_show(test_mode=False)
-            self.inspector_panel.calendar_widget.set_status(f"✅ 已成功過濾，顯示 {count} 張圖片。", "success")
-            self.status.setText(f"Filtered: {count} images")
-        else:
-            # 防呆啟動：找不到圖，退回上一個狀態並報錯，不收合日曆
-            self.active_time_range = old_range
-            self.inspector_panel.calendar_widget.set_status(f"⚠️ 您的搜尋結果中，此時間段內沒有圖片。", "error")
+        """[委派] 套用日期區間過濾器（含防呆退回）。"""
+        self.gallery_ctrl.apply_time_filter_to_gallery(start_ts, end_ts)
 
     def clear_time_filter(self):
-        """點擊 [清除]：移除過濾器並還原畫廊"""
-        self.active_time_range = None
-        self.apply_current_filters_and_show()
-        self._update_search_diagnostics()
-        #  [修正] 將 len(self.model.items) 改為 len(self.model.all_items)
-        self.status.setText(f"Time filter cleared. Showing {len(self.model.all_items)} images")
+        """[委派] 清除日期區間過濾器。"""
+        self.gallery_ctrl.clear_time_filter()
 
     def _update_search_diagnostics(self):
-        """根據 last_search_stats 決定是否顯示空狀態覆蓋層與狀態列高亮"""
-        if not hasattr(self, '_empty_state_overlay'):
-            return
-
-        stats = getattr(self, 'last_search_stats', {})
-        final_count = stats.get('final_count', -1)
-
-        # 僅在搜尋模式且結果為 0 時啟動診斷
-        if not getattr(self, 'is_in_search_mode', False) or final_count != 0:
-            self._empty_state_overlay.hide()
-            self.update_status_highlight('none')
-            return
-
-        raw = stats.get('raw_count', 0)
-        after_date = stats.get('after_date', 0)
-        after_aspect = stats.get('after_aspect', 0)
-
-        if raw == 0:
-            icon = '🔍'
-            msg = "找不到符合關鍵字的圖片。\n請嘗試不同的關鍵字，或切換到「全域」搜尋。"
-        elif after_date == 0:
-            icon = '📅'
-            msg = "我們找到了相似圖片，但它們都不在您選擇的『日期區間』內。\n建議在右側面板放寬日期範圍！"
-        elif after_aspect == 0:
-            icon = '📐'
-            msg = "有符合日期的相似圖，但因為您限制了『比例』所以被隱藏了。\n建議在右側面板改為「不限比例」！"
-        else:
-            icon = '🔢'
-            msg = "顯示數量限制將所有結果截斷。\n請在右側面板提高 Limit 數量！"
-
-        self._empty_state_overlay.show_message(icon, msg)
-        # 若是過濾器造成的空結果，高亮狀態列吸引使用者注意右側面板
-        self.update_status_highlight('alert' if raw > 0 else 'none')
+        """[委派] 根據漏斗統計更新空狀態覆蓋層與狀態列高亮。"""
+        self.gallery_ctrl._update_search_diagnostics()
 
     def update_status_highlight(self, alert_level: str):
-        """設定狀態列邊框高亮，alert_level: 'alert' | 'none'"""
+        """[委派] 設定狀態列邊框高亮 ('alert' / 'none')。"""
+        self.gallery_ctrl.update_status_highlight(alert_level)
+
+    def search_by_time_range(self, start_ts, end_ts):
+        """[委派] 直接時間區間搜尋（忽略關鍵字，全域抓取）。"""
+        self.gallery_ctrl.search_by_time_range(start_ts, end_ts)
+
+    def _on_status_highlight(self, alert_level: str):
+        """接收 gallery_ctrl.status_highlight_changed → 設定狀態列 stylesheet。"""
         if alert_level == 'alert':
             self.status.setStyleSheet(
                 'border: 1px solid #F5A623; border-radius: 4px; '
@@ -5870,43 +5752,6 @@ class MainWindow(QMainWindow):
             )
         else:
             self.status.setStyleSheet('')
-
-
-    def search_by_time_range(self, start_ts, end_ts):
-        """點擊 [直接搜尋]：忽略關鍵字，直接全域抓出該時段的圖，並加入防呆檢查"""
-        if not self.engine: return
-        
-        # 1. 先暫存目前的畫廊狀態 (為了防呆退回)
-        old_results = self.last_search_results
-        old_range = self.active_time_range
-
-        # 2. 模擬全域搜尋狀態
-        self.last_search_results = self.engine.get_all_images_sorted()
-        self.active_time_range = (start_ts, end_ts)
-        
-        # 3. 進入 Test Mode 測試這刀切下去剩幾張圖 (會連同長寬比等設定一起算)
-        count = self.apply_current_filters_and_show(test_mode=True)
-        
-        if count > 0:
-            # 成功！正式更新畫面
-            self.is_in_search_mode = True  # 進入搜尋結果模式，啟用漏斗卡片
-            self.input.setText("") # 清空關鍵字搜尋框
-            self.apply_current_filters_and_show(test_mode=False)
-            
-            # 強制切換右側排序選單為「日期」，倒序 (↓) (阻擋訊號以避免重複洗牌)
-            self.inspector_panel.combo_sort.blockSignals(True)
-            self.inspector_panel.combo_sort.setCurrentText("日期")
-            self.inspector_panel.btn_sort_order.setText("↓")
-            self.inspector_panel.combo_sort.blockSignals(False)
-            self.apply_gallery_sort() # 正式套用排序
-            
-            self.inspector_panel.calendar_widget.set_status(f"✅ 搜尋完成，已列出 {count} 張圖片。", "success")
-            self.status.setText(f"Direct Time Search: {count} items")
-        else:
-            # 防呆啟動：資料庫中找不到圖，退回上一個狀態並報錯，不變動畫廊
-            self.last_search_results = old_results
-            self.active_time_range = old_range
-            self.inspector_panel.calendar_widget.set_status(f"⚠️ 資料庫中，此時間段內沒有符合的圖片。", "error")
 
     def on_ai_loaded(self):
         """當 AI 模型載入完成後被呼叫 (會在主執行緒執行)"""
@@ -6048,7 +5893,7 @@ class MainWindow(QMainWindow):
             )
         else:
             menu = self.img_actions.build_view_menu(
-                self, self.current_view_mode, on_change_mode=self.change_view_mode)
+                self, self.gallery_ctrl.current_view_mode, on_change_mode=self.change_view_mode)
         menu.exec(self.list_view.mapToGlobal(pos))
 
     def _on_toggle_pin(self, file_path: str):
@@ -6062,83 +5907,23 @@ class MainWindow(QMainWindow):
             self.model.all_items[row].is_pinned = new_state
             idx = self.model.index(row, 0)
             self.model.dataChanged.emit(idx, idx, [Qt.ItemDataRole.UserRole])
-        # 同步更新 last_search_results，維持後續過濾/合併操作的一致性
-        for r in self.last_search_results:
+        # 同步更新 gallery_ctrl.last_search_results，維持後續過濾/合併操作的一致性
+        for r in self.gallery_ctrl.last_search_results:
             if r.get('path') == file_path:
                 r['is_pinned'] = new_state
                 break
 
     def change_view_mode(self, mode):
-        if mode == self.current_view_mode: return
-        self.current_view_mode = mode
-        
-        if mode == "xl":
-            new_card_size = QSize(320, 380); thumb_h = 240
-        elif mode == "large":
-            new_card_size = QSize(240, 290); thumb_h = 160
-        elif mode == "medium":
-            new_card_size = QSize(180, 230); thumb_h = 120
-        else: return
-
-        self.current_card_size = new_card_size
-        self.current_thumb_size = QSize(new_card_size.width(), thumb_h)
-
-        self.delegate.set_view_params(new_card_size, thumb_h)
-        self.model.update_target_size(self.current_thumb_size)
-        self.model.layoutChanged.emit()
-        self.adjust_layout()
+        """[委派] 切換視圖模式 (xl / large / medium)。"""
+        # 防呆：早期 resizeEvent 可能在 gallery_ctrl 建立前觸發
+        if hasattr(self, 'gallery_ctrl'):
+            self.gallery_ctrl.change_view_mode(mode)
 
     def adjust_layout(self):
-        """
-        [回歸 test.py 邏輯] 全動態均分佈局
-        1. 放棄上方固定距離，讓 Top Margin 跟隨左右間距自動調整。
-        2. 算法：剩餘空間 / (列數 + 1)。
-        3. 效果：四周邊距 (上、下、左、右) 與圖片間距完全相等，視覺上最和諧。
-        """
-        # 防呆
-        if not hasattr(self, 'list_view') or self.list_view.width() <= 0: return
-
-        # 1. 取得 ListView 當前寬度
-        # 因為這是在 Sidebar 旁邊，這個寬度已經是扣除 Sidebar 後的剩餘寬度
-        raw_width = self.list_view.width()
-        
-        # 2. 扣除滾動條預留空間
-        # test.py 使用 26px，我們這裡照抄以確保行為一致
-        # (這包含滾動條本體 8px + 左右緩衝)
-        view_w = raw_width - 26
-        
-        # 取得目前卡片寬度
-        item_w = self.current_card_size.width()
-        
-        # 3. 計算列數 (Columns)
-        n_cols = view_w // item_w
-        if n_cols < 1: n_cols = 1
-        
-        # 4. 計算剩餘空間
-        total_card_w = n_cols * item_w
-        remaining_space = view_w - total_card_w
-        
-        # 5. 計算間距 (Space)
-        # 邏輯：均分給 (左邊界 + 所有圖片間隙 + 右邊界)
-        # 總縫隙數 = n_cols + 1
-        space = int(remaining_space // (n_cols + 1))
-        
-        # 安全限制：不小於 0
-        space = max(0, space)
-
-        # 6. 應用設定
-        # setSpacing: 圖片之間的距離
-        self.list_view.setSpacing(space)
-        
-        # setContentsMargins: 四周邊界
-        # 關鍵差異：這裡把 Top (第二個參數) 也設為 space，不再鎖死 20
-        self.list_view.setContentsMargins(space, space, space, space)
-
-        #  [新增終極鎖定] 直接告訴 ListView 每個網格的絕對大小
-        # 網格大小 = 卡片本身大小 + 右邊和下方的間距
-        grid_w = self.current_card_size.width() + space
-        grid_h = self.current_card_size.height() + space
-        self.list_view.setGridSize(QSize(grid_w, grid_h))
+        """[委派] 動態均分佈局計算（resize / sidebar 切換時觸發）。"""
+        # 防呆：早期 resizeEvent 可能在 gallery_ctrl 建立前觸發
+        if hasattr(self, 'gallery_ctrl'):
+            self.gallery_ctrl.adjust_layout()
 
     def on_item_clicked(self, index):
         if not index.isValid(): return
@@ -6210,6 +5995,8 @@ class MainWindow(QMainWindow):
             self.img_actions.engine = self.engine   # 將引擎注入 ActionManager
             # [Refactor Phase 2-C] 將引擎注入 IndexingLifecycleHandler
             self.indexing_handler.engine = self.engine
+            # [Refactor Phase 2-D] 將引擎注入 GalleryViewController（search_by_time_range 用）
+            self.gallery_ctrl.engine = self.engine
             
             #self.status.setText("Rendering Gallery...")
             # 呼叫排序方法
@@ -6276,7 +6063,7 @@ class MainWindow(QMainWindow):
         use_ocr = getattr(self, '_pending_use_ocr', self.btn_ocr_toggle.isChecked())
         self._pending_use_ocr = None  # 消費後清除
 
-        self.is_in_search_mode = True  # 進入搜尋結果模式
+        self.gallery_ctrl.is_in_search_mode = True  # 進入搜尋結果模式
         fetch_k, target_folder = self.search_orch.resolve_search_params(
             self.inspector_panel.combo_limit_panel.currentText(),
             self.inspector_panel.combo_search_scope.currentIndex(),
@@ -6301,7 +6088,7 @@ class MainWindow(QMainWindow):
         self.input.setText(f"[Image] {os.path.basename(image_path)}")
         self._prepare_search_ui("Searching by Image...", "Similar Images")
 
-        self.is_in_search_mode = True  # 進入搜尋結果模式
+        self.gallery_ctrl.is_in_search_mode = True  # 進入搜尋結果模式
         fetch_k, target_folder = self.search_orch.resolve_search_params(
             self.inspector_panel.combo_limit_panel.currentText(),
             self.inspector_panel.combo_search_scope.currentIndex(),
@@ -6323,7 +6110,7 @@ class MainWindow(QMainWindow):
         self.input.setText(f"[Multi-Vector] Pos:{len(pos_features)} Neg:{len(neg_features)}")
         self._prepare_search_ui("Calculating Vector Math...", "Vector Arithmetic Results")
 
-        self.is_in_search_mode = True  # 進入搜尋結果模式
+        self.gallery_ctrl.is_in_search_mode = True  # 進入搜尋結果模式
         fetch_k, target_folder = self.search_orch.resolve_search_params(
             self.inspector_panel.combo_limit_panel.currentText(),
             self.inspector_panel.combo_search_scope.currentIndex(),
@@ -6380,7 +6167,7 @@ class MainWindow(QMainWindow):
         ui_state["sidebar_expanded"] = self.sidebar.is_expanded
         ui_state["folders_accordion_open"] = self.sidebar._folders_accordion_open
         ui_state["collections_accordion_open"] = self.sidebar._collections_accordion_open
-        ui_state["view_mode"] = getattr(self, 'current_view_mode', 'large')
+        ui_state["view_mode"] = getattr(self.gallery_ctrl, 'current_view_mode', 'large')
         ui_state["inspector_visible"] = self.inspector_panel.isVisible()
 
         # Inspector 寬度：只在 Inspector 可見時儲存 splitter 比例
@@ -6533,7 +6320,7 @@ class SettingsDialog(QDialog):
             "reload_index":       mw.trigger_background_db_reload,
             "refresh_sidebar":    mw.refresh_sidebar,
             "on_refresh_clicked": mw.on_refresh_clicked,
-            "current_view_mode":  mw.current_view_mode,
+            "current_view_mode":  mw.gallery_ctrl.current_view_mode,
             "ocr_worker_class":   OCRImportWorker,
             "apply_eta_mode":     mw.apply_eta_mode,
         }

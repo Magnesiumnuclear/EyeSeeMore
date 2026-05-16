@@ -261,9 +261,8 @@ class Ui_MainWindow:
         # ==========================================
         ui_state = MainWindow.config.get("ui_state", {})
 
-        saved_mode = ui_state.get("view_mode", "large")
-        if saved_mode != "large":
-            MainWindow.change_view_mode(saved_mode)
+        # [Refactor Phase 2-D] view_mode 還原已移至 MainWindow.__init__ 內
+        # （gallery_ctrl 建立完成之後才能呼叫 change_view_mode）
 
         saved_expanded = ui_state.get("sidebar_expanded", True)
         if not saved_expanded:
