@@ -61,6 +61,7 @@ from core.search_history_manager import SearchHistoryManager
 from core.eta_progress_controller import EtaProgressController
 from core.indexing_lifecycle import IndexingLifecycleHandler
 from ui.gallery_view_controller import GalleryViewController
+from ui.window_state_manager import WindowStateManager
 from utils.translator import Translator
 
 # [New] 引入設定管理器
@@ -4997,30 +4998,19 @@ class MainWindow(QMainWindow):
         # 讓狀態列 QLabel 支援 PointingHand 游標 (實際點擊邏輯在 eventFilter)
         self.status.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        # --- 釘選按鈕初始化 ---
-        always_on_top = self.config.get("ui_state", {}).get("always_on_top", False)
-        if always_on_top:
-            # 此時 Hook 尚未安裝，用 setWindowFlag 不影響 HWND 的 WndProc 狀態。
-            # Hook 安裝後（QTimer 0ms）會在新 HWND 上補裝，維持正常。
-            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-            self.show()
-            self.btn_pin.blockSignals(True)
-            self.btn_pin.setChecked(True)
-            self.btn_pin.setToolTip("取消釘選 (Ctrl+T)")
-            self.btn_pin.blockSignals(False)
-        self.btn_pin.toggled.connect(self._on_pin_toggled)
+        # [Refactor Phase 2-E] 視窗狀態管理委派至 WindowStateManager
+        # 按鈕訊號連接、初始狀態還原、Win32 TOPMOST 切換、NC hit-test 通知
+        # 一律由 manager 處理；MainWindow 僅保留 Ctrl+T 全域捷徑
+        self.window_state_mgr = WindowStateManager(
+            self, self.config,
+            btn_pin=self.btn_pin,
+            btn_max=self.btn_win_max,
+            btn_min=self.btn_win_min,
+            btn_close=self.btn_win_close,
+        )
         QShortcut(QKeySequence("Ctrl+T"), self).activated.connect(
             lambda: self.btn_pin.setChecked(not self.btn_pin.isChecked())
         )
-
-        # --- 最大化 / 還原按鈕 ---
-        self.btn_win_max.toggled.connect(self._on_win_max_toggled)
-        if self.isMaximized():
-            self.btn_win_max.blockSignals(True)
-            self.btn_win_max.setChecked(True)
-            self.btn_win_max.setText("❐")
-            self.btn_win_max.setToolTip("還原")
-            self.btn_win_max.blockSignals(False)
 
         # --- 安裝 Win32 WndProc 掛鉤（補回邊框縮放與 DWM 陰影）---
         from core import win_titlebar
@@ -5033,9 +5023,11 @@ class MainWindow(QMainWindow):
 
         # --- NC hover filter（WinMaxBtn hover 補丁）---
         # DLL 回傳 HTMAXBUTTON 時 Windows 接管 NC 滑鼠事件，Qt :hover 不觸發。
-        # 改用 WM_APP+1 訊息橋接：DLL → WinMaxHoverFilter → _on_max_btn_hover。
-        self._max_hover_filter = WinMaxHoverFilter(self._on_max_btn_hover)
+        # 改用 WM_APP+1 訊息橋接：DLL → WinMaxHoverFilter → manager._on_max_btn_hover
+        self._max_hover_filter = WinMaxHoverFilter(self.window_state_mgr._on_max_btn_hover)
         QApplication.instance().installNativeEventFilter(self._max_hover_filter)
+        # 交由 manager 持有參照，uninstall 時統一回收
+        self.window_state_mgr.attach_native_filter(self._max_hover_filter)
 
         # --- 掃描控制 Filter（WM_APP+2 / WM_APP+3 / WM_SYSCOMMAND IDM）---
         # ① DLL 已安裝：C++ HookWndProc 攔截 WM_SYSCOMMAND，PostMessage WM_APP+2/3
@@ -5150,23 +5142,9 @@ class MainWindow(QMainWindow):
         # 啟動背景載入 (這裡才會去建立 ImageSearchEngine)
         threading.Thread(target=self.load_engine, daemon=True).start()
 
-        #  原生視窗記憶：精準還原大小、座標與最大化狀態
-        from PyQt6.QtCore import QByteArray
+        # [Refactor Phase 2-E] 原生視窗記憶委派至 WindowStateManager
+        self.window_state_mgr.restore_geometry()
         ui_state = self.config.get("ui_state", {})
-
-        # 先設定合理預設尺寸，確保 normalGeometry 在 restoreGeometry() 前不為零值
-        # 這樣即使還原為最大化狀態，unmaximize 時也能正確縮回
-        self.resize(1280, 900)
-
-        if "geometry" in ui_state and "window_state" in ui_state:
-            try:
-                ok = self.restoreGeometry(QByteArray.fromHex(ui_state["geometry"].encode('ascii')))
-                if ok:
-                    self.restoreState(QByteArray.fromHex(ui_state["window_state"].encode('ascii')))
-                else:
-                    print("[UI] restoreGeometry 回傳 False，使用預設大小")
-            except Exception as e:
-                print(f"[UI] 視窗狀態還原失敗: {e}")
 
         # Splitter 比例還原：在 restoreGeometry() 確立視窗寬度後執行，
         # 且只有 Inspector 可見時才有意義
@@ -5612,69 +5590,25 @@ class MainWindow(QMainWindow):
         # 開關面板會改變畫廊寬度，必須通知 QListView 重新計算網格排版
         QTimer.singleShot(0, self.adjust_layout)
 
+    # ==========================================
+    # 視窗狀態 — 已委派至 self.window_state_mgr (WindowStateManager)
+    # 4 個原方法簽章保留作為 Thin Delegation Layer (Phase 2-E)
+    # ==========================================
     def _on_pin_toggled(self, checked: bool):
-        """切換視窗置頂狀態（釘選功能），並持久化設定。
-
-        使用 Win32 SetWindowPos 直接切換 TOPMOST，避免 setWindowFlag 重建 HWND
-        導致 WndProc Hook 和 WS_THICKFRAME 失效。
-        """
-        hwnd = int(self.winId())
-        HWND_TOPMOST    = ctypes.c_void_p(-1)
-        HWND_NOTOPMOST  = ctypes.c_void_p(-2)
-        SWP_NOMOVE_NOSIZE = 0x0003  # SWP_NOMOVE | SWP_NOSIZE
-        SWP_FLAGS = SWP_NOMOVE_NOSIZE | 0x0010  # | SWP_NOACTIVATE
-        ctypes.windll.user32.SetWindowPos(
-            hwnd,
-            HWND_TOPMOST if checked else HWND_NOTOPMOST,
-            0, 0, 0, 0,
-            SWP_FLAGS,
-        )
-
-        self.btn_pin.setToolTip("取消釘選 (Ctrl+T)" if checked else "釘選視窗至最上層 (Ctrl+T)")
-
-        ui_state = self.config.get("ui_state", {})
-        ui_state["always_on_top"] = checked
-        self.config.set("ui_state", ui_state)
+        """[委派] 切換視窗置頂狀態（Win32 SetWindowPos TOPMOST）。"""
+        self.window_state_mgr._on_pin_toggled(checked)
 
     def _on_win_max_toggled(self, checked: bool):
-        """最大化 / 還原視窗，並同步按鈕圖示。"""
-        if checked:
-            self.showMaximized()
-            self.btn_win_max.setText("❐")
-            self.btn_win_max.setToolTip("還原")
-        else:
-            self.showNormal()
-            self.btn_win_max.setText("□")
-            self.btn_win_max.setToolTip("最大化")
+        """[委派] 最大化 / 還原視窗。"""
+        self.window_state_mgr._on_win_max_toggled(checked)
 
     def _on_max_btn_hover(self, hovered: bool):
-        """DLL WM_APP+1 通知 → 刷新 WinMaxBtn NC hover 外觀。"""
-        self.btn_win_max.setProperty("nc_hover", hovered)
-        self.btn_win_max.style().unpolish(self.btn_win_max)
-        self.btn_win_max.style().polish(self.btn_win_max)
+        """[委派] 刷新 WinMaxBtn NC hover 外觀（DLL WM_APP+1 → 此處）。"""
+        self.window_state_mgr._on_max_btn_hover(hovered)
 
     def _update_button_rects(self):
-        """將四個按鈕的座標（相對 MainWindow 客戶端，實體像素）通知 WndProc 掛鉤。"""
-        from core import win_titlebar
-        if not win_titlebar.is_installed():
-            return
-
-        # WM_NCHITTEST 的座標為實體像素，必須乘以 DPR 才能對應 Qt 邏輯像素座標
-        dpr = self.devicePixelRatioF()
-
-        def _to_client(btn):
-            pos = btn.mapTo(self, btn.rect().topLeft())
-            return (
-                int(pos.x() * dpr), int(pos.y() * dpr),
-                int(btn.width() * dpr), int(btn.height() * dpr),
-            )
-
-        win_titlebar.update_button_rects(
-            min_rect=_to_client(self.btn_win_min),
-            max_rect=_to_client(self.btn_win_max),
-            close_rect=_to_client(self.btn_win_close),
-            pin_rect=_to_client(self.btn_pin),
-        )
+        """[委派] 通知 WndProc Hook 四個視窗控制按鈕的命中座標。"""
+        self.window_state_mgr.update_button_rects()
 
     def on_selection_changed(self, current, previous):
         # 1. 更新右側面板資訊 (如果面板存在且有選取項目)
@@ -6141,15 +6075,9 @@ class MainWindow(QMainWindow):
         # 同步 WndProc 按鈕感應座標
         QTimer.singleShot(0, self._update_button_rects)
 
-        # 最大化 / 還原時同步按鈕圖示
-        if hasattr(self, 'btn_win_max'):
-            is_max = self.isMaximized()
-            if self.btn_win_max.isChecked() != is_max:
-                self.btn_win_max.blockSignals(True)
-                self.btn_win_max.setChecked(is_max)
-                self.btn_win_max.setText("❐" if is_max else "□")
-                self.btn_win_max.setToolTip("還原" if is_max else "最大化")
-                self.btn_win_max.blockSignals(False)
+        # [Refactor Phase 2-E] 最大化 / 還原時同步按鈕圖示，委派至 manager
+        if hasattr(self, 'window_state_mgr'):
+            self.window_state_mgr.sync_max_button_state()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -6159,9 +6087,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         ui_state = self.config.get("ui_state", {})
 
-        # 視窗幾何（含最大化 + normalGeometry）統一交由 saveGeometry() 處理
-        ui_state["geometry"] = self.saveGeometry().toHex().data().decode('ascii')
-        ui_state["window_state"] = self.saveState().toHex().data().decode('ascii')
+        # [Refactor Phase 2-E] 視窗幾何寫入委派至 WindowStateManager
+        # (in-place 修改 ui_state，包含 geometry / window_state 與舊欄位清理)
+        self.window_state_mgr.save_geometry_into(ui_state)
 
         # 其餘 UI 狀態
         ui_state["sidebar_expanded"] = self.sidebar.is_expanded
@@ -6177,20 +6105,11 @@ class MainWindow(QMainWindow):
             if len(_sizes) >= 2 and _sizes[1] > 0:
                 ui_state["splitter_sizes"] = list(_sizes)
 
-        # 清除已被 saveGeometry() 取代的舊欄位，避免 config.json 殘留臟資料
-        for old_key in ["window_width", "window_height", "is_maximized"]:
-            ui_state.pop(old_key, None)
-
         # 一次性原子寫入，避免兩次 set 之間的狀態不一致
         self.config.set("ui_state", ui_state)
 
-        # 移除 NC hover filter
-        if hasattr(self, '_max_hover_filter'):
-            QApplication.instance().removeNativeEventFilter(self._max_hover_filter)
-
-        # 移除 WndProc 掛鉤，還原系統視窗程序
-        from core import win_titlebar
-        win_titlebar.uninstall(int(self.winId()))
+        # [Refactor Phase 2-E] Win32 資源回收（NC filter + WndProc Hook）委派至 manager
+        self.window_state_mgr.uninstall()
 
         super().closeEvent(event)
 
