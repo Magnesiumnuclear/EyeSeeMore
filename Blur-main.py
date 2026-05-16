@@ -57,6 +57,7 @@ from core.image_action_manager import ImageActionManager
 from core.pin_manager import PinManager
 from core.ocr_repository import OcrRepository
 from core.collection_manager import CollectionManager
+from core.search_history_manager import SearchHistoryManager
 from utils.translator import Translator
 
 # [New] 引入設定管理器
@@ -4933,7 +4934,8 @@ class MainWindow(QMainWindow):
 
         self.engine = None
 
-        self.search_history = [] 
+        # [Refactor Phase 2-A] search_history 由 SearchHistoryManager 管理
+        # 不再於 MainWindow 持有 list；history_mgr 於下方建立後自動載入
         self.current_selected_path = None
 
         self.current_folder_path = self.config.get("ui_state", {}).get("default_startup_folder", "ALL")
@@ -4951,6 +4953,10 @@ class MainWindow(QMainWindow):
         
         # 設定歷史紀錄檔路徑
         self.history_file_path = os.path.join(self.config.app_root, "search_history.json")
+
+        # [Refactor Phase 2-A] 歷史紀錄交由 SearchHistoryManager 處理
+        # 建構時自動從磁碟載入，後續所有 add/delete 都會自動寫回
+        self.history_mgr = SearchHistoryManager(self.history_file_path)
 
         self.taskbar_ctrl = TaskbarController(self.winId())
 
@@ -4979,7 +4985,8 @@ class MainWindow(QMainWindow):
         self._eta_timer.setInterval(100)
         self._eta_timer.timeout.connect(self._on_eta_tick)
 
-        self.load_history()
+        # [Refactor Phase 2-A] history_mgr 已於建構時自動載入，
+        # load_history() 仍保留為公開介面但不再於初始化時呼叫
         self.init_ui()
 
         # 空狀態診斷覆蓋層 (疊在 list_view 上方)
@@ -5106,7 +5113,7 @@ class MainWindow(QMainWindow):
         # [Signal Relay] SearchCapsule 訊號接線
         self.search_capsule.searchRequested.connect(self._on_search_requested)
         self.search_capsule.errorOccurred.connect(self.status.setText)
-        self.search_capsule.set_history(self.search_history)
+        self.search_capsule.set_history(self.history_mgr.get_all())
 
         QApplication.instance().installEventFilter(self)
         
@@ -6279,33 +6286,28 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(duration_ms, _restore)
 
+    # ==========================================
+    # 搜尋歷史紀錄 — 已委派至 self.history_mgr (SearchHistoryManager)
+    # 純資料邏輯交由 manager，MainWindow 僅保留 UI 同步（Phase 2-A）。
+    # ==========================================
     def load_history(self):
-        # [修改 3] 使用 self.history_file_path
-        if os.path.exists(self.history_file_path):
-            try:
-                with open(self.history_file_path, 'r', encoding='utf-8') as f: 
-                    self.search_history = json.load(f)
-            except: self.search_history = []
+        """[委派] 從 search_history.json 重新載入歷史紀錄到記憶體。"""
+        self.history_mgr.load()
 
     def save_history_to_file(self):
-        # [修改 4] 使用 self.history_file_path
-        try:
-            with open(self.history_file_path, 'w', encoding='utf-8') as f: 
-                json.dump(self.search_history, f, ensure_ascii=False)
-        except: pass
+        """[委派] 將目前的歷史紀錄寫回 search_history.json。"""
+        self.history_mgr.save()
 
     def add_to_history(self, query):
-        if not query: return
-        if query in self.search_history: self.search_history.remove(query)
-        self.search_history.insert(0, query); 
-        if len(self.search_history) > 10: self.search_history = self.search_history[:10]
-        self.save_history_to_file()
+        """新增查詢至歷史紀錄並同步更新 SearchCapsule UI。"""
+        history = self.history_mgr.add(query)
         # 同步更新 SearchCapsule 內部歷史快取
-        self.search_capsule.set_history(self.search_history)
+        self.search_capsule.set_history(history)
 
     def delete_history_item(self, text):
-        if text in self.search_history: self.search_history.remove(text); self.save_history_to_file()
-        self.search_capsule.set_history(self.search_history)
+        """從歷史紀錄中刪除指定項目並同步刷新 SearchCapsule UI 與彈窗。"""
+        history = self.history_mgr.delete(text)
+        self.search_capsule.set_history(history)
         self.search_capsule.show_history_popup()
     
     def trigger_history_search(self, text): 

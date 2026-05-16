@@ -28,8 +28,8 @@ class Ui_MainWindow:
     
     【外部依賴清單】
     呼叫 setup_ui() 之前，MainWindow 實例上必須存在以下屬性：
-      - self.config          : ConfigManager 實例 (用於讀取 ui_state)
-      - self.search_history  : list (搜尋歷史紀錄)
+      - self.config       : ConfigManager 實例 (用於讀取 ui_state)
+      - self.history_mgr  : SearchHistoryManager 實例 (用於初始化 SearchCapsule)
     
     setup_ui() 執行後，會在 MainWindow 上掛載所有 UI 元件屬性 (如 self.input, self.list_view 等)。
     信號連接 (.connect) 保留在此處，但 slot 函式的具體實作留在 MainWindow 中。
