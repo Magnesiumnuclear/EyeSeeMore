@@ -4,7 +4,7 @@
 
 ---
 
-## 📊 Phase 1 + 2 + 3-A 重構戰績
+## 📊 Phase 1 + 2 + 3-A + 3-B 重構戰績
 
 ### 代碼瘦身
 
@@ -31,7 +31,8 @@ Phase 2 (UI 反饋與控制)
 └── 2-E: window_state_manager.py      ← 視窗狀態 + Win32
 
 Phase 3 (非阻塞模型加載 & 解耦)
-└── 3-A: model_provider.py       ← 模型加載與共享【新完成】
+└── 3-A: model_provider.py       ← 模型加載與共享【已完成】
+└── 3-B: _on_models_loaded 優化  ← 畫廊圖片提早顯示【已完成】
 ```
 
 ### 架構改進
@@ -42,10 +43,44 @@ Phase 3 (非阻塞模型加載 & 解耦)
 - ✅ **依賴注入三策略** — 避免全域變數、支援測試
 - ✅ **跨執行緒雙緩衝** — DB 重載不卡主執行緒
 - ✅ **非阻塞模型加載** — IndexerWorker 不再等待 AI 模型【Phase 3-A 新增】
+- ✅ **畫廊提早渲染** — 圖片在 t~100ms 即顯示，不等模型加載完成【Phase 3-B 新增】
 
 ---
 
-## 🔧 Phase 3-A 改進詳情（【新完成】）
+## 🔧 Phase 3-B 改進詳情（【已完成】）
+
+### 問題
+
+- **現象**：Phase 3-A 完成後，畫廊圖片仍然要等模型加載（t~8000ms）才出現
+- **根本原因**：`_on_models_loaded()` 調用了 `_apply_folder_filter(current_folder_path)`，觸發 `Model.beginResetModel()` 重置，覆蓋了 `random_data_ready` 在 t~100ms 的初始渲染
+
+### 解決方案
+
+- 📝 修改 `_on_models_loaded()` — 只在啟動資料夾為指定資料夾（非 "ALL"）時才套用過濾
+- ✅ "ALL" 模式：圖片由 `random_data_ready` 訊號在 t~100ms 顯示
+- ✅ 指定資料夾模式：仍在模型加載後套用（維持原有功能）
+
+### 時間線（改進後）
+
+```
+t=0ms     : MainWindow.__init__
+t+150ms   : load_engine() 後台執行緒啟動
+t+100ms   : ✅ random_data_ready 發射 → 圖片立刻填入 Model
+            ✅ 畫廊圖片在 UI 上顯示（不等模型！）
+t+500ms   : ⚙️ model_provider 在背景加載 ONNX 模型
+t+8000ms  : ✅ models_loaded 發射 → _on_models_loaded()
+            ✅ 只刷新 sidebar/collections，不重置畫廊
+```
+
+### 實裝清單
+
+| 檔案 | 改動 |
+|------|------|
+| `Blur-main.py` | `_on_models_loaded()` 加入 `if current_folder_path != "ALL"` 判斷 |
+
+---
+
+## 🔧 Phase 3-A 改進詳情（【已完成】）
 
 ### 問題
 - **舊架構**：IndexerWorker 卡在 `while not engine.is_ready: sleep(1)` 忙輪詢
@@ -292,4 +327,4 @@ mypy --strict core/ ui/
 
 ---
 
-*最後更新時間：Phase 2 完工後（commit `9f84392`）。後續若有新加模組或架構調整，請同步更新本文件。*
+*最後更新時間：Phase 3-B 完工後（commit `9a5f18c`）。後續若有新加模組或架構調整，請同步更新本文件。*

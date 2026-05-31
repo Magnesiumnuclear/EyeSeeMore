@@ -423,15 +423,15 @@ self.engine.model_provider.models_load_failed.connect(self._on_models_load_faile
 **鏈式效果：**
 
 ```
-時間線（改進後）：
+時間線（Phase 3-A + 3-B 改進後）：
 t=0ms     : MainWindow.__init__
 t+150ms   : load_engine() 後台執行緒啟動
-t+200ms   : ImageSearchEngine 建立 model_provider
-t+300ms   : ✅ 圖片清單載入 → UI 顯示瀑布流
-            ✅ IndexerWorker 啟動 → 掃描新檔案(不再被阻擋)
+t+100ms   : ✅ random_data_ready 發射 → 圖片立刻填入 Model
+            ✅ 畫廊圖片在 UI 顯示（不等模型！）[Phase 3-B]
+            ✅ IndexerWorker 啟動 → 掃描新檔案（不再被阻擋）[Phase 3-A]
 t+500ms   : ⚙️ model_provider 在背景加載 ONNX 模型
-t+3000ms+ : 模型加載完成
 t+8000ms  : ✅ models_loaded 發射 → _on_models_loaded()
+            ✅ 只刷新 sidebar/collections（不重置畫廊）[Phase 3-B]
             ✅ IndexerWorker._run_ai_processing 開始執行
 ```
 
@@ -474,6 +474,45 @@ MainWindow
   └─ indexer_worker = IndexerWorker
       └─ 改為：不等待 engine.is_ready，改為 Lazy Load 需要的模型
 ```
+
+---
+
+## Phase 3-B — 畫廊提早渲染修復
+
+**問題：** Phase 3-A 完成後，畫廊圖片仍須等待模型加載（t~8000ms）才出現
+
+**根本原因追蹤：**
+
+```
+random_data_ready.emit(all_images)   ← t~100ms，圖片填入 Model ✅
+  ↓
+set_base_results() → model.set_search_results()
+  ↓ 圖片應顯示於 UI
+
+...（模型加載中）...
+
+_on_models_loaded()                  ← t~8000ms
+  └─ _apply_folder_filter("ALL")
+       └─ engine.get_all_images_sorted()
+           └─ set_base_results()
+               └─ model.beginResetModel()  ← 重置 Model，覆蓋初始渲染！
+```
+
+**修復（Blur-main.py `_on_models_loaded`）：**
+
+```python
+# 只在非 "ALL" 的啟動資料夾時才需要套用資料夾過濾
+# "ALL" 的情況已由 random_data_ready 訊號（t~100ms）的 set_base_results() 處理
+if self.current_folder_path and self.current_folder_path != "ALL":
+    self._apply_folder_filter(self.current_folder_path)
+```
+
+**效果：**
+
+| 情況 | Phase 3-A | Phase 3-A + 3-B |
+|------|-----------|-----------------|
+| 啟動資料夾 = ALL | 圖片 t~8000ms 出現 | 圖片 **t~100ms** 出現 ✅ |
+| 啟動資料夾 = 指定資料夾 | 圖片 t~8000ms 出現 | 圖片 t~8000ms 出現（維持功能正確） |
 
 ---
 
