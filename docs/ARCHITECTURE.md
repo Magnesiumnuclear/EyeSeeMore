@@ -20,7 +20,8 @@ rag-image/
 │   ├── collection_manager.py ← 虛擬資料夾管理 (Phase 1-C)
 │   ├── search_history_manager.py ← 搜尋歷史 (Phase 2-A)
 │   ├── eta_progress_controller.py ← ETA + PID (Phase 2-B)
-│   └── indexing_lifecycle.py ← 掃描生命週期 (Phase 2-C)
+│   ├── indexing_lifecycle.py ← 掃描生命週期 (Phase 2-C)
+│   └── model_provider.py      ← 模型加載與共享 (Phase 3-A)
 │
 ├── ui/                       ← 視圖控制器與 widget 層
 │   ├── main_window_ui.py     ← MainWindow 佈局

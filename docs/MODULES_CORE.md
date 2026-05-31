@@ -22,6 +22,9 @@ core/
 │  ├─ eta_progress_controller.py   ← ETA 進度 + PID
 │  └─ indexing_lifecycle.py        ← 索引掃描生命週期
 │
+├─ Phase 3 − 非阻塞模型加載 (3-A)
+│  └─ model_provider.py            ← 模型加載與共享（解耦 IndexerWorker）
+│
 └─ 其他
    └─ image_action_manager.py ← 圖片右鍵選單
 ```
@@ -374,17 +377,102 @@ self.pin_mgr = PinManager(data_store=engine.data_store)
 class EtaProgressController:
     def update_progress(self, ...):
         self.progress_bar.setValue(...)  # ❌ core/ 不應持有 widget
+---
+
+## Phase 3 — 非阻塞模型加載
+
+### `model_provider.py` (Phase 3-A)
+
+**職責：** 獨立管理 AI 模型的加載與共享，解耦 IndexerWorker 與模型依賴
+
+**問題背景：**
+- 舊架構：IndexerWorker 卡在 `while not engine.is_ready: sleep(1)` 阻塞迴圈
+- 結果：新檔案索引被延遲，用戶感受冷啟動慢
+
+**解決方案：** ModelProvider（QObject）
+- 在**背景執行緒**非阻塞加載 ONNX CLIP 模型 + Tokenizer
+- 提供 `models_loaded` / `models_load_failed` 訊號
+- 支援 OCR 引擎的 Lazy Load（首次使用時才加載）
+
+**核心API：**
+
+| 方法/屬性 | 簽名 | 備註 |
+|----------|------|------|
+| `load_models_async()` | 無返回值 | 立刻啟動背景加載，不阻塞 |
+| `is_ready` | bool | 檢查模型是否加載完成 |
+| `is_loading` | bool | 檢查是否正在加載中 |
+| `models_loaded` | Signal | 加載成功發射 |
+| `models_load_failed` | Signal(str) | 加載失敗發射錯誤訊息 |
+| `get_ocr_engine(lang)` | ONNXOCR \| None | Lazy Load OCR 引擎 |
+| `wait_until_ready(timeout)` | bool | (可選) 阻塞式等待 |
+
+**使用範例：**
+
+```python
+# ImageSearchEngine.__init__
+self.model_provider = ModelProvider(self.config, parent=None)
+
+# 立刻啟動非阻塞加載
+self.engine.load_ai_models()  # ← 改為: model_provider.load_models_async()
+
+# MainWindow 監聽訊號
+self.engine.model_provider.models_loaded.connect(self._on_models_loaded)
+self.engine.model_provider.models_load_failed.connect(self._on_models_load_failed)
 ```
 
-✅ **正確做法：** 發訊號
-```python
-# 正確
-class EtaProgressController(QObject):
-    progress_updated = pyqtSignal(int)
+**鏈式效果：**
 
-    def update_progress(self, val):
-        self.progress_updated.emit(val)
-        # MainWindow 連接：self.progress_bar.setValue
+```
+時間線（改進後）：
+t=0ms     : MainWindow.__init__
+t+150ms   : load_engine() 後台執行緒啟動
+t+200ms   : ImageSearchEngine 建立 model_provider
+t+300ms   : ✅ 圖片清單載入 → UI 顯示瀑布流
+            ✅ IndexerWorker 啟動 → 掃描新檔案(不再被阻擋)
+t+500ms   : ⚙️ model_provider 在背景加載 ONNX 模型
+t+3000ms+ : 模型加載完成
+t+8000ms  : ✅ models_loaded 發射 → _on_models_loaded()
+            ✅ IndexerWorker._run_ai_processing 開始執行
+```
+
+**Lazy Load OCR 機制：**
+
+```python
+# indexer.py: run_ai_processing()
+def ensure_ocr_engine(lang: str):
+    """需要時才加載"""
+    if lang not in ocr_engines:
+        ocr_engines[lang] = ONNXOCR(lang=lang, use_gpu=...)
+    return lang in ocr_engines
+
+# 迴圈中使用
+for target_lang in required_langs:
+    if ensure_ocr_engine(target_lang):
+        ocr_result = ocr_engines[target_lang].ocr(...)
+```
+
+**訊號：**
+
+| 訊號 | 參數 | 含義 |
+|------|------|------|
+| `models_loaded()` | — | 模型加載成功 |
+| `models_load_failed(str)` | 錯誤訊息 | 模型加載失敗 |
+
+**設計決策：**
+
+1. **QObject 母類**：以支援 pyqtSignal；背景執行緒發射訊號，Qt 自動切到主執行緒
+2. **Lazy Load OCR**：減少冷啟動時間（第一個圖片需要 OCR 時才加載該語言引擎）
+3. **Callable Provider**（未來可選）：若 ModelProvider 支援熱切換模型，可改為 lambda 注入
+
+**與其他模組的關係：**
+
+```
+MainWindow
+  ├─ engine = ImageSearchEngine
+  │   └─ model_provider = ModelProvider ← 背景加載模型
+  │       └─ models_loaded.connect → _on_models_loaded()
+  └─ indexer_worker = IndexerWorker
+      └─ 改為：不等待 engine.is_ready，改為 Lazy Load 需要的模型
 ```
 
 ---

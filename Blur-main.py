@@ -60,6 +60,7 @@ from core.collection_manager import CollectionManager
 from core.search_history_manager import SearchHistoryManager
 from core.eta_progress_controller import EtaProgressController
 from core.indexing_lifecycle import IndexingLifecycleHandler
+from core.model_provider import ModelProvider
 from ui.gallery_view_controller import GalleryViewController
 from ui.window_state_manager import WindowStateManager
 from utils.translator import Translator
@@ -1267,16 +1268,14 @@ class ImageSearchEngine:
     def __init__(self, config: ConfigManager):
         self.config = config
         self.device = "dml" if 'DmlExecutionProvider' in ort.get_available_providers() else "cpu"
-        self.is_ready = False
-        self.model = None
-        self.preprocess = None
-        self.tokenizer = None
+        self.data_store = []
 
         # [修正] 預先定義 stored_embeddings
         self.stored_embeddings = None
-        self.data_store = []
 
-        self.shared_ocr_engines = {}
+        # [Refactor Phase 3-A] 模型加載委派至獨立的 ModelProvider
+        # 支援非阻塞加載，MainWindow 透過訊號監聽加載完成
+        self.model_provider = ModelProvider(self.config, parent=None)
 
         # [Refactor Phase 1-A] 釘選功能委派至 PinManager
         # 採 callable 模式取得 data_store，避免 load_data_from_db 重新指派後
@@ -1346,56 +1345,50 @@ class ImageSearchEngine:
         conn.execute("PRAGMA synchronous=NORMAL;")
         return conn
 
+    @property
+    def is_ready(self) -> bool:
+        """[委派] 檢查模型是否加載完成（取自 ModelProvider）"""
+        return self.model_provider.is_ready if hasattr(self, 'model_provider') else False
+
+    @property
+    def preprocess(self):
+        """[委派] 取得預處理器（取自 ModelProvider）"""
+        return self.model_provider.preprocess if hasattr(self, 'model_provider') else None
+
+    @property
+    def tokenizer(self):
+        """[委派] 取得 Tokenizer（取自 ModelProvider）"""
+        return self.model_provider.tokenizer if hasattr(self, 'model_provider') else None
+
+    @property
+    def clip_image_session(self):
+        """[委派] 取得 CLIP 影像 Session（取自 ModelProvider）"""
+        return self.model_provider.clip_image_session if hasattr(self, 'model_provider') else None
+
+    @property
+    def clip_text_session(self):
+        """[委派] 取得 CLIP 文字 Session（取自 ModelProvider）"""
+        return self.model_provider.clip_text_session if hasattr(self, 'model_provider') else None
+
+    @property
+    def is_hf_tokenizer(self):
+        """[委派] 檢查是否為 HuggingFace Tokenizer（取自 ModelProvider）"""
+        return self.model_provider.is_hf_tokenizer if hasattr(self, 'model_provider') else False
+
+    @property
+    def shared_ocr_engines(self):
+        """[委派] 取得 OCR 引擎快取（取自 ModelProvider）"""
+        return self.model_provider.shared_ocr_engines if hasattr(self, 'model_provider') else {}
+
     def load_ai_models(self):
-        try:
-            model_name = self.config.get("model_name")
-            pretrained = self.config.get("pretrained")
+        """
+        [委派] 非阻塞啟動模型加載
 
-            print(f"[Engine] Loading ONNX CLIP models...")
-            self.preprocess = NumpyPreprocess(size=224)
-
-            self.is_hf_tokenizer = ("roberta" in model_name.lower() or "xlm" in model_name.lower())
-            
-            # ==========================================
-            # [離線化修改] 強制讀取本地目錄，完全阻斷 Hugging Face 連線
-            # ==========================================
-            # [關鍵修改] Tokenizer 改用 huggingface 輕量版
-            from transformers import AutoTokenizer, CLIPTokenizer
-            from pathlib import Path as _Path
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            
-            if self.is_hf_tokenizer:
-                tok_path = _Path(os.path.join(base_dir, "models", "tokenizers", "xlm-roberta"))
-                self.tokenizer = AutoTokenizer.from_pretrained(tok_path, local_files_only=True)
-                
-                # ==========================================
-                #  [關鍵修復] 手動補上 pad_token，解決離線載入報錯
-                # ==========================================
-                if self.tokenizer.pad_token is None:
-                    # 如果沒有 pad_token，就借用 eos_token 來當作填充符號
-                    self.tokenizer.pad_token = self.tokenizer.eos_token or "<pad>"
-                    
-            else:
-                tok_path = _Path(os.path.join(base_dir, "models", "tokenizers", "openai-clip"))
-                self.tokenizer = CLIPTokenizer.from_pretrained(tok_path, local_files_only=True)
-                
-                # OpenAI CLIP 通常也會需要確認 pad_token
-                if self.tokenizer.pad_token is None:
-                    self.tokenizer.pad_token = self.tokenizer.eos_token or "<|endoftext|>"
-
-            # 載入 ONNX Sessions
-            img_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_name}_image.onnx")
-            txt_onnx_path = os.path.join(base_dir, "models", "onnx_clip", f"{model_name}_text.onnx")
-            
-            providers = ['DmlExecutionProvider', 'CPUExecutionProvider'] if (self.device == 'dml') else ['CPUExecutionProvider']
-            self.clip_image_session = ort.InferenceSession(img_onnx_path, providers=providers)
-            self.clip_text_session = ort.InferenceSession(txt_onnx_path, providers=providers)
-            
-            self.is_ready = True
-            print(f"[Engine] ONNX AI Models Loaded. System is fully ready.")
-            
-        except Exception as e:
-            print(f"[Error] AI Model loading failed: {e}")
+        此方法立刻返回，模型加載在背景執行緒進行。
+        完成時會發射 model_provider.models_loaded 訊號。
+        """
+        print(f"[Engine] 啟動非阻塞模型加載...")
+        self.model_provider.load_models_async()
 
     def get_all_images_sorted(self):
         """
@@ -2006,11 +1999,12 @@ class IndexerWorker(QThread):
         if not files_full and not files_emb_only and not files_ocr_only:
             self.status_update.emit("No new images found."); self.all_finished.emit(); return
 
-        self.status_update.emit("Waiting for main AI Engine to initialize...")
-        while not (self.main_window.engine and self.main_window.engine.is_ready): time.sleep(1) 
-
         total_tasks = len(files_full) + len(files_emb_only) + len(files_ocr_only)
         self.status_update.emit(f"Indexing {total_tasks} images...")
+
+        # [Refactor Phase 3-A] 移除 WAIT_LOOP
+        # 改為檢查模型可用性，若模式未就緒則由 indexer.py 執行 Lazy Load
+        # 這樣 IndexerWorker 不再被阻塞，可立刻啟動掃描與索引
 
         # [Refactor Phase 2-B] 改透過 EtaProgressController 的公開介面啟動
         # session，不再直接觸碰 MainWindow 內部屬性
@@ -5688,27 +5682,15 @@ class MainWindow(QMainWindow):
             self.status.setStyleSheet('')
 
     def on_ai_loaded(self):
-        """當 AI 模型載入完成後被呼叫 (會在主執行緒執行)"""
-        count = len(self.engine.data_store) if self.engine else 0
-        self.status.setText(f"System Ready ({count} images)")
-        self.progress.hide()
-        
-        # [新增] AI 準備好後，關閉工作列的進度條狀態
-        self.taskbar_ctrl.set_state(TBPF_NOPROGRESS)
-        
-        # 這裡會去抓取資料夾統計，並建立二級選單的按鈕
-        if self.engine:
-            self.refresh_sidebar()
-            self.sidebar.reload_collections(self.engine.get_collections())
+        """
+        [委派] 當 AI 模型載入完成後被呼叫 (會在主執行緒執行)
 
-            # 還原手風琴展開狀態（在資料填充完成後套用）
-            ui_state = self.config.get("ui_state", {})
-            self.sidebar.set_accordion_states(
-                folders_open=ui_state.get("folders_accordion_open", False),
-                collections_open=ui_state.get("collections_accordion_open", False),
-            )
+        [Refactor Phase 3-A] 此方法已改為空實現，
+        所有邏輯已移至 _on_models_loaded()（由 model_provider.models_loaded 訊號觸發）
 
-            self._apply_folder_filter(self.current_folder_path)
+        此方法保留以維持向後相容性（由 ai_ready.connect 調用）。
+        """
+        pass
     
     def update_status(self, text):
         # [Refactor Phase 2-B] 委派至 eta_ctrl：回傳 True 表示模式允許
@@ -5918,11 +5900,9 @@ class MainWindow(QMainWindow):
     
     def load_engine(self):
         try:
-            #self.status.setText("Loading Database...")
-            
             # [新增] 載入模型時，工作列顯示綠色流光 (跑動條)
             self.taskbar_ctrl.set_state(TBPF_INDETERMINATE)
-            
+
             # 正確建立 Engine 實例
             self.engine = ImageSearchEngine(self.config)
             self.search_orch.engine = self.engine   # 將引擎注入 Orchestrator
@@ -5931,29 +5911,71 @@ class MainWindow(QMainWindow):
             self.indexing_handler.engine = self.engine
             # [Refactor Phase 2-D] 將引擎注入 GalleryViewController（search_by_time_range 用）
             self.gallery_ctrl.engine = self.engine
-            
-            #self.status.setText("Rendering Gallery...")
+
             # 呼叫排序方法
             all_images = self.engine.get_all_images_sorted()
-            
+
             if all_images:
                 self.random_data_ready.emit(all_images)
                 self.status.setText(f"Loaded {len(all_images)} images. Loading AI in background...")
-            
+
             time.sleep(0.05)
-            
-            # 載入模型
+
+            # [Refactor Phase 3-A] 改為非阻塞啟動模型加載
+            # 訊號連接：model_provider.models_loaded → _on_models_loaded
+            self.engine.model_provider.models_loaded.connect(self._on_models_loaded)
+            self.engine.model_provider.models_load_failed.connect(self._on_models_load_failed)
+
+            # 立刻啟動非阻塞模型加載（在背景執行緒）
             self.engine.load_ai_models()
 
-            self.ai_ready.emit()
-            
             QApplication.processEvents()
-            self.status.setText(f"System Ready ({len(all_images)} images indexed)")
-            
-        except Exception as e: 
+
+        except Exception as e:
             print(f"Engine Load Error: {e}")
             import traceback
             traceback.print_exc()
+
+    def _on_models_loaded(self):
+        """
+        [Callback] 模型加載完成
+
+        由 ModelProvider.models_loaded 訊號觸發（在主執行緒）
+        """
+        count = len(self.engine.data_store) if self.engine else 0
+        self.status.setText(f"System Ready ({count} images)")
+        self.progress.hide()
+
+        # [新增] AI 準備好後，關閉工作列的進度條狀態
+        self.taskbar_ctrl.set_state(TBPF_NOPROGRESS)
+
+        # 這裡會去抓取資料夾統計，並建立二級選單的按鈕
+        if self.engine:
+            self.refresh_sidebar()
+            self.sidebar.reload_collections(self.engine.get_collections())
+
+            # 還原手風琴展開狀態（在資料填充完成後套用）
+            ui_state = self.config.get("ui_state", {})
+            self.sidebar.set_accordion_states(
+                folders_open=ui_state.get("folders_accordion_open", False),
+                collections_open=ui_state.get("collections_accordion_open", False),
+            )
+
+            self._apply_folder_filter(self.current_folder_path)
+
+        # 發射 ai_ready 訊號（供舊程式碼相容）
+        self.ai_ready.emit()
+
+    def _on_models_load_failed(self, error_msg: str):
+        """
+        [Callback] 模型加載失敗
+
+        由 ModelProvider.models_load_failed 訊號觸發（在主執行緒）
+        """
+        print(f"[Error] 模型加載失敗: {error_msg}")
+        self.status.setText(f"❌ 模型加載失敗: {error_msg}")
+        self.progress.hide()
+        self.taskbar_ctrl.set_state(TBPF_ERROR)
 
     # ------------------------------------------------------------------
     #  搜尋 UI 前置：重設進度條 / 狀態列 / 排序下拉

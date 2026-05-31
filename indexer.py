@@ -444,16 +444,21 @@ class IndexerService:
                 model, preprocess, _ = self.load_ai_models(need_ocr=False)
 
 
-            #這裡改成從避風港抓取，如果沒有才建立，建立後存回避風港！
-            # [修改 2] OCR 引擎的載入也改成共享模式
+            # [Refactor Phase 3-A] OCR 引擎改為 Lazy Load
+            # 共享快取（來自 ModelProvider 或傳入的 shared_ocr_engines）
             ocr_engines = shared_ocr_engines if shared_ocr_engines is not None else {}
 
-            for lang in needed_langs:
-                try:
-                    ocr_engines[lang] = ONNXOCR(lang=lang, use_gpu=self.use_gpu_ocr)
-                    perf_print(f"{self.model_name}_image.onnx")
-                except Exception as e:
-                    print(f"Skipping OCR lang '{lang}': {e}")
+            # 內部 Lazy Load 函式：當 OCR 引擎不存在時立即加載
+            def ensure_ocr_engine(lang: str):
+                """確保特定語言的 OCR 引擎已加載，若無則即時加載"""
+                if lang not in ocr_engines:
+                    try:
+                        ocr_engines[lang] = ONNXOCR(lang=lang, use_gpu=self.use_gpu_ocr)
+                        perf_print(f"[OCR Lazy Load] {lang} 引擎已加載")
+                    except Exception as e:
+                        print(f"[Warning] OCR 引擎載入失敗 ({lang}): {e}")
+                        return False
+                return lang in ocr_engines
 
         except Exception as e:
             print(f"Model Load Failed: {e}"); conn.close(); return
@@ -544,7 +549,8 @@ class IndexerService:
                     
                     required_langs = self._get_folder_ocr_setting(path, folder_ocr_map)
                     for target_lang in required_langs:
-                        if target_lang in ocr_engines:
+                        # [Refactor Phase 3-A] 改為 Lazy Load：需要時才加載
+                        if ensure_ocr_engine(target_lang) and target_lang in ocr_engines:
                             ocr_text_final, ocr_data_final = "[NONE]", "[]"
                             
                             # 🌟 將記憶體中的 numpy 陣列直接餵給 OCR 引擎！

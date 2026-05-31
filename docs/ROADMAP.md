@@ -4,18 +4,18 @@
 
 ---
 
-## 📊 Phase 1 + 2 重構戰績
+## 📊 Phase 1 + 2 + 3-A 重構戰績
 
 ### 代碼瘦身
 
 | 指標 | 重構前 | 重構後 | 變化 |
 |------|--------|--------|------|
-| **`Blur-main.py` 總行數** | 7081 | 6346 | **−735 行 (−10.4%)** |
-| **`ImageSearchEngine`** | 1016 | 688 | −328 行 |
-| **`MainWindow` 估算** | ~1612 | ~1100 | −500+ 行 |
-| **獨立模組總數** | 0 | 8 | +8 |
+| **`Blur-main.py` 總行數** | 7081 | ~6400 | **−681 行 (−9.6%)** |
+| **`ImageSearchEngine`** | 1016 | ~650 | −366 行 |
+| **`MainWindow` 估算** | ~1612 | ~1050 | −550+ 行 |
+| **獨立模組總數** | 0 | 9 | +9 |
 
-### 新增模組（8 個）
+### 新增模組（9 個）
 
 ```
 Phase 1 (資料存取與釘選)
@@ -29,6 +29,9 @@ Phase 2 (UI 反饋與控制)
 └── 2-C: indexing_lifecycle.py        ← 索引生命週期
 └── 2-D: gallery_view_controller.py   ← 畫廊視圖
 └── 2-E: window_state_manager.py      ← 視窗狀態 + Win32
+
+Phase 3 (非阻塞模型加載 & 解耦)
+└── 3-A: model_provider.py       ← 模型加載與共享【新完成】
 ```
 
 ### 架構改進
@@ -38,6 +41,49 @@ Phase 2 (UI 反饋與控制)
 - ✅ **訊號解耦規範** — 跨層通信明確、實作清晰
 - ✅ **依賴注入三策略** — 避免全域變數、支援測試
 - ✅ **跨執行緒雙緩衝** — DB 重載不卡主執行緒
+- ✅ **非阻塞模型加載** — IndexerWorker 不再等待 AI 模型【Phase 3-A 新增】
+
+---
+
+## 🔧 Phase 3-A 改進詳情（【新完成】）
+
+### 問題
+- **舊架構**：IndexerWorker 卡在 `while not engine.is_ready: sleep(1)` 忙輪詢
+- **現象**：新圖片索引延遲，用戶感受冷啟動慢
+
+### 解決方案
+- 📦 新建 `core/model_provider.py` — 獨立的模型加載與共享
+- ⚙️ ImageSearchEngine 改為委派給 ModelProvider（非阻塞 async 加載）
+- 🚀 IndexerWorker 移除 WAIT_LOOP — 立刻啟動掃描與索引
+- 💾 indexer.py 改為 Lazy Load OCR — 需要時才加載
+
+### 時間線（改進前 vs 改進後）
+
+**改進前：** ❌ 阻塞
+```
+t=0ms     : MainWindow.__init__
+t+300ms   : ✅ 圖片清單顯示
+t+500ms   : ❌ IndexerWorker 進入 WAIT_LOOP (卡住...)
+t+8000ms+ : ⏳ 模型加載完成，IndexerWorker 才開始索引
+```
+
+**改進後：** ✅ 非阻塞
+```
+t=0ms     : MainWindow.__init__
+t+300ms   : ✅ 圖片清單顯示
+            ✅ IndexerWorker 立刻啟動掃描（無阻塞）
+t+500ms   : ⚙️ 模型在背景加載（不干擾前台）
+t+8000ms+ : ✅ 模型完成 → IndexerWorker 執行嵌入化 & OCR
+```
+
+### 實裝清單
+
+| 檔案 | 改動 |
+|------|------|
+| `core/model_provider.py` | 【新建】獨立模型加載器 QObject |
+| `Blur-main.py` | ImageSearchEngine 改為委派屬性；load_engine() 改為非阻塞 |
+| `Blur-main.py` | IndexerWorker.run() 刪除 L2010 的 WAIT_LOOP |
+| `indexer.py` | Lazy Load OCR 引擎（首次使用時才加載） |
 
 ---
 
@@ -89,7 +135,7 @@ def on_model_changed(self):
 
 ---
 
-## 🎯 Phase 3 − 拆分 PreviewOverlay（計劃中）
+## 🎯 Phase 4 − 拆分 PreviewOverlay（計劃中）
 
 ### 目標
 
