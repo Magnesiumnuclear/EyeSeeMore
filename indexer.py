@@ -615,34 +615,52 @@ class IndexerService:
         for i in range(0, len(files_ocr_only), self.batch_size):
             batch_paths = files_ocr_only[i : i + self.batch_size]
             if progress_callback: progress_callback(current_progress, total_files, f"Backfill OCR: {current_progress}/{total_files}...")
-            
+
+            # [效能優化] 批次查詢，消除 N+1 問題
+            # 一次取得整個批次的 path→id 映射
+            placeholders_c = ','.join(['?'] * len(batch_paths))
+            cursor.execute(
+                f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders_c})",
+                batch_paths
+            )
+            path_to_id = {row[0]: row[1] for row in cursor.fetchall()}
+
+            # 一次取得這批 file_id 已完成的所有 OCR 語系
+            batch_ids = list(path_to_id.values())
+            id_to_done_langs: dict = {}
+            if batch_ids:
+                placeholders_id = ','.join(['?'] * len(batch_ids))
+                cursor.execute(
+                    f"SELECT file_id, lang FROM ocr_results WHERE file_id IN ({placeholders_id})",
+                    batch_ids
+                )
+                for file_id, lang in cursor.fetchall():
+                    id_to_done_langs.setdefault(file_id, set()).add(lang)
+
             ocr_insert_data = []
             for path in batch_paths:
                 try:
-                    cursor.execute("SELECT id FROM files WHERE file_path=?", (path,))
-                    row = cursor.fetchone()
-                    if not row: continue
-                    file_id = row[0]
-                    
+                    file_id = path_to_id.get(path)
+                    if not file_id: continue
+
                     # 🌟 統一讀取中心 (軌道 C 專用)
                     # exif_transpose 轉正後，OCR 輸出座標即為視覺正確座標，直接存入
                     with Image.open(path) as pil_img:
                         img_rgb = pil_to_rgb_safe(ImageOps.exif_transpose(pil_img))
-                        
+
                     # 轉換為 OCR 需要的 BGR 陣列
                     img_bgr = cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR)
-                    
-                    # 找出這張圖片到底「缺」了哪些標記
-                    cursor.execute("SELECT lang FROM ocr_results WHERE file_id=?", (file_id,))
-                    done_langs = set(r[0] for r in cursor.fetchall())
+
+                    # 從記憶體 Dict 取出已完成語系（O(1)，不再查資料庫）
+                    done_langs = id_to_done_langs.get(file_id, set())
                     required_langs = self._get_folder_ocr_setting(path, folder_ocr_map)
                     missing_langs = [l for l in required_langs if l not in done_langs]
-                    
+
                     # 針對缺少的語系補跑
                     for target_lang in missing_langs:
                         if target_lang in ocr_engines:
                             ocr_text_final, ocr_data_final = "[NONE]", "[]"
-                            
+
                             # 🌟 將陣列直接餵給 OCR 引擎！
                             ocr_result = ocr_engines[target_lang].ocr(img_bgr, cls=False)
                             if ocr_result and ocr_result[0]:
@@ -654,7 +672,7 @@ class IndexerService:
                                     json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
                                 ocr_text_final = " ".join(detected_text_list)
                                 ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
-                            
+
                             ocr_insert_data.append((file_id, target_lang, ocr_text_final, ocr_data_final, 1.0))
                 except Exception as e: print(f"Skipping OCR {path}: {e}")
             

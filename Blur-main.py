@@ -1318,18 +1318,25 @@ class ImageSearchEngine:
             return
 
         dimension = embeddings_matrix.shape[1]
-    
+        n = len(embeddings_matrix)
+
         #  由於您的 CLIP 向量在 indexer.py 中已經做過 L2 歸一化，
         # 這裡直接使用 IP (Inner Product 內積)，它在數學上等同於 Cosine Similarity！
-    
-        # 方案 A：暴力極速版 (適合 10 萬張以下，無損精度)
-        self.faiss_index = faiss.IndexFlatIP(dimension)
-    
-        # 方案 B：HNSW 圖形演算法版 (適合百萬張以上，O(log N) 狂暴速度)
-        # self.faiss_index = faiss.IndexHNSWFlat(dimension, 32, faiss.METRIC_INNER_PRODUCT)
-    
+
+        # [效能優化] 動態選擇演算法：
+        # ≤10,000 張：IndexFlatIP (暴力, O(N), 精度100%)
+        # >10,000 張：IndexHNSWFlat (圖形演算, O(log N), 精度~98%)
+        HNSW_THRESHOLD = 10_000
+        if n > HNSW_THRESHOLD:
+            index = faiss.IndexHNSWFlat(dimension, 32, faiss.METRIC_INNER_PRODUCT)
+            index.hnsw.efSearch = 64   # 提高搜尋品質（預設16，64在精度與速度間取得平衡）
+            print(f"[FAISS] 資料量 {n} > {HNSW_THRESHOLD}，啟用 HNSW 圖索引 (efSearch=64)")
+        else:
+            index = faiss.IndexFlatIP(dimension)
+
         # 將所有向量加入引擎 (必須是 float32 格式)
-        self.faiss_index.add(embeddings_matrix.astype(np.float32))
+        index.add(embeddings_matrix.astype(np.float32))
+        self.faiss_index = index
         print(f"[FAISS] 成功建立 {self.faiss_index.ntotal} 筆向量索引！")
 
     # ==========================================
@@ -1436,13 +1443,29 @@ class ImageSearchEngine:
             """, (current_model,))
             rows = cursor.fetchall()
             
-            temp_data_store = [] 
+            temp_data_store = []
             temp_embeddings_list = []
             temp_path_map = {}
-            
+
+            # [效能優化] 預先掃描所有父目錄，建立存在檔案的 Set，
+            # 迴圈內改用 O(1) 記憶體查詢，消除 N 次 syscall 的 I/O 阻塞。
+            unique_dirs: set = set()
+            for row in rows:
+                unique_dirs.add(os.path.dirname(os.path.normpath(row[0])))
+            existing_paths: set = set()
+            for d in unique_dirs:
+                try:
+                    if os.path.isdir(d):
+                        with os.scandir(d) as it:
+                            for entry in it:
+                                if entry.is_file():
+                                    existing_paths.add(os.path.normpath(entry.path))
+                except OSError:
+                    pass
+
             #  [效能封頂] 迴圈內不再做任何 json.loads()，啟動速度直接起飛！
             for path, blob, mtime, width, height, combined_text in rows:
-                if not os.path.exists(path): continue 
+                if os.path.normpath(path) not in existing_paths: continue
                 
                 emb_array = np.frombuffer(blob, dtype=np.float32)
                 temp_embeddings_list.append(emb_array)
