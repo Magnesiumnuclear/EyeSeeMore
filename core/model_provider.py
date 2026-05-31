@@ -156,7 +156,7 @@ class ModelProvider(QObject):
         self.clip_image_session = ort.InferenceSession(img_onnx_path, providers=providers)
         self.clip_text_session = ort.InferenceSession(txt_onnx_path, providers=providers)
 
-        print(f"[ModelProvider] ✅ ONNX 模型加載完成 (Device: {self.device})")
+        print(f"[ModelProvider] ONNX 模型加載完成 (Device: {self.device})")
 
     def get_ocr_engine(self, lang: str):
         """
