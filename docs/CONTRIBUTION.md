@@ -260,6 +260,165 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
+## 🌍 UI 文字與樣式規範
+
+> EyeSeeMore 嚴格規範 UI 文字（i18n）與樣式（QSS）的管理方式，禁止 hardcode，確保全球化與代碼整潔。
+
+### §A. 多國語系（i18n）— JSON 集中管理
+
+#### 原則
+
+- ✅ **所有 UI 文字必須放在 `languages/<lang>.json`**（如 `zh_TW.json`, `en_US.json`）
+- ❌ **禁止在 Python 代碼中 hardcode UI 字串**
+- ✅ **使用 `Translator.t()` 方法取值** — 見 `utils/translator.py`
+
+#### JSON 格式
+
+```json
+{
+  "mainwindow": {
+    "title": "EyeSeeMore - 圖片語意搜尋器",
+    "menu_file": "檔案",
+    "menu_edit": "編輯"
+  },
+  "settings": {
+    "window_title": "設定",
+    "folders_tab": "資料夾管理",
+    "ai_engine_tab": "AI 引擎"
+  },
+  "buttons": {
+    "ok": "確定",
+    "cancel": "取消",
+    "apply": "套用"
+  }
+}
+```
+
+**分類慣例：** 按功能區域分層（mainwindow / settings / buttons / messages）
+
+#### 使用方式
+
+```python
+# ✅ 正確做法
+from utils.translator import Translator
+
+translator = Translator("zh_TW")
+window_title = translator.t("mainwindow", "title")  # "EyeSeeMore - 圖片語意搜尋器"
+button_text = translator.t("buttons", "ok", "OK")   # "確定"（default 為 "OK"）
+
+# ❌ 錯誤做法（禁止！）
+self.setWindowTitle("EyeSeeMore - 圖片語意搜尋器")  # hardcode
+button.setText("確定")                              # hardcode
+```
+
+#### 涉及新字串時
+
+1. **新增至 `languages/zh_TW.json`** — 中文版本
+2. **同步至 `languages/en_US.json`** — 英文版本（或其他支援語言）
+3. **在代碼中使用 `translator.t(category, key)`**
+4. **若新增語言分類，提交 PR 時附註**
+
+### §B. 樣式表（QSS）— 集中管理 vs. setStyleSheet
+
+#### 原則
+
+- ✅ **所有樣式應在 `themes/` 資料夾的 QSS 檔統一定義**
+  - `themes/base_style.qss` — 基礎樣式（通用）
+  - `themes/dark.json` / `themes/light.json` — 顏色變數
+
+- ❌ **禁止在 Python 代碼中直接呼叫 `setStyleSheet()`**
+  - 很難維護、難以切換主題、代碼臃腫
+
+- ✅ **使用 `setObjectName()` 在 QSS 中對應**
+
+#### 做法
+
+**Step 1：在 Python 代碼中設置 objectName**
+
+```python
+# ui/main_window_ui.py 或 ui/widgets/my_widget.py
+
+class MyButton(QPushButton):
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("primary_button")  # ✅ 設置 objectName
+        self.setText("搜尋")
+
+class MyPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("inspector_panel")
+        # 在背景色等樣式交給 QSS 處理
+```
+
+**Step 2：在 QSS 中定義樣式**
+
+```qss
+/* themes/base_style.qss */
+
+/* 主按鈕樣式 */
+#primary_button {
+    background-color: $accent;  /* 引用顏色變數 */
+    color: white;
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+#primary_button:hover {
+    background-color: $accent_hover;
+}
+
+/* 檢查器面板 */
+#inspector_panel {
+    background-color: $background;
+    border-left: 1px solid $border_color;
+}
+```
+
+**Step 3：在顏色變數檔中定義**
+
+```json
+// themes/dark.json
+{
+  "primary": "#1e1e1e",
+  "accent": "#0d7377",
+  "accent_hover": "#14a085",
+  "background": "#0f0f0f",
+  "border_color": "#2a2a2a",
+  "text": "#ffffff"
+}
+```
+
+#### 什麼情況才能用 setStyleSheet？
+
+❌ **嚴禁：** 在中途動態改樣式
+```python
+# ❌ 禁止！
+self.button.setStyleSheet("background-color: red;")
+```
+
+✅ **允許（例外情況）：**
+- 動態主題切換時由 `theme_manager.py` 統一背景載入整份樣式表
+
+```python
+# ui/theme_manager.py（允許，但只能在此層做）
+def apply_theme(self, theme_name: str):
+    qss_content = self._load_qss(theme_name)
+    QApplication.instance().setStyleSheet(qss_content)
+```
+
+### §C. 檢查清單
+
+- [ ] **所有 UI 字串** — 都已放在 `languages/zh_TW.json`
+- [ ] **使用 translator.t()** — 而非 hardcode
+- [ ] **所有樣式** — 都已在 `themes/base_style.qss` 定義
+- [ ] **設置了 objectName** — 供 QSS 對應
+- [ ] **禁止 setStyleSheet()** — 除非是全應用主題切換
+- [ ] **新語言支援** — 新增的 JSON key 同步至所有語言檔
+
+---
+
 ## 背景服務與獨立腳本
 
 ### 現有背景服務概覽

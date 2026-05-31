@@ -14,7 +14,8 @@
 | **學習 UI 控制器與 widget** | [MODULES_UI.md](./MODULES_UI.md) | GalleryViewController / WindowStateManager / 設定頁面 |
 | **掌握松散耦合與訊號設計** | [DESIGN_PATTERNS.md](./DESIGN_PATTERNS.md) | Thin Delegation / 依賴注入 / Signal / 跨執行緒 |
 | **修改資料庫邏輯** | [DATABASE_SCHEMA.md](./DATABASE_SCHEMA.md) | SQLite 完整 schema、WAL 模式、FAISS 向量化 |
-| **新增功能的逐步指南** | [CONTRIBUTION.md](./CONTRIBUTION.md) | 從需求 → 設計 → 實裝 → 測試的標準流程 |
+| **新增功能的逐步指南** | [CONTRIBUTION.md](./CONTRIBUTION.md) | 從需求 → 設計 → 實裝 → i18n / QSS 規範 → 測試 |
+| **多國語系 & 樣式表規範** | [CONTRIBUTION.md](./CONTRIBUTION.md#-ui-文字與樣式規範) | JSON 語言檔、QSS 集中管理、禁止 hardcode |
 | **查看重構進度與願景** | [ROADMAP.md](./ROADMAP.md) | Phase 1-2 戰績、Phase 3+ 規劃、既知 Bug |
 
 ## 🎯 常見問題速查
