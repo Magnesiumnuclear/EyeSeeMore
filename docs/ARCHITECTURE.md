@@ -35,6 +35,7 @@ rag-image/
 │   ├── widgets/
 │   │   ├── base.py           ← BaseToggleWidget 基類
 │   │   ├── drag_list.py      ← 半透明拖曳列表
+│   │   ├── elided_label.py   ← 自動省略文字的 QLabel
 │   │   └── search_capsule.py ← 頂部搜尋膠囊
 │   │
 │   └── settings_pages/
@@ -90,7 +91,7 @@ rag-image/
 
 ### `ui/widgets/` — 可複用原子 widget
 
-**職責：** 自訂小元件（搜尋膠囊、拖曳列表等）
+**職責：** 自訂小元件（搜尋膠囊、拖曳列表、省略標籤等）
 
 **禁忌：** 不能持有 MainWindow 內部狀態；應透過訊號或參數通信
 

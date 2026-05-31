@@ -94,6 +94,7 @@ rag-image/
 |------|------|
 | **`base.py`** | `BaseToggleWidget`：所有 EyeSeeMore 自訂 widget 的基類，統一持有 `errorOccurred` 訊號（全域錯誤協議） |
 | **`drag_list.py`** | `TransparentDragListWidget`：拖曳時產生半透明鬼影的 QListWidget |
+| **`elided_label.py`** | `ElidedLabel`：自動省略文字的 QLabel；覆寫 `minimumSizeHint()` 讓寬度可縮至 0，不撐大視窗最小值；提供 `fullText()` 取得未省略原始文字 |
 | **`search_capsule.py`** | `SearchCapsule`：頂部搜尋膠囊（輸入框 + 模式切換 + 歷史下拉彈窗）；發射 `searchRequested(dict)` / `modeChanged(str)` |
 
 ### ⚙️ `ui/settings_pages/` — 設定對話框分頁

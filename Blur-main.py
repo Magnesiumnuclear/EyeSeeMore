@@ -4928,6 +4928,7 @@ class MainWindow(QMainWindow):
         # 自定義標題列：移除 Windows 原生 Non-Client Area
         # WndProc 掛鉤負責補回邊框縮放與 DWM 陰影（由 win_titlebar 模組處理）
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setMinimumSize(540, 360)
 
         self.engine = None
 
@@ -5304,7 +5305,7 @@ class MainWindow(QMainWindow):
         return {
             "query": self.input.text().strip(),
             "folder_path": self.current_folder_path,
-            "breadcrumb": self.breadcrumb_lbl.text(),
+            "breadcrumb": self.breadcrumb_lbl.fullText(),
             "scroll_pos": self.list_view.verticalScrollBar().value(),
             "image_path": getattr(self, "current_image_search_path", None),
             "multi_vector_features": getattr(self, "current_multi_vector_features", None),
@@ -5857,7 +5858,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _show_toast(self, message: str, duration_ms: int = 1500) -> None:
         if not getattr(self, '_is_toast_active', False):
-            self._previous_status_text = self.status.text()
+            self._previous_status_text = self.status.fullText()
         self._is_toast_active = True
         self.status.setText(message)
 

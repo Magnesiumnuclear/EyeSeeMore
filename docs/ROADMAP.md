@@ -4,7 +4,7 @@
 
 ---
 
-## 📊 Phase 1 + 2 + 3-A + 3-B 重構戰績
+## 📊 Phase 1 + 2 + 3-A + 3-B + 3-C 重構戰績
 
 ### 代碼瘦身
 
@@ -13,7 +13,7 @@
 | **`Blur-main.py` 總行數** | 7081 | ~6400 | **−681 行 (−9.6%)** |
 | **`ImageSearchEngine`** | 1016 | ~650 | −366 行 |
 | **`MainWindow` 估算** | ~1612 | ~1050 | −550+ 行 |
-| **獨立模組總數** | 0 | 9 | +9 |
+| **獨立模組總數** | 0 | 10 | +10 |
 
 ### 新增模組（9 個）
 
@@ -30,9 +30,10 @@ Phase 2 (UI 反饋與控制)
 └── 2-D: gallery_view_controller.py   ← 畫廊視圖
 └── 2-E: window_state_manager.py      ← 視窗狀態 + Win32
 
-Phase 3 (非阻塞模型加載 & 解耦)
+Phase 3 (非阻塞模型加載 & 解耦 & UI 響應式)
 └── 3-A: model_provider.py       ← 模型加載與共享【已完成】
 └── 3-B: _on_models_loaded 優化  ← 畫廊圖片提早顯示【已完成】
+└── 3-C: elided_label.py         ← TopBar 響應式寬度【已完成】
 ```
 
 ### 架構改進
@@ -44,6 +45,32 @@ Phase 3 (非阻塞模型加載 & 解耦)
 - ✅ **跨執行緒雙緩衝** — DB 重載不卡主執行緒
 - ✅ **非阻塞模型加載** — IndexerWorker 不再等待 AI 模型【Phase 3-A 新增】
 - ✅ **畫廊提早渲染** — 圖片在 t~100ms 即顯示，不等模型加載完成【Phase 3-B 新增】
+- ✅ **TopBar 響應式寬度** — 視窗可縮小，長路徑省略顯示不撐大最小寬度【Phase 3-C 新增】
+
+---
+
+## 🔧 Phase 3-C 改進詳情（【已完成】）
+
+### 問題
+
+- **現象**：TopBar 的麵包屑（`breadcrumb_lbl`）顯示長路徑時（如 `"Collection: 超長名稱"`），視窗無法縮小
+- **根本原因**：標準 `QLabel` 的 `minimumSizeHint()` 回傳完整文字寬度，成為佈局最小寬度的下限；加上 `SearchCapsule.setMinimumWidth(300)` 固定限制，導致視窗最小寬度遠超必要
+
+### 解決方案
+
+| 改動 | 檔案 | 說明 |
+|------|------|------|
+| **新增 ElidedLabel** | `ui/widgets/elided_label.py` | 覆寫 `minimumSizeHint()` 水平回傳 0；`resizeEvent` 自動省略文字 |
+| **換用 ElidedLabel** | `ui/main_window_ui.py` | `breadcrumb_lbl` 與 `status` 改用 ElidedLabel |
+| **縮小最小寬度** | `ui/widgets/search_capsule.py` | `setMinimumWidth(300)` → `setMinimumWidth(160)` |
+| **設定視窗下限** | `Blur-main.py` | `MainWindow.setMinimumSize(540, 360)` |
+| **修正文字讀取** | `Blur-main.py` | `breadcrumb_lbl.text()` → `fullText()`（_nav_snapshot）；`status.text()` → `fullText()`（toast 還原） |
+
+### 設計取捨
+
+- `ElidedLabel` 保留 `Preferred` SizePolicy（不用 `Ignored`），確保有多餘空間時仍顯示完整文字
+- 只覆寫 `minimumSizeHint().width() = 0`，讓空間不足時可縮至任意寬度
+- `fullText()` 提供完整原始文字的讀取介面，避免省略後的顯示文字被錯誤存入導航/toast 快照
 
 ---
 
@@ -327,4 +354,4 @@ mypy --strict core/ ui/
 
 ---
 
-*最後更新時間：Phase 3-B 完工後（commit `9a5f18c`）。後續若有新加模組或架構調整，請同步更新本文件。*
+*最後更新時間：Phase 3-C 完工後（TopBar 響應式寬度改進）。後續若有新加模組或架構調整，請同步更新本文件。*

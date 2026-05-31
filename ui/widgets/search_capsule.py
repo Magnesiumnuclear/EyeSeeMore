@@ -81,7 +81,7 @@ class SearchCapsule(BaseToggleWidget):
 
         # ----- 膠囊外框 -----
         self.setMaximumWidth(550)
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(160)
         self.setFixedHeight(38)
         self.setObjectName("SearchCapsule")
 

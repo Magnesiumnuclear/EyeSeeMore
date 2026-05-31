@@ -6,12 +6,13 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QProgressBar, QFrame, QListView, QListWidget,
+    QProgressBar, QFrame, QListView, QListWidget,
     QAbstractItemView, QSplitter
 )
 from PyQt6.QtCore import Qt, QSize
 
 from ui.widgets.search_capsule import SearchCapsule
+from ui.widgets.elided_label import ElidedLabel
 
 
 # 從 Blur-main.py 搬入的全域 UI 常數
@@ -108,7 +109,7 @@ class Ui_MainWindow:
         header_layout.addWidget(MainWindow.btn_forward)
 
         # --- 麵包屑標題 ---
-        MainWindow.breadcrumb_lbl = QLabel("Gallery")
+        MainWindow.breadcrumb_lbl = ElidedLabel("Gallery")
         MainWindow.breadcrumb_lbl.setObjectName("Breadcrumb")
         header_layout.addWidget(MainWindow.breadcrumb_lbl)
         header_layout.addStretch(1)
@@ -126,7 +127,7 @@ class Ui_MainWindow:
         right_actions_layout = QHBoxLayout()
         right_actions_layout.setSpacing(15)
 
-        MainWindow.status = QLabel("Initializing...")
+        MainWindow.status = ElidedLabel("Initializing...")
         MainWindow.status.setObjectName("StatusBarText")
         MainWindow.status.setCursor(Qt.CursorShape.PointingHandCursor)
         right_actions_layout.addWidget(MainWindow.status, alignment=Qt.AlignmentFlag.AlignVCenter)

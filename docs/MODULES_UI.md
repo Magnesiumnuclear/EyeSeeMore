@@ -22,6 +22,7 @@ ui/
 ├─ widgets/ 原子 widget
 │  ├─ base.py                  ← BaseToggleWidget 基類
 │  ├─ drag_list.py             ← 半透明拖曳列表
+│  ├─ elided_label.py          ← 自動省略文字的 QLabel
 │  └─ search_capsule.py        ← 頂部搜尋膠囊 + 歷史下拉
 │
 └─ settings_pages/ 設定分頁（8 頁）
@@ -46,6 +47,8 @@ ui/
 | 組件 | 描述 |
 |------|------|
 | **頂部搜尋膠囊** | SearchCapsule widget |
+| **麵包屑標題** | ElidedLabel（寬度不足時省略，tooltip 顯示完整路徑） |
+| **狀態列文字** | ElidedLabel（同上） |
 | **左側導航** | 資料夾樹、集合清單、釘選清單 |
 | **中心畫廊** | QListView（縮圖網格） + 自繪 ImageDelegate |
 | **右側檢查器** | 3 分頁：過濾 / 屬性 / OCR 結果 |
@@ -301,28 +304,55 @@ class BaseToggleWidget(QWidget):
 
 ---
 
+### `elided_label.py` — ElidedLabel
+
+**職責：** 自動省略文字的 QLabel，用於 TopBar 的麵包屑與狀態列
+
+**核心設計：**
+- 覆寫 `minimumSizeHint()` 讓水平最小寬回傳 0，使佈局可在空間不足時將其縮至任意寬度，**不再撐大視窗最小寬度**
+- 保留預設 `Preferred` SizePolicy，有多餘空間時仍索取完整文字寬度
+- `resizeEvent` 時自動重算省略文字；省略時 ToolTip 顯示完整內容
+- 提供 `fullText()` 取得未省略原始文字（`_nav_snapshot` 和 toast 還原用）
+
+```python
+class ElidedLabel(QLabel):
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
+
+    def setText(self, text: str) -> None:
+        self._full_text = text
+        self._refresh()           # 更新省略顯示
+
+    def fullText(self) -> str:
+        return self._full_text    # 未省略原始文字
+```
+
+**使用位置：**
+- `main_window_ui.py` — `breadcrumb_lbl`（麵包屑）與 `status`（狀態列）
+- 讀取文字時需用 `fullText()` 而非 `.text()`（`.text()` 回傳省略後的顯示值）
+
+---
+
 ### `search_capsule.py` — SearchCapsule
 
-**職責：** 頂部搜尋膠囊（輸入框 + 模式切換 + 歷史下拉）
+**職責：** 頂部搜尋膠囊（輸入框 + OCR 切換 + 歷史下拉）
 
 **訊號：**
 | 訊號 | 參數 | 含義 |
 |------|------|------|
-| `searchRequested(dict)` | `{"query": "...", "mode": "text/visual"}` | 搜尋請求 |
-| `modeChanged(str)` | "text" 或 "visual" | 切換搜尋模式 |
+| `searchRequested(dict)` | `{"query": "...", "use_ocr": bool}` | 搜尋請求 |
+| `modeChanged(str)` | "ocr_on" 或 "ocr_off" | OCR 開關切換 |
 
 **子組件：**
 ```python
-self.input_field = QLineEdit()
-self.mode_button = QPushButton()  # 文字/圖片模式切換
-self.history_button = QPushButton()  # 歷史下拉
-self.history_popup = HistoryDropdown()  # 下拉選單
+self.input = QLineEdit()            # 搜尋框
+self.btn_ocr_toggle = QPushButton() # OCR 開關按鈕 [T]
+self._history_list: QListWidget     # 歷史下拉（懶初始化，掛在 top-level window）
 ```
 
-**狀態管理：**
-- 輸入框焦點管理
-- 歷史清單 MRU 排序
-- 模式狀態持久化（config）
+**尺寸限制：**
+- `setMinimumWidth(160)` — 最小可縮至 160px（不撐大視窗）
+- `setMaximumWidth(550)` — 避免在超大視窗佔用過多空間
 
 ---
 
