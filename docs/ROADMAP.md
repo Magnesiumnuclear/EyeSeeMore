@@ -1,0 +1,249 @@
+# ROADMAP.md — 重構戰績、已知 Bug、未來規劃
+
+> 本文件記錄 EyeSeeMore 從 Phase 0 到未來的發展進程。
+
+---
+
+## 📊 Phase 1 + 2 重構戰績
+
+### 代碼瘦身
+
+| 指標 | 重構前 | 重構後 | 變化 |
+|------|--------|--------|------|
+| **`Blur-main.py` 總行數** | 7081 | 6346 | **−735 行 (−10.4%)** |
+| **`ImageSearchEngine`** | 1016 | 688 | −328 行 |
+| **`MainWindow` 估算** | ~1612 | ~1100 | −500+ 行 |
+| **獨立模組總數** | 0 | 8 | +8 |
+
+### 新增模組（8 個）
+
+```
+Phase 1 (資料存取與釘選)
+└── 1-A: pin_manager.py          ← 圖片釘選
+└── 1-B: ocr_repository.py       ← OCR 框 CRUD
+└── 1-C: collection_manager.py   ← 虛擬資料夾
+
+Phase 2 (UI 反饋與控制)
+└── 2-A: search_history_manager.py    ← 搜尋歷史
+└── 2-B: eta_progress_controller.py   ← ETA 進度 + PID
+└── 2-C: indexing_lifecycle.py        ← 索引生命週期
+└── 2-D: gallery_view_controller.py   ← 畫廊視圖
+└── 2-E: window_state_manager.py      ← 視窗狀態 + Win32
+```
+
+### 架構改進
+
+- ✅ **零 UI 依賴的核心層** — 所有業務邏輯可獨立測試
+- ✅ **Thin Delegation Layer** — 外部呼叫端零改動
+- ✅ **訊號解耦規範** — 跨層通信明確、實作清晰
+- ✅ **依賴注入三策略** — 避免全域變數、支援測試
+- ✅ **跨執行緒雙緩衝** — DB 重載不卡主執行緒
+
+---
+
+## 🐛 已知 Bug
+
+### Bug 1：搜尋歷史刪除未持久化
+
+**現象：** 在 SearchCapsule 的歷史下拉中刪除某筆歷史，重啟應用首次還在
+
+**根本原因：** `SearchCapsule._on_history_delete()` 未透過訊號通知 MainWindow，未觸發 `search_history_manager.delete()`
+
+**影響：** 低（使用者再點一次手動刪）
+
+**修復方案：**
+```python
+# ui/widgets/search_capsule.py
+class SearchCapsule(QWidget):
+    history_delete_requested = pyqtSignal(str)  # 新增訊號
+
+    def _on_history_delete(self, query):
+        self.history_delete_requested.emit(query)  # 發訊號
+
+# Blur-main.py: MainWindow.__init__
+self.search_capsule.history_delete_requested.connect(
+    self.history_mgr.delete
+)
+```
+
+---
+
+### Bug 2：模型切換後未重索引
+
+**現象：** 若使用者在 `ai_engine_page.py` 切換 CLIP 模型，現有的 embeddings 表內容未更新
+
+**根本原因：** `ai_engine_page.py` 切換模型後只修改 config，未觸發重新向量化
+
+**影響：** 中等（舊向量與新模型不匹配，搜尋結果差）
+
+**修復方案：**
+```python
+# ui/settings_pages/ai_engine_page.py
+def on_model_changed(self):
+    self.config.set("ai._clip_model", new_model)
+    self.config.save()
+
+    # 透過 ctx["hub"] 通知 MainWindow
+    self.ctx["hub"].request_reindex_all()
+```
+
+---
+
+## 🎯 Phase 3 − 拆分 PreviewOverlay（計劃中）
+
+### 目標
+
+PreviewOverlay 是現存最臃腫的視圖元件（~690 行），負責：
+- ✅ 圖片預覽
+- ✅ OCR 框互動式裁切（CropController）
+- ✅ 與 OCR 編輯器的協作
+
+### 拆分方案
+
+```
+ui/preview/
+├── base_preview_controller.py    ← 預覽控制器基類
+├── crop_ocr_controller.py        ← OCR 裁切邏輯（~180 行）
+└── ocr_box_editor.py             ← OCR 框編輯器（~150 行）
+```
+
+**預期成果：** PreviewOverlay 降至 ~300 行（純 UI 佈局 + 訊號連接）
+
+---
+
+## 🎯 Phase 4 − 拆分繪製邏輯（計劃中）
+
+### 目標
+
+`ImageDelegate.paint()` 與 `OCRLabel.paintEvent()` 分佈散亂的繪製邏輯
+
+### 拆分方案
+
+```
+ui/painting/
+├── image_delegate_painter.py  ← 繪製卡片（如陰影、釘選標誌）
+└── ocr_label_painter.py       ← 繪製 OCR 框
+```
+
+**方式：** 提取私有方法 `_draw_shadow()`, `_draw_selection()`, `_paint_ocr_boxes()` 等
+
+---
+
+## 🧪 測試補完（計劃中）
+
+### 目標
+
+為 `core/` 層 8 個模組撰寫 pytest 單元測試
+
+### 預計覆蓋
+
+```
+tests/
+├── test_pin_manager.py              ← toggle / get_pinned_paths
+├── test_ocr_repository.py           ← CRUD 操作
+├── test_collection_manager.py       ← 集合管理
+├── test_search_history_manager.py   ← MRU 行為
+├── test_eta_progress_controller.py  ← 4 種模式、PID 平滑器
+├── test_indexing_lifecycle.py       ← 生命週期事件
+├── test_gallery_view_controller.py  ← 過濾、排序、空狀態
+└── test_window_state_manager.py     ← Win32 整合（需 mock）
+```
+
+**測試框架：** pytest + pytest-qt（PyQt6 擴展）
+
+**目標覆蓋率：** ≥ 80%
+
+---
+
+## ✍️ 型別檢查（計劃中）
+
+### 目標
+
+**逐步引入 mypy / pyright 型別檢查**，並補完 type hints
+
+### 階段
+
+1. **Phase 1：基礎設施層** — `core/paths.py`, `core/config_manager.py`
+2. **Phase 2：資料層** — `core/ocr_repository.py`, `core/collection_manager.py`
+3. **Phase 3：UI 層** — `ui/gallery_view_controller.py`, `ui/window_state_manager.py`
+
+### 工具鏈
+
+```bash
+# 運行 mypy
+mypy --strict core/ ui/
+
+# 運行 pyright（VSCode / IDE 用）
+# 在 pyrightconfig.json 中配置
+```
+
+---
+
+## 📐 架構願景
+
+### 短期（3 個月）
+
+- ✅ 完成 Phase 3 預覽層拆分
+- ✅ 修復已知 2 個 Bug
+- ⏳ 補完 core/ 測試用例（≥ 80%）
+
+### 中期（6-12 個月）
+
+- ⏳ Phase 4 繪製邏輯拆分
+- ⏳ 啟用型別檢查（全代碼库 mypy strict）
+- ⏳ 重構 `ImageSearchEngine` — 與 `indexer.py` 職責整合
+
+### 長期願景
+
+- **可測試架構** — 所有邏輯層都能單元測試
+- **外掛機制** — 支援第三方 AI 模型（如 LangChain 整合）
+- **性能優化** — FAISS GPU 加速、增量索引
+- **國際化完善** — 動態語言包安裝、RTL 支援
+
+---
+
+## 🔧 現有技術棧
+
+### 前端
+- **PyQt6** — UI 框架
+- **QListView + QStandardItemModel** — 搜尋結果網格
+- **QThread** — 背景索引 / 搜尋
+
+### 後端
+- **CLIP (onnxruntime)** — 視覺向量化
+- **PaddleOCR (onnxruntime)** — 文字辨識
+- **FAISS** — 向量相似度搜尋
+- **SQLite + WAL** — 索引存儲
+
+### 工具
+- **Qt Designer** 佈局（手工編寫）
+- **subprocess** — 跨進程 IPC
+- **ctypes** — Win32 原生呼叫
+
+---
+
+## 📚 延伸資源
+
+### 設計文獻
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — 目錄結構與職責
+- [LAYERS.md](./LAYERS.md) — 各層邊界
+- [DESIGN_PATTERNS.md](./DESIGN_PATTERNS.md) — 設計模式详解
+- [CONTRIBUTION.md](./CONTRIBUTION.md) — 新增功能流程
+
+### 模組文獻
+
+- [MODULES_CORE.md](./MODULES_CORE.md) — 8 個核心模組
+- [MODULES_UI.md](./MODULES_UI.md) — UI 控制器與 widgets
+- [DATABASE_SCHEMA.md](./DATABASE_SCHEMA.md) — SQLite 完整 schema
+
+---
+
+## 🔗 外部鏈接
+
+- **GitHub 倉庫** — [gemini-rag-image](https://github.com/your-org/gemini-rag-image)
+- **CLAUDE.md**（旋文件） — 架構精簡導航
+
+---
+
+*最後更新時間：Phase 2 完工後（commit `9f84392`）。後續若有新加模組或架構調整，請同步更新本文件。*
