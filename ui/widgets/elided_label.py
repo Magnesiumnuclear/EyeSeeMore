@@ -18,6 +18,8 @@ class ElidedLabel(QLabel):
     與標準 QLabel 相比的差異：
     - minimumSizeHint() 水平寬度固定回傳 0，讓佈局在空間不足時可將此
       Label 縮到任意寬度，而不會撐大視窗最小寬度。
+    - sizeHint() 永遠以完整原始文字計算寬度，讓佈局在空間充足時自動
+      擴展回全寬，避免設定省略文字後縮減 → 再省略的惡性循環。
     - SizePolicy 維持預設 Preferred，有多餘空間時仍會要求完整文字寬度。
     - resizeEvent 時重算省略文字，縮短到實際可用寬度。
     - 自動設定 ToolTip 為完整文字（有省略時才顯示）。
@@ -28,6 +30,7 @@ class ElidedLabel(QLabel):
         super().__init__(parent)
         self._full_text = text
         self._elide = elide
+        self._refreshing = False  # 重入防護旗標
         if text:
             self._refresh()
 
@@ -38,6 +41,15 @@ class ElidedLabel(QLabel):
         base = super().minimumSizeHint()
         h = base.height() if base.isValid() else 0
         return QSize(0, h)
+
+    # ------------------------------------------------------------------
+    #  覆寫：以完整文字計算 sizeHint，防止省略後佈局縮減 → 再省略的循環
+    # ------------------------------------------------------------------
+    def sizeHint(self) -> QSize:
+        fm = self.fontMetrics()
+        w = fm.horizontalAdvance(self._full_text)
+        h = super().sizeHint().height()
+        return QSize(w, h)
 
     # ------------------------------------------------------------------
     #  公開介面
@@ -58,13 +70,19 @@ class ElidedLabel(QLabel):
         self._refresh()
 
     def _refresh(self) -> None:
-        w = self.width()
-        if w <= 0:
-            # 尚未佈局完成，先暫存原始文字；resizeEvent 後再更新
-            super().setText(self._full_text)
+        if self._refreshing:
             return
-        fm = self.fontMetrics()
-        elided = fm.elidedText(self._full_text, self._elide, w)
-        super().setText(elided)
-        # 只在實際有省略時顯示 tooltip
-        self.setToolTip(self._full_text if elided != self._full_text else "")
+        self._refreshing = True
+        try:
+            w = self.width()
+            if w <= 0:
+                # 尚未佈局完成，先暫存原始文字；resizeEvent 後再更新
+                super().setText(self._full_text)
+                return
+            fm = self.fontMetrics()
+            elided = fm.elidedText(self._full_text, self._elide, w)
+            super().setText(elided)
+            # 只在實際有省略時顯示 tooltip
+            self.setToolTip(self._full_text if elided != self._full_text else "")
+        finally:
+            self._refreshing = False
