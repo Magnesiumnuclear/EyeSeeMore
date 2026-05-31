@@ -5961,10 +5961,11 @@ class MainWindow(QMainWindow):
                 collections_open=ui_state.get("collections_accordion_open", False),
             )
 
-            # [Phase 3-B] 移除 _apply_folder_filter 呼叫
-            # 原因：random_data_ready 訊號在 t~100ms 發射時已調用 set_base_results()
-            #      在 t~8000ms 再次調用會重新初始化 Model，可能干擾初始渲染
-            #      圖片應該在早期已經顯示在 UI 上，不需等待模型加載完成
+            # [Phase 3-B] 只在非 "ALL" 的啟動資料夾時才需要套用資料夾過濾
+            # "ALL" 的情況已由 random_data_ready 訊號（t~100ms）的 set_base_results() 處理
+            # 避免不必要的 beginResetModel() 重置，使圖片得以更早出現
+            if self.current_folder_path and self.current_folder_path != "ALL":
+                self._apply_folder_filter(self.current_folder_path)
 
         # 發射 ai_ready 訊號（供舊程式碼相容）
         self.ai_ready.emit()
