@@ -196,16 +196,16 @@ def _boxes_match(box1, box2) -> bool:
 
 | 操作 | 方法 |
 |------|------|
-| **新增資料夾** | `create_collection(name, icon)` |
-| **取資料夾清單** | `list_collections()` |
-| **刪除資料夾** | `delete_collection(col_id)` |
-| **列舉資料夾內容** | `get_collection_items(col_id)` |
-| **加遠file** | `add_item(col_id, file_path)` |
-| **移除檔案** | `remove_item(col_id, file_path)` |
+| **新增資料夾** | `add_collection(name, icon)` |
+| **取資料夾清單** | `get_collections()` |
+| **刪除資料夾** | `remove_collection(collection_id)` |
+| **更新圖示** | `update_collection_icon(collection_id, icon)` |
+| **加入圖片** | `add_to_virtual_folder(collection_id, file_paths)` |
+| **取資料夾內容** | `get_virtual_folder_images(collection_id)` |
 
 **特點：**
-- icon 欄位**冪等遷移**（舊版沒有 icon，load 時自動補預設值）
-- 與 `data_store` **by-reference 共享**（不復制，直接操作 list）→ 快速查詢
+- icon 欄位**冪等遷移**（`_ensure_icon_column`）：若 collections 表尚無 icon 欄位則自動補建；使用 class-level `_icon_column_ensured` 旗標確保 `PRAGMA table_info` 只執行一次，後續所有呼叫零額外 SQL（Phase 3-E 優化）
+- 與 `data_store` **by-reference 共享**（不復制，直接操作 list）→ `get_virtual_folder_images` 掃記憶體即可，O(N) 但無 I/O
 
 **schema：**
 ```

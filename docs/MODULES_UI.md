@@ -102,52 +102,63 @@ self.ui.setup_ui(self)  # ✅ 此時 self.config 和 self.history_mgr 已存在
 **訊號：**
 | 訊號 | 參數 | 用途 |
 |------|------|------|
-| `layout_changed()` | — | 佈局變化（通知重繪） |
-| `selection_changed(list)` | 選中檔案路徑清單 | 更新右側面板 |
-| `preview_requested(str)` | 檔案路徑 | 開啟預覽 |
-| `empty_state_changed(bool)` | 是否為空 | 顯示/隱藏「無搜尋結果」提示 |
+| `layout_changed()` | — | `adjust_layout` 計算完成，供外部觀察者使用 |
+| `status_text_changed(str)` | 狀態文字 | 過濾結果統計、搜尋完成訊息等 |
+| `status_highlight_changed(str)` | `'alert'` 或 `'none'` | 狀態列高亮等級 |
+| `search_input_cleared()` | — | 通知搜尋框清空（time-range 搜尋完成後） |
 
-**搜尋結果儲存：**
+**建構子：**
 ```python
-class GalleryViewController:
-    def __init__(self, list_view: QListView, model: QStandardItemModel):
-        self.list_view = list_view
-        self.model = model
+gallery_ctrl = GalleryViewController(
+    list_view=mw.list_view, model=mw.model, delegate=mw.delegate,
+    inspector_panel=mw.inspector_panel, config=mw.config,
+    empty_state_overlay=mw._empty_state_overlay, nav=mw.nav,
+    initial_view_mode="large",   # xl / large / medium
+    parent=mw,
+)
+```
 
-    def display_results(self, items: list[ImageItem]):
-        """顯示搜尋結果"""
-        self.model.clear()
-        for item in items:
-            self.model.appendRow(...)
+**核心方法：**
+```python
+def set_base_results(self, results: list) -> None:
+    """搜尋/載入資料的統一入口：儲存原始結果，自動套用過濾器並更新 UI"""
+
+def apply_current_filters_and_show(self, test_mode: bool = False) -> int:
+    """套用時間 / 長寬比 / Limit 過濾器到 last_search_results 並丟給 Model。
+    test_mode=True 時只回傳筆數，不更新 UI（防呆預覽用）"""
 ```
 
 **3 層過濾 + 5 種排序：**
 
-過濾層：
-1. **時間範圍過濾** —— 日期區間選擇
-2. **圖片比例過濾** —— 橫/豎/正方形
-3. **結果數量限制** —— 只顯示前 N 項
+過濾層（按順序套用）：
+1. **時間範圍過濾** —— 起訖 mtime 區間
+2. **圖片比例過濾** —— 橫圖 / 直圖 / 正方形（容差 5%）
+3. **Limit 截斷** —— 只顯示前 N 項（改變 N 時直接呼叫 `apply_current_filters_and_show`，**不重跑 FAISS**）
 
-排序模式：
-1. 搜尋相關度（高→低）
-2. 修改時間（新→舊）
-3. 修改時間（舊→新）
-4. 檔案名（A→Z 或反序）
-5. **自動置頂釘選** ← 無論哪種排序都保留
+排序模式（皆以 `is_pinned` 為第一優先鍵，釘選永遠置頂）：
+1. 搜尋相關度（score 高→低）
+2. 日期（mtime 新→舊或舊→新）
+3. 名稱（filename A→Z 或反序）
+4. 類型（副檔名）
+5. 大小（檔案大小）
+
+> **排序實作細節（Phase 3-E 改進）：** `sort_items` 改用 `layoutAboutToBeChanged` / `layoutChanged`
+> 取代 `beginResetModel` / `endResetModel`，排序時不再觸發視圖全量重設，
+> 避免排序後 scroll 位置跳頂的二次 reset。
 
 **視圖模式：**
-- Grid 佈局（縮圖網格，動態均分列寬）
-- List 佈局（列表視圖）
-- 切換時自動保持滾動位置
+| 模式 | 卡片寬 × 高 | 縮圖高 |
+|------|------------|--------|
+| `xl` | 320 × 380 | 240px |
+| `large`（預設） | 240 × 290 | 160px |
+| `medium` | 180 × 230 | 120px |
 
-**空狀態診斷：**
-```python
-def check_empty_state(self):
-    """判斷是否應顯示「無搜尋結果」提示"""
-    if not self.model.rowCount():
-        self.empty_state_changed.emit(True)
-        # UI 層可在圖片區域顯示提示文字
-```
+**佈局計算（`adjust_layout`）：**
+- 動態均分演算法：`space = 剩餘寬 / (列數 + 1)`，四周邊距與間距相等
+- **Phase 3-E 優化**：計算結果以 `(space, grid_w, grid_h)` 為 key 快取（`_last_layout`），相同結果直接略過所有 setter，視窗微幅縮放不再觸發無效 relayout
+
+**空狀態診斷（`_update_search_diagnostics`）：**
+- 過濾後筆數為 0 時自動顯示原因（無結果 / 時間過濾截斷 / 長寬比截斷 / Limit 截斷）
 
 ---
 
@@ -262,9 +273,20 @@ nav.get_pending_scroll_pos() -> int # 恢復滾動位置
 
 | 分頁 | 組件 |
 |------|------|
-| **搜尋過濾** | 日期區間日曆、比例勾選、結果限制滑桿 |
+| **搜尋過濾** | 日期區間日曆、比例勾選、結果限制下拉 |
 | **屬性檢視** | 圖片尺寸、檔案大小、修改時間等 |
 | **OCR 結果** | OCR 文字顯示、摺疊區塊 |
+
+**訊號：**
+| 訊號 | 參數 | 用途 |
+|------|------|------|
+| `weights_changed(dict)` | `WeightConfig` 字典 | 搜尋權重或模式改變時發射，觸發重新搜尋 |
+
+> **重要區別（Phase 3-E）：**
+> `on_limit_changed`（切換顯示數量）**不發射 `weights_changed`**，
+> 直接呼叫 `main_window.apply_current_filters_and_show()`，
+> 只對現有結果做截斷，**不重跑 FAISS 向量搜尋**。
+> 只有真正影響搜尋分數的操作（權重滑桿、計算模式、閾值）才發射 `weights_changed`。
 
 **包含的自訂 widget：**
 - `CollapsibleSection` — 可摺疊區塊（點標題展開/收起）
@@ -406,13 +428,23 @@ SearchOrchestrator.launch_search(query)  [core/]
     ↓
 SearchWorker (QThread)
     ↓
-emit results
+emit results_ready
     ↓
-GalleryViewController.display_results(results)
+GalleryViewController.set_base_results(results)
+  ├─ apply_current_filters_and_show()   → model.set_search_results(filtered)
+  └─ apply_gallery_sort()               → model.sort_items(key_func)
+                                            └─ layoutAboutToBeChanged / layoutChanged
     ↓
-emit selection_changed, layout_changed
+emit status_text_changed, layout_changed
     ↓
-MainWindow 連接的 slots 更新 inspector_panel
+MainWindow 連接的 slots 更新狀態列
+
+── Limit 切換（不重搜）──────────────────────────────────────────
+InspectorPanel.on_limit_changed()
+    ↓
+MainWindow.apply_current_filters_and_show()   ← 直接截斷現有結果
+    ↓
+GalleryViewController.apply_current_filters_and_show()
 ```
 
 ---

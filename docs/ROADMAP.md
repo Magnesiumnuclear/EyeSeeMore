@@ -35,6 +35,7 @@ Phase 3 (非阻塞模型加載 & 解耦 & UI 響應式 & 效能優化)
 └── 3-B: _on_models_loaded 優化  ← 畫廊圖片提早顯示【已完成】
 └── 3-C: elided_label.py         ← TopBar 響應式寬度【已完成】
 └── 3-D: 三大效能熱點修復         ← I/O阻塞、N+1查詢、FAISS演算法【已完成】
+└── 3-E: 畫廊渲染 Quick-wins      ← 7 項低風險效能改進【已完成】
 ```
 
 ### 架構改進
@@ -50,6 +51,10 @@ Phase 3 (非阻塞模型加載 & 解耦 & UI 響應式 & 效能優化)
 - ✅ **啟動 I/O 去阻塞** — os.scandir 預掃描替代 N 次 os.path.exists syscall【Phase 3-D 新增】
 - ✅ **軌道 C 批次查詢** — IN 子句消除 2N 次 round-trip，OCR 補算速度 ×2~5【Phase 3-D 新增】
 - ✅ **FAISS 動態 HNSW** — 超過 1 萬筆自動切換 O(log N) 圖索引，搜尋延遲降至個位數 ms【Phase 3-D 新增】
+- ✅ **Limit 切換不重搜** — 僅截斷現有結果，跳過 FAISS pipeline【Phase 3-E 新增】
+- ✅ **sort_items 輕量更新** — `layoutAboutToBeChanged/layoutChanged` 取代第二次 `beginResetModel`，消除排序閃爍【Phase 3-E 新增】
+- ✅ **adjust_layout 快取** — `_last_layout` tuple 防止視窗微幅縮放觸發無效 setter【Phase 3-E 新增】
+- ✅ **_ensure_icon_column 單次執行** — class-level 旗標消除每次 get_collections 的額外 SQL【Phase 3-E 新增】
 
 ---
 
@@ -100,6 +105,31 @@ Phase 3 (非阻塞模型加載 & 解耦 & UI 響應式 & 效能優化)
 - `os.scandir` 只掃一層（直接父目錄），正確覆蓋所有已索引檔案路徑（DB 存的是完整絕對路徑，dirname 一定是其直接父目錄）
 - HNSW 建構時間為 O(N log N)（比 FlatIP 慢），但只在啟動時執行一次；`efSearch=64` 在精度（~98% recall）與速度間取得平衡
 - `METRIC_INNER_PRODUCT` 確保與原 `IndexFlatIP` 的余弦相似度語義完全一致（向量已 L2 正規化）
+
+---
+
+## 🔧 Phase 3-E 改進詳情（【已完成】）
+
+### 問題
+
+Phase 3-D 解決了啟動與索引流程的三大熱點，但畫廊的**互動渲染路徑**仍存在多個低成本可修復的瓶頸。
+
+### 解決方案
+
+| # | 改動 | 檔案 | 說明 |
+|---|------|------|------|
+| 1 | `on_limit_changed` 不再發射 `weights_changed` | `ui/inspector_panel.py` | 直接呼叫 `apply_current_filters_and_show()`，切換顯示數量時跳過完整 FAISS pipeline |
+| 2 | `sort_items` 改用 `layoutAboutToBeChanged/layoutChanged` | `Blur-main.py` | 排序不再觸發第二次 `beginResetModel`，避免視圖全量重設與閃爍 |
+| 3 | `on_sidebar_toggled` 移除 `processEvents()` | `Blur-main.py` | 改用 `QTimer.singleShot(0, adjust_layout)`，消除遞迴重入事件迴圈風險 |
+| 4 | `adjust_layout` 加入 `_last_layout` 快取 | `ui/gallery_view_controller.py` | 相同計算結果直接 return，視窗微幅縮放不再觸發無效 setter |
+| 5 | `import math` 移至檔案頂端 | `Blur-main.py` | 消除每次 `OCRLabel.paintEvent` 的模組字典查找 |
+| 6 | `_ensure_icon_column` 加 class-level 旗標 | `core/collection_manager.py` | `PRAGMA table_info` 只執行一次，後續所有 `get_collections` 呼叫零額外 SQL |
+| 7 | `change_view_mode` 移除冗餘 `layoutChanged.emit()` | `ui/gallery_view_controller.py` | `update_target_size` 已含 reset；改以 `_last_layout = ()` 強制 adjust_layout 重算 |
+
+### 設計取捨
+
+- **Quick-win #2 的限制**：`sort_items` 改用 `layoutAboutToBeChanged/layoutChanged` 後若未呼叫 `changePersistentIndexList`，`QPersistentModelIndex` 在排序後會失效（選取狀態可能偏移）。目前 `apply_gallery_sort` 結束後會呼叫 `scrollToTop()`，實務上不影響使用體驗。若未來需保留選取，應補完 `changePersistentIndexList` 映射表（屬中長期架構建議 C）。
+- **Quick-win #6 的前提**：`_icon_column_ensured` 是 class-level（所有實例共享），適用於單一 DB 的正常使用場景。若同一程序同時操作多個 DB（每個需要獨立遷移），應改為 instance-level 旗標。
 
 ---
 
@@ -408,4 +438,4 @@ mypy --strict core/ ui/
 
 ---
 
-*最後更新時間：Phase 3-D 完工後（三大效能熱點修復：I/O 去阻塞、N+1 批次查詢、FAISS HNSW 動態切換）。後續若有新加模組或架構調整，請同步更新本文件。*
+*最後更新時間：Phase 3-E 完工後（畫廊渲染 Quick-wins：Limit 不重搜、sort_items 輕量更新、adjust_layout 快取、SQL 單次遷移等 7 項改進）。後續若有新加模組或架構調整，請同步更新本文件。*
