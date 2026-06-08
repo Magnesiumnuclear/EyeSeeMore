@@ -30,6 +30,7 @@ if __name__ == "__main__":
         sys.exit(0)
 # ─────────────────────────────────────────────────────────────────────────
 
+import math
 import os
 import time
 import sqlite3
@@ -711,7 +712,7 @@ class SearchResultsModel(QAbstractListModel):
     def sort_items(self, key_func, reverse=False):
         """排序時直接對 all_items 排序，不再需要洗牌第一批。
         漏斗卡片永遠緊跟在所有釘選圖之後，不參與一般排序邏輯。"""
-        self.beginResetModel()
+        self.layoutAboutToBeChanged.emit()
 
         # 抽出漏斗卡片（只有 0 或 1 張）
         funnel_items = [it for it in self.all_items if getattr(it, 'is_funnel_card', False)]
@@ -727,7 +728,7 @@ class SearchResultsModel(QAbstractListModel):
 
         self.all_items = other_items
         self.path_to_row = {item.path: i for i, item in enumerate(self.all_items)}
-        self.endResetModel()
+        self.layoutChanged.emit()
 
     def rowCount(self, parent=QModelIndex()):
         #  瘦身 4：解放限制，直接回傳真實總數量
@@ -2609,8 +2610,6 @@ class OCRLabel(QLabel):
             scale_y  = dh / self.original_size.height()
         else:
             has_pm = False
-
-        import math
 
         # ── 1. 既有 OCR 紅框（Shift 模式）────────────────────────
         if self.show_ocr_boxes and self.ocr_data and has_pm:
@@ -5400,11 +5399,7 @@ class MainWindow(QMainWindow):
         """
         當側邊欄收合/展開時，強制 QListView 重新計算 Grid 佈局。
         """
-        # 1. 強制處理所有的 Layout 事件，確保 sidebar 的寬度變更已經應用到 main_layout
-        QApplication.processEvents()
-        
-        # 2. 重新計算間距
-        self.adjust_layout()
+        QTimer.singleShot(0, self.adjust_layout)
 
     # [修正] 實作資料夾篩選邏輯
     def on_folder_filter(self, path):

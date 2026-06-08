@@ -122,6 +122,9 @@ class GalleryViewController(QObject):
         self.current_card_size: QSize = initial_card_size or QSize(240, 290)
         self.current_thumb_size: QSize = initial_thumb_size or QSize(240, 180)
 
+        # ── adjust_layout 結果快取（相同計算跳過 setter） ──
+        self._last_layout: tuple = ()
+
     # ==================================================================
     #  排序
     # ==================================================================
@@ -410,7 +413,7 @@ class GalleryViewController(QObject):
 
         self.delegate.set_view_params(new_card_size, thumb_h)
         self.model.update_target_size(self.current_thumb_size)
-        self.model.layoutChanged.emit()
+        self._last_layout = ()  # 視圖模式變更，強制 adjust_layout 重算
         self.adjust_layout()
 
     def adjust_layout(self) -> None:
@@ -449,14 +452,18 @@ class GalleryViewController(QObject):
         space = int(remaining_space // (n_cols + 1))
         space = max(0, space)  # 安全限制：不小於 0
 
-        # 6. 應用設定
-        self.list_view.setSpacing(space)
-        # 四周邊距全部用 space（Top 也不再鎖死 20）
-        self.list_view.setContentsMargins(space, space, space, space)
-
-        # 7. 終極鎖定：直接告訴 ListView 每個網格的絕對大小
+        # 6. 計算最終格子尺寸
         grid_w = self.current_card_size.width() + space
         grid_h = self.current_card_size.height() + space
+
+        # 相同結果跳過所有 setter，避免無效 relayout
+        cache_key = (space, grid_w, grid_h)
+        if cache_key == self._last_layout:
+            return
+        self._last_layout = cache_key
+
+        self.list_view.setSpacing(space)
+        self.list_view.setContentsMargins(space, space, space, space)
         self.list_view.setGridSize(QSize(grid_w, grid_h))
 
         self.layout_changed.emit()

@@ -40,6 +40,8 @@ class CollectionManager:
     （資料夾內的圖片清單）兩張資料表的所有讀寫操作。
     """
 
+    _icon_column_ensured: bool = False  # class-level flag，避免重複 PRAGMA 查詢
+
     def __init__(self, db_path: str, data_store: List[Dict[str, Any]]) -> None:
         """建立 CollectionManager 實例。
 
@@ -77,10 +79,13 @@ class CollectionManager:
         Args:
             conn: 外部提供的 sqlite3 連線（已開啟交易）。
         """
+        if CollectionManager._icon_column_ensured:
+            return
         cols = [row[1] for row in conn.execute("PRAGMA table_info(collections)").fetchall()]
         if "icon" not in cols:
             conn.execute("ALTER TABLE collections ADD COLUMN icon TEXT DEFAULT '🏷️'")
             conn.commit()
+        CollectionManager._icon_column_ensured = True
 
     # ------------------------------------------------------------------
     #  虛擬資料夾 CRUD（新版 API）

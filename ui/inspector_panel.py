@@ -1120,19 +1120,19 @@ class InspectorPanel(QFrame):
         self.on_threshold_mode_changed(self.combo_threshold_mode.currentIndex(), save=False)
 
     def on_limit_changed(self):
-        """當使用者改變顯示數量時，儲存設定並觸發即時重新搜尋"""
+        """當使用者改變顯示數量時，儲存設定並套用截斷，不重跑 FAISS"""
         ui_state = self.main_window.config.get("ui_state", {})
-        
+
         limit_text = self.combo_limit_panel.currentText()
         if limit_text == "All":
             ui_state["search_limit"] = "All"
         else:
             ui_state["search_limit"] = int(limit_text)
-            
+
         self.main_window.config.set("ui_state", ui_state)
-        
-        # 觸發重新搜尋 (因為底層有文字特徵快取，這會是 0 毫秒瞬間更新)
-        self.weights_changed.emit(self.get_weight_config())
+
+        # 只需重新過濾截斷現有結果，不需重跑向量搜尋
+        self.main_window.apply_current_filters_and_show()
 
     def reset_weights_to_default(self):
         self.combo_calc_mode.setCurrentIndex(0)
