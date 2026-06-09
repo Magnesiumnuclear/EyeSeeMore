@@ -15,6 +15,8 @@
 | **掌握松散耦合與訊號設計** | [DESIGN_PATTERNS.md](./DESIGN_PATTERNS.md) | Thin Delegation / 依賴注入 / Signal / 跨執行緒 |
 | **修改資料庫邏輯** | [DATABASE_SCHEMA.md](./DATABASE_SCHEMA.md) | SQLite 完整 schema、WAL 模式、FAISS 向量化 |
 | **完整理解背景索引引擎** | [INDEXER.md](./INDEXER.md) | indexer.py 的職責、三軌道流程、資料表互動、效能設計 |
+| **查看 OCR 推論引擎腳本** | [../onnx_ocr.py](../onnx_ocr.py) | ONNX PaddleOCR 推論入口，提供統一 `ocr()` 介面 |
+| **查看 CLIP ONNX 轉換腳本** | [../export_clip_onnx.py](../export_clip_onnx.py) | 將 PyTorch CLIP 匯出為 ONNX 的開發工具腳本 |
 | **新增功能的逐步指南** | [CONTRIBUTION.md](./CONTRIBUTION.md) | 從需求 → 設計 → 實裝 → i18n / QSS 規範 → 測試 |
 | **多國語系 & 樣式表規範** | [CONTRIBUTION.md](./CONTRIBUTION.md#-ui-文字與樣式規範) | JSON 語言檔、QSS 集中管理、禁止 hardcode |
 | **查看重構進度與願景** | [ROADMAP.md](./ROADMAP.md) | Phase 1-2 戰績、Phase 3+ 規劃、既知 Bug |
