@@ -1,582 +1,106 @@
-# MODULES_UI.md — UI 控制器與 widget 層詳解
+# MODULES_UI.md — ui 模組索引
 
-> 這層負責視覺展示、事件處理、訊號連接。Phase 2 新增 2 個控制器，Phase 3-F 從 Blur-main.py 再拆出 8 個模組。
-
-## 📐 層次結構
-
-```
-ui/
-├─ 主布局與管理
-│  ├─ main_window_ui.py        ← MainWindow 元件佈局（純 UI）
-│  └─ action_handler.py        ← 鍵盤滑鼠事件分發
-│
-├─ 控制器（Phase 2 新增）
-│  ├─ gallery_view_controller.py   (Phase 2-D) ← 畫廊視圖邏輯
-│  └─ window_state_manager.py      (Phase 2-E) ← 視窗狀態 + Win32
-│
-├─ 原有管理器
-│  ├─ theme_manager.py         ← 主題 I/O 與套用
-│  ├─ navigation_manager.py    ← 導航回退棧
-│  └─ inspector_panel.py       ← 右側 3 分頁面板
-│
-├─ Phase 3-F 拆出（原在 Blur-main.py）
-│  ├─ gallery_model.py         ← SearchResultsModel + GalleryListView
-│  ├─ preview_overlay.py       ← 全螢幕圖片預覽 + OCR 框互動
-│  ├─ settings_dialog.py       ← SettingsDialog + OnboardingDialog
-│  └─ sidebar_widget.py        ← SidebarWidget + FolderHoverMenu 等
-│
-├─ widgets/ 原子 widget
-│  ├─ base.py                  ← BaseToggleWidget 基類
-│  ├─ drag_list.py             ← 半透明拖曳列表
-│  ├─ elided_label.py          ← 自動省略文字的 QLabel (Phase 3-C)
-│  ├─ search_capsule.py        ← 頂部搜尋膠囊 + 歷史下拉
-│  ├─ empty_state.py           ← 空狀態覆蓋層 (Phase 3-F)
-│  ├─ feature_widgets.py       ← 多模態特徵標籤面板 (Phase 3-F)
-│  ├─ image_delegate.py        ← 圖片卡片繪製代理 (Phase 3-F)
-│  └─ ocr_widgets.py           ← OCR 框選裁切 + 標籤 (Phase 3-F)
-│
-└─ settings_pages/ 設定分頁（8 頁）
-   ├─ folders_page.py          ← 資料夾管理
-   ├─ ai_engine_page.py        ← AI 引擎設定
-   ├─ appearance_page.py       ← 介面與顯示
-   ├─ hotkeys_page.py          ← 快捷鍵設定
-   ├─ performance_page.py      ← 效能調整
-   ├─ auto_tasks_page.py       ← 自動任務
-   ├─ language_page.py         ← 語言選擇
-   └─ about_page.py            ← 關於與說明
-```
+> 這份文件只回答：ui 層有哪些模組、各自負責什麼、什麼時候應該去讀或修改它。
+> 不涵蓋完整互動流程與所有 widget 細節；若要看分層邊界請讀 LAYERS.md，若要看 Win32 視窗整合請改讀後續專題文 WINDOW_INTEGRATION.md。
 
 ---
 
-## 主布局與事件處理
+## 如何使用這份索引
 
-### `main_window_ui.py`
-
-**職責：** 純 UI 元件佈局，負責在 MainWindow 建立所有視覺元件
-
-| 組件 | 描述 |
-|------|------|
-| **頂部搜尋膠囊** | SearchCapsule widget |
-| **麵包屑標題** | ElidedLabel（寬度不足時省略，tooltip 顯示完整路徑） |
-| **狀態列文字** | ElidedLabel（同上） |
-| **左側導航** | 資料夾樹、集合清單、釘選清單 |
-| **中心畫廊** | QListView（縮圖網格） + 自繪 ImageDelegate |
-| **右側檢查器** | 3 分頁：過濾 / 屬性 / OCR 結果 |
-| **Splitter** | 可調整分割線 |
-
-**關鍵方法：**
-```python
-class Ui_MainWindow:
-    def setup_ui(self, MainWindow):
-        """在提供的 MainWindow 上建立所有視覺元件"""
-        # 前提條件：MainWindow 需有 self.config 與 self.history_mgr 屬性
-        MainWindow.setWindowTitle("EyeSeeMore")
-        # ... 建立所有 widget
-```
-
-**使用範例：**
-```python
-# Blur-main.py: MainWindow.__init__
-self.config = ConfigManager(...)
-self.history_mgr = SearchHistoryManager(...)
-self.ui = Ui_MainWindow()
-self.ui.setup_ui(self)  # ✅ 此時 self.config 和 self.history_mgr 已存在
-```
+1. 先確認問題屬於 UI 組裝、事件轉發、視圖控制或設定頁。
+2. 用下表定位可能的模組。
+3. 若問題跨到搜尋、索引、OCR 或模型生命週期，應回頭搭配 `MODULES_CORE.md` 或專題文一起看。
 
 ---
 
-### `action_handler.py`
+## 主布局與控制器
 
-**職責：** 統一分發鍵盤與滑鼠事件，轉換為訊號
-
-| 事件 | 轉換訊號 |
-|------|---------|
-| Escape | `requestExitPreview()` |
-| Shift | `requestToggleOCR()` |
-| WASD / 方向鍵 | `requestNavigate(direction)` |
-| Space | `requestPlayPauseVideo()` |
-| Ctrl+C | `requestCopyFilePath()` |
-| Alt←/→ | `requestBackNavigation()` / `requestForwardNavigation()` |
-| 滑鼠中鍵 | `requestShowContext()` |
-
-**設計意圖：** 將複雜的按鍵邏輯統一集中，便於維護和修改快捷鍵
+| 模組 | 主要責任 | 何時應該讀它 | 相關文件 |
+|------|----------|--------------|----------|
+| `main_window_ui.py` | MainWindow 視覺元件佈局 | 調整主畫面結構、元件配置、初始化前提 | `ARCHITECTURE.md` |
+| `action_handler.py` | 鍵盤與滑鼠事件分發 | 快捷鍵、預覽操作、滑鼠中鍵等行為 | `DESIGN_PATTERNS.md` |
+| `gallery_view_controller.py` | 畫廊視圖狀態、過濾、排序與顯示 | 搜尋結果顯示、視圖模式、診斷狀態 | `INDEXER.md` |
+| `window_state_manager.py` | 視窗狀態、置頂與標題列座標同步 | 最大化、置頂、DPR、標題列互動 | 後續建議拆到 `WINDOW_INTEGRATION.md` |
 
 ---
 
-## 控制器層（Phase 2）
+## 原有管理器與面板
 
-### `gallery_view_controller.py` (Phase 2-D)
-
-**職責：** 畫廊視圖（搜尋結果清單）的邏輯與狀態管理
-
-**訊號：**
-| 訊號 | 參數 | 用途 |
-|------|------|------|
-| `layout_changed()` | — | `adjust_layout` 計算完成，供外部觀察者使用 |
-| `status_text_changed(str)` | 狀態文字 | 過濾結果統計、搜尋完成訊息等 |
-| `status_highlight_changed(str)` | `'alert'` 或 `'none'` | 狀態列高亮等級 |
-| `search_input_cleared()` | — | 通知搜尋框清空（time-range 搜尋完成後） |
-
-**建構子：**
-```python
-gallery_ctrl = GalleryViewController(
-    list_view=mw.list_view, model=mw.model, delegate=mw.delegate,
-    inspector_panel=mw.inspector_panel, config=mw.config,
-    empty_state_overlay=mw._empty_state_overlay, nav=mw.nav,
-    initial_view_mode="large",   # xl / large / medium
-    parent=mw,
-)
-```
-
-**核心方法：**
-```python
-def set_base_results(self, results: list) -> None:
-    """搜尋/載入資料的統一入口：儲存原始結果，自動套用過濾器並更新 UI"""
-
-def apply_current_filters_and_show(self, test_mode: bool = False) -> int:
-    """套用時間 / 長寬比 / Limit 過濾器到 last_search_results 並丟給 Model。
-    test_mode=True 時只回傳筆數，不更新 UI（防呆預覽用）"""
-```
-
-**3 層過濾 + 5 種排序：**
-
-過濾層（按順序套用）：
-1. **時間範圍過濾** —— 起訖 mtime 區間
-2. **圖片比例過濾** —— 橫圖 / 直圖 / 正方形（容差 5%）
-3. **Limit 截斷** —— 只顯示前 N 項（改變 N 時直接呼叫 `apply_current_filters_and_show`，**不重跑 FAISS**）
-
-排序模式（皆以 `is_pinned` 為第一優先鍵，釘選永遠置頂）：
-1. 搜尋相關度（score 高→低）
-2. 日期（mtime 新→舊或舊→新）
-3. 名稱（filename A→Z 或反序）
-4. 類型（副檔名）
-5. 大小（檔案大小）
-
-> **排序實作細節（Phase 3-E 改進）：** `sort_items` 改用 `layoutAboutToBeChanged` / `layoutChanged`
-> 取代 `beginResetModel` / `endResetModel`，排序時不再觸發視圖全量重設，
-> 避免排序後 scroll 位置跳頂的二次 reset。
-
-**視圖模式：**
-| 模式 | 卡片寬 × 高 | 縮圖高 |
-|------|------------|--------|
-| `xl` | 320 × 380 | 240px |
-| `large`（預設） | 240 × 290 | 160px |
-| `medium` | 180 × 230 | 120px |
-
-**佈局計算（`adjust_layout`）：**
-- 動態均分演算法：`space = 剩餘寬 / (列數 + 1)`，四周邊距與間距相等
-- **Phase 3-E 優化**：計算結果以 `(space, grid_w, grid_h)` 為 key 快取（`_last_layout`），相同結果直接略過所有 setter，視窗微幅縮放不再觸發無效 relayout
-
-**空狀態診斷（`_update_search_diagnostics`）：**
-- 過濾後筆數為 0 時自動顯示原因（無結果 / 時間過濾截斷 / 長寬比截斷 / Limit 截斷）
+| 模組 | 主要責任 | 何時應該讀它 | 相關文件 |
+|------|----------|--------------|----------|
+| `theme_manager.py` | 主題讀取、變數替換與套用 | 主題切換、QSS 套用、顏色變數 | `CONTRIBUTION.md` |
+| `navigation_manager.py` | 上一頁 / 下一頁狀態堆疊 | 導航返回、捲動位置恢復 | `ARCHITECTURE.md` |
+| `inspector_panel.py` | 過濾、屬性與 OCR 三分頁 | 權重、limit、屬性顯示與 OCR 面板 | `INDEXER.md` |
 
 ---
 
-### `window_state_manager.py` (Phase 2-E)
+## Phase 3-F 拆出的主要模組
 
-**職責：** 視窗狀態與 Win32 整合（TOPMOST 釘選、最大化/還原、NC 按鈕座標）
-
-| 操作 | 方法 |
-|------|------|
-| **釘選視窗置頂** | `set_topmost(enabled: bool)` |
-| **最大化/還原** | `toggle_maximize()` |
-| **按鈕座標通知** | `update_button_rects(btn_rects)` |
-| **按鈕狀態同步** | `sync_max_button_state()` |
-| **幾何記憶** | `save_geometry()` / `restore_geometry()` |
-
-**訊號：** 無（直接操作注入的 widget）
-
-**特點：**
-- 不發訊號，直接操作 widget（因為 caller 已持有 widget）
-- Win32 層面切換 TOPMOST（`SetWindowPos`），不用 `setWindowFlag`
-- 按鈕座標必須 **乘以 DPR**（設備像素比）
-
-**初始化範例：**
-```python
-# Blur-main.py
-self.window_mgr = WindowStateManager(
-    main_window=self,
-    config=self.config,
-    titlebar_bridge=self.titlebar
-)
-# 監聽視窗大小變化
-self.resizeEvent = lambda e: self.window_mgr.on_resize_event(e)
-```
-
-**Win32 地雷：**
-```python
-# ❌ 錯誤（會毀掉自訂標題列）
-self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-
-# ✅ 正確
-self.window_mgr.set_topmost(True)  # 內部使用 SetWindowPos
-```
+| 模組 | 主要責任 | 何時應該讀它 | 相關文件 |
+|------|----------|--------------|----------|
+| `gallery_model.py` | 搜尋結果 model 與 list view | model reset、排序、縮圖清單顯示 | `PERFORMANCE_NOTES.md` |
+| `preview_overlay.py` | 全螢幕預覽與 OCR 互動 | 預覽層、鍵盤導覽、OCR 框顯示 | 後續建議拆到 `OCR_FLOW.md` |
+| `settings_dialog.py` | 設定對話框與 onboarding | 設定入口、分頁組裝、跨頁 hub | `CONTRIBUTION.md` |
+| `sidebar_widget.py` | 側邊欄與 hover 選單 | 資料夾清單、集合區、統計顯示 | `ARCHITECTURE.md` |
 
 ---
 
-## 原有管理器
+## 原子 widget 與繪製元件
 
-### `theme_manager.py`
-
-**職責：** 主題讀取與套用
-
-| 方法 | 含義 |
-|------|------|
-| `get_available_themes()` | 掃描 `themes/` 並列舉所有主題 |
-| `apply_theme(theme_name)` | 套用主題樣式表 |
-| `get_current_theme()` | 取現用主題名稱 |
-
-**主題格式：**
-```
-themes/
-├─ dark.json          ← 顏色變數定義
-├─ light.json
-└─ base_style.qss     ← QSS 基礎樣式
-```
-
-dark.json 例：
-```json
-{
-  "primary": "#1e1e1e",
-  "text": "#ffffff",
-  "accent": "#0d7377"
-}
-```
-
-base_style.qss：
-```qss
-QMainWindow {
-    background-color: $primary;
-    color: $text;
-}
-```
+| 模組 | 主要責任 | 何時應該讀它 | 相關文件 |
+|------|----------|--------------|----------|
+| `widgets/base.py` | widget 基類與統一錯誤協議 | 新增共用 widget 基礎能力 | `CONTRIBUTION.md` |
+| `widgets/drag_list.py` | 拖曳列表與鬼影效果 | 重排 UI、拖曳視覺效果 | `DESIGN_PATTERNS.md` |
+| `widgets/elided_label.py` | 可省略長文字的 QLabel | TopBar、狀態列、可縮放文字元件 | `PERFORMANCE_NOTES.md` |
+| `widgets/search_capsule.py` | 搜尋膠囊、OCR 切換與歷史下拉 | 搜尋輸入體驗、歷史操作 | `CONTRIBUTION.md` |
+| `widgets/empty_state.py` | 空狀態覆蓋層 | 無結果或空資料夾視覺提示 | `gallery_view_controller.py` |
+| `widgets/feature_widgets.py` | 特徵標籤面板 | 多模態特徵顯示、標籤 UI | `preview_overlay.py` |
+| `widgets/image_delegate.py` | 畫廊卡片繪製與縮圖代理 | paint、卡片渲染與縮圖策略 | `PERFORMANCE_NOTES.md` |
+| `widgets/ocr_widgets.py` | OCR 框選、標籤與互動 | OCR 標註、框選、裁切互動 | 後續建議拆到 `OCR_FLOW.md` |
 
 ---
 
-### `navigation_manager.py`
+## 設定頁面群組
 
-**職責：** 「上一頁」/「下一頁」導航堆疊
+所有 `ui/settings_pages/*.py` 都遵守同一個原則：
 
-**資料結構：**
-```python
-class NavigationManager:
-    back_stack: list = [...]        # 導航歷史
-    forward_stack: list = [...]     # 前進歷史
-    pending_scroll_pos = None       # 待恢復的滾動位置
-```
+1. 透過 `ctx` 字典注入依賴。
+2. 不持有 `main_window` 參照。
+3. 只處理頁面 UI 與設定互動，不直接實作核心流程。
 
-**操作：**
-```python
-nav.push_state(current_state)       # 記錄當前狀態
-nav.go_back() -> state              # 回退 + 記錄 forward
-nav.go_forward() -> state           # 前進
-nav.get_pending_scroll_pos() -> int # 恢復滾動位置
-```
+### 常見頁面
 
-**設計：** 純資料結構 + 回呼函式，不使用訊號
-
----
-
-### `inspector_panel.py`
-
-**職責：** 右側 3 分頁面板（搜尋過濾 / 屬性檢視 / OCR 結果）
-
-| 分頁 | 組件 |
-|------|------|
-| **搜尋過濾** | 日期區間日曆、比例勾選、結果限制下拉 |
-| **屬性檢視** | 圖片尺寸、檔案大小、修改時間等 |
-| **OCR 結果** | OCR 文字顯示、摺疊區塊 |
-
-**訊號：**
-| 訊號 | 參數 | 用途 |
-|------|------|------|
-| `weights_changed(dict)` | `WeightConfig` 字典 | 搜尋權重或模式改變時發射，觸發重新搜尋 |
-
-> **重要區別（Phase 3-E）：**
-> `on_limit_changed`（切換顯示數量）**不發射 `weights_changed`**，
-> 直接呼叫 `main_window.apply_current_filters_and_show()`，
-> 只對現有結果做截斷，**不重跑 FAISS 向量搜尋**。
-> 只有真正影響搜尋分數的操作（權重滑桿、計算模式、閾值）才發射 `weights_changed`。
-
-**包含的自訂 widget：**
-- `CollapsibleSection` — 可摺疊區塊（點標題展開/收起）
-- `RangeCalendarWidget` — 日期區間日曆
+| 頁面 | 主要責任 |
+|------|----------|
+| `folders_page.py` | 資料夾管理與排序 |
+| `ai_engine_page.py` | 模型與 OCR 設定 |
+| `appearance_page.py` | 主題與視圖設定 |
+| `hotkeys_page.py` | 快捷鍵管理 |
+| `performance_page.py` | 快取與效能相關選項 |
+| `auto_tasks_page.py` | 自動任務與掃描策略 |
+| `language_page.py` | 語言切換 |
+| `about_page.py` | 版本與說明 |
 
 ---
 
-## 原子 Widget (`ui/widgets/`)
+## 快速判斷規則
 
-### `base.py` — BaseToggleWidget
+### 先看 `ui/` 模組索引的情況
 
-**職責：** 所有自訂 widget 的基類
+1. 問題直接涉及 widget、佈局、快捷鍵、面板或視圖顯示。
+2. 修改需要直接持有或操作 widget。
+3. 你正在處理 MainWindow 周邊的組裝與互動。
 
-```python
-class BaseToggleWidget(QWidget):
-    errorOccurred = pyqtSignal(str)  # 全域錯誤訊號
+### 應切回其他文件的情況
 
-    def __init__(self):
-        super().__init__()
-        # 統一的錯誤協議
-```
-
-**使用場景：** 任何自訂 widget 都應繼承此類，便於統一錯誤處理
+1. 你正在追搜尋、索引或模型加載的完整鏈路。
+2. 問題其實是資料邏輯，不是顯示邏輯。
+3. 你需要的是設計模式與分層規則，而不是檔名導覽。
 
 ---
 
-### `drag_list.py` — TransparentDragListWidget
-
-**職責：** 拖曳時產生半透明鬼影的列表
-
-**特點：**
-- 拖曳中顯示半透明預覽圖（鬼影）
-- 支援 drop-on-drop 重新排序
-- 視覺反饋流暢
-
-**使用範例：** 資料夾順序調整、集合成員編排
-
----
-
-### `elided_label.py` — ElidedLabel
-
-**職責：** 自動省略文字的 QLabel，用於 TopBar 的麵包屑與狀態列
-
-**核心設計：**
-- 覆寫 `minimumSizeHint()` 讓水平最小寬回傳 0，使佈局可在空間不足時將其縮至任意寬度，**不再撐大視窗最小寬度**
-- 保留預設 `Preferred` SizePolicy，有多餘空間時仍索取完整文字寬度
-- `resizeEvent` 時自動重算省略文字；省略時 ToolTip 顯示完整內容
-- 提供 `fullText()` 取得未省略原始文字（`_nav_snapshot` 和 toast 還原用）
-
-```python
-class ElidedLabel(QLabel):
-    def minimumSizeHint(self) -> QSize:
-        return QSize(0, super().minimumSizeHint().height())
-
-    def setText(self, text: str) -> None:
-        self._full_text = text
-        self._refresh()           # 更新省略顯示
-
-    def fullText(self) -> str:
-        return self._full_text    # 未省略原始文字
-```
-
-**使用位置：**
-- `main_window_ui.py` — `breadcrumb_lbl`（麵包屑）與 `status`（狀態列）
-- 讀取文字時需用 `fullText()` 而非 `.text()`（`.text()` 回傳省略後的顯示值）
-
----
-
-### `search_capsule.py` — SearchCapsule
-
-**職責：** 頂部搜尋膠囊（輸入框 + OCR 切換 + 歷史下拉）
-
-**訊號：**
-| 訊號 | 參數 | 含義 |
-|------|------|------|
-| `searchRequested(dict)` | `{"query": "...", "use_ocr": bool}` | 搜尋請求 |
-| `modeChanged(str)` | "ocr_on" 或 "ocr_off" | OCR 開關切換 |
-
-**子組件：**
-```python
-self.input = QLineEdit()            # 搜尋框
-self.btn_ocr_toggle = QPushButton() # OCR 開關按鈕 [T]
-self._history_list: QListWidget     # 歷史下拉（懶初始化，掛在 top-level window）
-```
-
-**尺寸限制：**
-- `setMinimumWidth(160)` — 最小可縮至 160px（不撐大視窗）
-- `setMaximumWidth(550)` — 避免在超大視窗佔用過多空間
-
----
-
-## 設定對話框分頁 (`ui/settings_pages/`)
-
-### 統一設計
-
-所有設定頁面都透過 `ctx: dict` 注入依賴：
-
-```python
-ctx = {
-    "config": config_manager,
-    "engine": image_search_engine,
-    "translator": translator,
-    "theme_manager": theme_manager,
-    "hub": SettingsDialogHub(...),  # 跨頁面回呼
-}
-
-# 各頁面初始化
-folders_page = FoldersPage(ctx)
-ai_page = AiEnginePage(ctx)
-```
-
-**禁止：** 任何頁面**都不能**持有 `main_window` 參照
-
----
-
-### 各頁面簡述
-
-| 頁面 | 功能 |
-|------|------|
-| **folders_page.py** | 新增/移除資料夾、調整掃描順序、更改資料夾圖示 |
-| **ai_engine_page.py** | CLIP 模型切換、OCR 語言包安裝/移除、模型加載進度 |
-| **appearance_page.py** | 主題選擇、啟動資料夾、縮圖大小調整滑桿 |
-| **hotkeys_page.py** | 快捷鍵綁定表、WASD 導航、Shift-OCR 觸發 |
-| **performance_page.py** | 縮圖快取大小、背景索引執行緒數、記憶體限制 |
-| **auto_tasks_page.py** | OCR 自動任務排程、啟動掃描行為 |
-| **language_page.py** | 語言清單（動態掃描 `languages/*.json`） |
-| **about_page.py** | 版本號、GitHub 連結、技術致敬 |
-
----
-
-## 訊號流向圖
-
-```
-SearchCapsule.searchRequested(query)
-    ↓
-MainWindow._on_search_requested(query)
-    ↓
-SearchOrchestrator.launch_search(query)  [core/]
-    ↓
-SearchWorker (QThread)
-    ↓
-emit results_ready
-    ↓
-GalleryViewController.set_base_results(results)
-  ├─ apply_current_filters_and_show()   → model.set_search_results(filtered)
-  └─ apply_gallery_sort()               → model.sort_items(key_func)
-                                            └─ layoutAboutToBeChanged / layoutChanged
-    ↓
-emit status_text_changed, layout_changed
-    ↓
-MainWindow 連接的 slots 更新狀態列
-
-── Limit 切換（不重搜）──────────────────────────────────────────
-InspectorPanel.on_limit_changed()
-    ↓
-MainWindow.apply_current_filters_and_show()   ← 直接截斷現有結果
-    ↓
-GalleryViewController.apply_current_filters_and_show()
-```
-
----
-
-## Phase 3-F — 從 Blur-main.py 拆出的 UI 模組
-
-### `gallery_model.py` (Phase 3-F)
-
-**職責：** 畫廊的 MVC Model 層與自訂 ListView
-
-| 類別 | 含義 |
-|------|------|
-| `SearchResultsModel` | QAbstractListModel，管理搜尋結果與縮圖快取（OrderedDict LRU）|
-| `GalleryListView` | QListView，支援多選框選與拖拽匯出（Ctrl+Drag）|
-
-**注意：** `SearchResultsModel` 消費 `ImageItem`（來自 `ui/widgets/image_delegate.py`）；實際渲染由 `ImageDelegate` 完成。
-
----
-
-### `preview_overlay.py` (Phase 3-F)
-
-**職責：** 全螢幕圖片預覽、影片播放、OCR 框互動式裁切
-
-**主類：** `PreviewOverlay(QWidget)`
-
-**訊號：**
-| 訊號 | 含義 |
-|------|------|
-| `navigate_requested(int)` | 上/下張導航（±1） |
-| `ocr_crop_result(list)` | CropOCR 完成，回傳框資料 |
-
-**依賴：** `ui/widgets/ocr_widgets.py`（`OCRLabel`, `FloatingWidget`）、`core/ocr_repository.py`
-
----
-
-### `settings_dialog.py` (Phase 3-F)
-
-**職責：** 應用程式設定對話框與首次啟動引導
-
-| 類別 | 含義 |
-|------|------|
-| `SettingsDialog` | 8 頁設定對話框，透過 `ctx` 字典注入依賴 |
-| `OnboardingDialog` | 首次啟動引導：選擇資料夾 + 語言 |
-
-**設計：** 完全不持有 `main_window` 參照，所有跨頁動作透過 `ctx["hub"]` 回呼。
-
----
-
-### `sidebar_widget.py` (Phase 3-F)
-
-**職責：** 左側邊欄，包含資料夾樹、虛擬集合清單、釘選圖片清單
-
-| 類別 | 含義 |
-|------|------|
-| `SidebarWidget` | 整個側邊欄容器，管理三個子清單 |
-| `DroppableFolderButton` | 可接受圖片拖放的資料夾按鈕 |
-| `FolderHoverMenu` | 資料夾 hover 時顯示的快速選單 |
-| `CollectionHoverMenu` | 虛擬集合 hover 時顯示的快速選單 |
-| `StatsMenuWidget` | 顯示資料夾統計數字的浮動面板 |
-
-**訊號：** `folder_selected(str)`, `collection_selected(int)`, `pinned_selected(str)`
-
----
-
-## Phase 3-F — 從 Blur-main.py 拆出的 Widgets
-
-### `ui/widgets/empty_state.py` (Phase 3-F)
-
-**職責：** 搜尋無結果時的空狀態覆蓋層
-
-**主類：** `EmptyStateOverlay(QWidget)`
-
-顯示原因文字（無結果、過濾截斷、Limit 截斷），並提供「清除過濾器」按鈕。
-
----
-
-### `ui/widgets/feature_widgets.py` (Phase 3-F)
-
-**職責：** Inspector 面板的多模態特徵標籤（圖片塊 + 文字塊）
-
-| 類別 | 含義 |
-|------|------|
-| `FeatureBucketWidget` | 一個「特徵桶」：標題 + 可滾動的特徵列表 |
-| `TextFeatureWidget` | 單個文字特徵標籤（可設 is_positive/is_negative） |
-| `ThumbnailWorker` | QRunnable，非同步載入縮圖給特徵桶 |
-
----
-
-### `ui/widgets/image_delegate.py` (Phase 3-F)
-
-**職責：** 畫廊卡片的所有渲染相關類別
-
-| 類別 | 含義 |
-|------|------|
-| `ImageItem` | 資料物件，代表一張圖片（path, score, mtime, size 等） |
-| `FunnelCardItem` | 漏斗卡片資料物件（搜尋過濾條件展示） |
-| `ImageDelegate` | QStyledItemDelegate，自繪卡片（縮圖 + 評分 + 釘選標誌） |
-| `ThumbnailLoader` | QRunnable，非同步載入/解碼縮圖（含 EXIF 旋轉修正） |
-| `PreviewLoader` | QRunnable，非同步載入全尺寸預覽圖 |
-
-**注意：** `ImageItem` 是整個 MVC 的資料核心，`SearchResultsModel` 和 `GalleryListView` 都依賴它；修改欄位前先查 `gallery_model.py` 的使用點。
-
----
-
-### `ui/widgets/ocr_widgets.py` (Phase 3-F)
-
-**職責：** OCR 框選裁切工作者 + 互動式標籤覆蓋層
-
-| 類別 | 含義 |
-|------|------|
-| `CropOCRSignals` | QObject，CropOCR 的訊號定義（result, error） |
-| `CropOCRWorker` | QRunnable，框選區域的 OCR 推論 |
-| `FloatingWidget` | 框選工具覆蓋層（QRubberBand 式選框） |
-| `OCRLabel` | 覆蓋在預覽圖上的 OCR 結果框，支援點擊編輯 |
-
-**注意：** `CropOCRSignals` 定義在此檔（`core/workers.py` 不含此類），匯入時從 `ui.widgets.ocr_widgets` 取。
-
----
-
-## 相關詳細文檔
-
-- **層責邊界** → [LAYERS.md](./LAYERS.md#ui--層--視圖控制器與元件)
-- **訊號設計規範** → [DESIGN_PATTERNS.md §3.3](./DESIGN_PATTERNS.md)
-- **設定頁面注入模式** → [DESIGN_PATTERNS.md §3.2](./DESIGN_PATTERNS.md#32-依賴注入三大策略)
-- **核心模組詳解** → [MODULES_CORE.md](./MODULES_CORE.md)
+## 文件維護規則
+
+1. 這份文件是 UI 索引，不是所有 UI 實作的完整規格書。
+2. 若某個 UI 主題跨越多模組，應拆成流程文，而不是把內容塞回這裡。
+3. 若新增大型 UI 模組，補一列索引即可；只有在需要完整設計背景時才新增專題文。
