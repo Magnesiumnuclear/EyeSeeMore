@@ -1,6 +1,6 @@
 # MODULES_UI.md — UI 控制器與 widget 層詳解
 
-> 這層負責視覺展示、事件處理、訊號連接，包含 2 個主控制器、3 個原子 widget 與 8 個設定頁面。
+> 這層負責視覺展示、事件處理、訊號連接。Phase 2 新增 2 個控制器，Phase 3-F 從 Blur-main.py 再拆出 8 個模組。
 
 ## 📐 層次結構
 
@@ -19,21 +19,31 @@ ui/
 │  ├─ navigation_manager.py    ← 導航回退棧
 │  └─ inspector_panel.py       ← 右側 3 分頁面板
 │
+├─ Phase 3-F 拆出（原在 Blur-main.py）
+│  ├─ gallery_model.py         ← SearchResultsModel + GalleryListView
+│  ├─ preview_overlay.py       ← 全螢幕圖片預覽 + OCR 框互動
+│  ├─ settings_dialog.py       ← SettingsDialog + OnboardingDialog
+│  └─ sidebar_widget.py        ← SidebarWidget + FolderHoverMenu 等
+│
 ├─ widgets/ 原子 widget
 │  ├─ base.py                  ← BaseToggleWidget 基類
 │  ├─ drag_list.py             ← 半透明拖曳列表
-│  ├─ elided_label.py          ← 自動省略文字的 QLabel
-│  └─ search_capsule.py        ← 頂部搜尋膠囊 + 歷史下拉
+│  ├─ elided_label.py          ← 自動省略文字的 QLabel (Phase 3-C)
+│  ├─ search_capsule.py        ← 頂部搜尋膠囊 + 歷史下拉
+│  ├─ empty_state.py           ← 空狀態覆蓋層 (Phase 3-F)
+│  ├─ feature_widgets.py       ← 多模態特徵標籤面板 (Phase 3-F)
+│  ├─ image_delegate.py        ← 圖片卡片繪製代理 (Phase 3-F)
+│  └─ ocr_widgets.py           ← OCR 框選裁切 + 標籤 (Phase 3-F)
 │
 └─ settings_pages/ 設定分頁（8 頁）
-   ├─ folders_page.py          ← 📁 資料夾管理
-   ├─ ai_engine_page.py        ← 🧠 AI 引擎設定
-   ├─ appearance_page.py       ← 🖥️ 介面與顯示
-   ├─ hotkeys_page.py          ← ⌨️ 快捷鍵設定
-   ├─ performance_page.py      ← ⚡ 效能調整
-   ├─ auto_tasks_page.py       ← 🕒 自動任務
-   ├─ language_page.py         ← 🌍 語言選擇
-   └─ about_page.py            ← ℹ️ 關於與說明
+   ├─ folders_page.py          ← 資料夾管理
+   ├─ ai_engine_page.py        ← AI 引擎設定
+   ├─ appearance_page.py       ← 介面與顯示
+   ├─ hotkeys_page.py          ← 快捷鍵設定
+   ├─ performance_page.py      ← 效能調整
+   ├─ auto_tasks_page.py       ← 自動任務
+   ├─ language_page.py         ← 語言選擇
+   └─ about_page.py            ← 關於與說明
 ```
 
 ---
@@ -449,8 +459,124 @@ GalleryViewController.apply_current_filters_and_show()
 
 ---
 
+## Phase 3-F — 從 Blur-main.py 拆出的 UI 模組
+
+### `gallery_model.py` (Phase 3-F)
+
+**職責：** 畫廊的 MVC Model 層與自訂 ListView
+
+| 類別 | 含義 |
+|------|------|
+| `SearchResultsModel` | QAbstractListModel，管理搜尋結果與縮圖快取（OrderedDict LRU）|
+| `GalleryListView` | QListView，支援多選框選與拖拽匯出（Ctrl+Drag）|
+
+**注意：** `SearchResultsModel` 消費 `ImageItem`（來自 `ui/widgets/image_delegate.py`）；實際渲染由 `ImageDelegate` 完成。
+
+---
+
+### `preview_overlay.py` (Phase 3-F)
+
+**職責：** 全螢幕圖片預覽、影片播放、OCR 框互動式裁切
+
+**主類：** `PreviewOverlay(QWidget)`
+
+**訊號：**
+| 訊號 | 含義 |
+|------|------|
+| `navigate_requested(int)` | 上/下張導航（±1） |
+| `ocr_crop_result(list)` | CropOCR 完成，回傳框資料 |
+
+**依賴：** `ui/widgets/ocr_widgets.py`（`OCRLabel`, `FloatingWidget`）、`core/ocr_repository.py`
+
+---
+
+### `settings_dialog.py` (Phase 3-F)
+
+**職責：** 應用程式設定對話框與首次啟動引導
+
+| 類別 | 含義 |
+|------|------|
+| `SettingsDialog` | 8 頁設定對話框，透過 `ctx` 字典注入依賴 |
+| `OnboardingDialog` | 首次啟動引導：選擇資料夾 + 語言 |
+
+**設計：** 完全不持有 `main_window` 參照，所有跨頁動作透過 `ctx["hub"]` 回呼。
+
+---
+
+### `sidebar_widget.py` (Phase 3-F)
+
+**職責：** 左側邊欄，包含資料夾樹、虛擬集合清單、釘選圖片清單
+
+| 類別 | 含義 |
+|------|------|
+| `SidebarWidget` | 整個側邊欄容器，管理三個子清單 |
+| `DroppableFolderButton` | 可接受圖片拖放的資料夾按鈕 |
+| `FolderHoverMenu` | 資料夾 hover 時顯示的快速選單 |
+| `CollectionHoverMenu` | 虛擬集合 hover 時顯示的快速選單 |
+| `StatsMenuWidget` | 顯示資料夾統計數字的浮動面板 |
+
+**訊號：** `folder_selected(str)`, `collection_selected(int)`, `pinned_selected(str)`
+
+---
+
+## Phase 3-F — 從 Blur-main.py 拆出的 Widgets
+
+### `ui/widgets/empty_state.py` (Phase 3-F)
+
+**職責：** 搜尋無結果時的空狀態覆蓋層
+
+**主類：** `EmptyStateOverlay(QWidget)`
+
+顯示原因文字（無結果、過濾截斷、Limit 截斷），並提供「清除過濾器」按鈕。
+
+---
+
+### `ui/widgets/feature_widgets.py` (Phase 3-F)
+
+**職責：** Inspector 面板的多模態特徵標籤（圖片塊 + 文字塊）
+
+| 類別 | 含義 |
+|------|------|
+| `FeatureBucketWidget` | 一個「特徵桶」：標題 + 可滾動的特徵列表 |
+| `TextFeatureWidget` | 單個文字特徵標籤（可設 is_positive/is_negative） |
+| `ThumbnailWorker` | QRunnable，非同步載入縮圖給特徵桶 |
+
+---
+
+### `ui/widgets/image_delegate.py` (Phase 3-F)
+
+**職責：** 畫廊卡片的所有渲染相關類別
+
+| 類別 | 含義 |
+|------|------|
+| `ImageItem` | 資料物件，代表一張圖片（path, score, mtime, size 等） |
+| `FunnelCardItem` | 漏斗卡片資料物件（搜尋過濾條件展示） |
+| `ImageDelegate` | QStyledItemDelegate，自繪卡片（縮圖 + 評分 + 釘選標誌） |
+| `ThumbnailLoader` | QRunnable，非同步載入/解碼縮圖（含 EXIF 旋轉修正） |
+| `PreviewLoader` | QRunnable，非同步載入全尺寸預覽圖 |
+
+**注意：** `ImageItem` 是整個 MVC 的資料核心，`SearchResultsModel` 和 `GalleryListView` 都依賴它；修改欄位前先查 `gallery_model.py` 的使用點。
+
+---
+
+### `ui/widgets/ocr_widgets.py` (Phase 3-F)
+
+**職責：** OCR 框選裁切工作者 + 互動式標籤覆蓋層
+
+| 類別 | 含義 |
+|------|------|
+| `CropOCRSignals` | QObject，CropOCR 的訊號定義（result, error） |
+| `CropOCRWorker` | QRunnable，框選區域的 OCR 推論 |
+| `FloatingWidget` | 框選工具覆蓋層（QRubberBand 式選框） |
+| `OCRLabel` | 覆蓋在預覽圖上的 OCR 結果框，支援點擊編輯 |
+
+**注意：** `CropOCRSignals` 定義在此檔（`core/workers.py` 不含此類），匯入時從 `ui.widgets.ocr_widgets` 取。
+
+---
+
 ## 相關詳細文檔
 
 - **層責邊界** → [LAYERS.md](./LAYERS.md#ui--層--視圖控制器與元件)
 - **訊號設計規範** → [DESIGN_PATTERNS.md §3.3](./DESIGN_PATTERNS.md)
 - **設定頁面注入模式** → [DESIGN_PATTERNS.md §3.2](./DESIGN_PATTERNS.md#32-依賴注入三大策略)
+- **核心模組詳解** → [MODULES_CORE.md](./MODULES_CORE.md)

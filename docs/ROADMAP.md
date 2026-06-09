@@ -4,38 +4,51 @@
 
 ---
 
-## 📊 Phase 1 + 2 + 3-A + 3-B + 3-C + 3-D 重構戰績
+## 📊 Phase 1 + 2 + 3 重構戰績
 
 ### 代碼瘦身
 
 | 指標 | 重構前 | 重構後 | 變化 |
 |------|--------|--------|------|
-| **`Blur-main.py` 總行數** | 7081 | ~6400 | **−681 行 (−9.6%)** |
-| **`ImageSearchEngine`** | 1016 | ~650 | −366 行 |
-| **`MainWindow` 估算** | ~1612 | ~1050 | −550+ 行 |
-| **獨立模組總數** | 0 | 10 | +10 |
+| **`Blur-main.py` 總行數** | 7081 | **~1400** | **−5681 行 (−80%)** |
+| **`MainWindow` 佔比** | ~23% | ~88% | 主檔幾乎全是 MainWindow |
+| **`ImageSearchEngine`** | 嵌入主檔 | 獨立 716 行 | 完全解耦 |
+| **獨立模組總數** | 0 | **24** | +24（含 Phase 3-F 的 12 個）|
 
-### 新增模組（9 個）
+### 新增模組（24 個）
 
 ```
 Phase 1 (資料存取與釘選)
-└── 1-A: pin_manager.py          ← 圖片釘選
-└── 1-B: ocr_repository.py       ← OCR 框 CRUD
-└── 1-C: collection_manager.py   ← 虛擬資料夾
+└── 1-A: core/pin_manager.py             ← 圖片釘選
+└── 1-B: core/ocr_repository.py          ← OCR 框 CRUD
+└── 1-C: core/collection_manager.py      ← 虛擬資料夾
 
 Phase 2 (UI 反饋與控制)
-└── 2-A: search_history_manager.py    ← 搜尋歷史
-└── 2-B: eta_progress_controller.py   ← ETA 進度 + PID
-└── 2-C: indexing_lifecycle.py        ← 索引生命週期
-└── 2-D: gallery_view_controller.py   ← 畫廊視圖
-└── 2-E: window_state_manager.py      ← 視窗狀態 + Win32
+└── 2-A: core/search_history_manager.py  ← 搜尋歷史
+└── 2-B: core/eta_progress_controller.py ← ETA 進度 + PID
+└── 2-C: core/indexing_lifecycle.py      ← 索引生命週期
+└── 2-D: ui/gallery_view_controller.py   ← 畫廊視圖
+└── 2-E: ui/window_state_manager.py      ← 視窗狀態 + Win32
 
-Phase 3 (非阻塞模型加載 & 解耦 & UI 響應式 & 效能優化)
-└── 3-A: model_provider.py       ← 模型加載與共享【已完成】
-└── 3-B: _on_models_loaded 優化  ← 畫廊圖片提早顯示【已完成】
-└── 3-C: elided_label.py         ← TopBar 響應式寬度【已完成】
-└── 3-D: 三大效能熱點修復         ← I/O阻塞、N+1查詢、FAISS演算法【已完成】
-└── 3-E: 畫廊渲染 Quick-wins      ← 7 項低風險效能改進【已完成】
+Phase 3 (非阻塞模型加載 & 解耦 & UI 響應式 & 效能優化 & 主檔拆分)
+└── 3-A: core/model_provider.py          ← 模型加載與共享【已完成】
+└── 3-B: _on_models_loaded 優化          ← 畫廊圖片提早顯示【已完成】
+└── 3-C: ui/widgets/elided_label.py      ← TopBar 響應式寬度【已完成】
+└── 3-D: 三大效能熱點修復                 ← I/O阻塞、N+1查詢、FAISS演算法【已完成】
+└── 3-E: 畫廊渲染 Quick-wins             ← 7 項低風險效能改進【已完成】
+└── 3-F: Blur-main.py 主檔大拆分         ← 12 個模組從主檔拆出【已完成】
+     ├── core/image_search_engine.py     ← AI 核心引擎
+     ├── core/taskbar_controller.py      ← Windows 工作列 COM
+     ├── core/win_event_filters.py       ← Win32 事件 + Jump List
+     ├── core/workers.py                 ← QThread/QRunnable 執行緒群
+     ├── ui/gallery_model.py             ← SearchResultsModel + GalleryListView
+     ├── ui/preview_overlay.py           ← 全螢幕預覽層
+     ├── ui/settings_dialog.py           ← SettingsDialog + OnboardingDialog
+     ├── ui/sidebar_widget.py            ← SidebarWidget + Hover 選單
+     ├── ui/widgets/empty_state.py       ← 空狀態覆蓋層
+     ├── ui/widgets/feature_widgets.py   ← 多模態特徵標籤面板
+     ├── ui/widgets/image_delegate.py    ← 圖片卡片渲染代理
+     └── ui/widgets/ocr_widgets.py       ← OCR 框選 + 標籤 widget
 ```
 
 ### 架構改進
@@ -281,25 +294,39 @@ def on_model_changed(self):
 
 ---
 
-## 🎯 Phase 4 − 拆分 PreviewOverlay（計劃中）
+## 🔧 Phase 3-F 改進詳情（【已完成】）
 
 ### 目標
 
-PreviewOverlay 是現存最臃腫的視圖元件（~690 行），負責：
-- ✅ 圖片預覽
-- ✅ OCR 框互動式裁切（CropController）
-- ✅ 與 OCR 編輯器的協作
+Blur-main.py 經過 Phase 1-3E 的模組化後仍有 6391 行，其中包含大量與 MainWindow 無關的 class 定義，導致：
+- 單一檔案難以導覽（class 散落在 L220-L6262）
+- VSCode 智能提示效率低
+- 新功能難以定位應放在哪裡
 
-### 拆分方案
+### 解決方案
 
-```
-ui/preview/
-├── base_preview_controller.py    ← 預覽控制器基類
-├── crop_ocr_controller.py        ← OCR 裁切邏輯（~180 行）
-└── ocr_box_editor.py             ← OCR 框編輯器（~150 行）
-```
+| 模組 | 行數 | 職責 |
+|------|------|------|
+| `core/image_search_engine.py` | 716 | AI 核心、FAISS、SQLite |
+| `core/taskbar_controller.py` | 98 | Windows 工作列 COM |
+| `core/win_event_filters.py` | 414 | Win32 事件 + Jump List |
+| `core/workers.py` | 276 | QThread/QRunnable 群 |
+| `ui/gallery_model.py` | 311 | SearchResultsModel + GalleryListView |
+| `ui/preview_overlay.py` | 711 | 全螢幕預覽 + OCR 互動 |
+| `ui/settings_dialog.py` | 194 | SettingsDialog + OnboardingDialog |
+| `ui/sidebar_widget.py` | 804 | 側邊欄 + Hover 選單 |
+| `ui/widgets/empty_state.py` | 52 | 空狀態覆蓋層 |
+| `ui/widgets/feature_widgets.py` | 309 | 特徵標籤面板 |
+| `ui/widgets/image_delegate.py` | 700 | 卡片渲染代理 |
+| `ui/widgets/ocr_widgets.py` | 649 | OCR 框選 + 標籤 |
 
-**預期成果：** PreviewOverlay 降至 ~300 行（純 UI 佈局 + 訊號連接）
+### 成果
+
+| 指標 | 拆分前 | 拆分後 |
+|------|--------|--------|
+| Blur-main.py | 6391 行 | **1398 行（−78%）** |
+| Blur-main.py 中的 class 數 | 32 個 | **1 個（MainWindow）** |
+| 所有模組語法檢查 | — | **13/13 通過** |
 
 ---
 
@@ -438,4 +465,4 @@ mypy --strict core/ ui/
 
 ---
 
-*最後更新時間：Phase 3-E 完工後（畫廊渲染 Quick-wins：Limit 不重搜、sort_items 輕量更新、adjust_layout 快取、SQL 單次遷移等 7 項改進）。後續若有新加模組或架構調整，請同步更新本文件。*
+*最後更新時間：Phase 3-F 完工後（Blur-main.py 主檔大拆分：6391→1398 行，32 個 class 提取為 12 個獨立模組）。後續若有新加模組或架構調整，請同步更新本文件。*

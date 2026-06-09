@@ -5,7 +5,7 @@
 ```
 rag-image/
 ├── main.py                   ← 對外啟動入口
-├── Blur-main.py              ← 主程式（~6300 行）
+├── Blur-main.py              ← 主程式（~1400 行，僅含 MainWindow + 啟動代碼）
 ├── indexer.py                ← 背景索引引擎
 ├── onnx_ocr.py               ← ONNX PaddleOCR 推論
 │
@@ -21,7 +21,11 @@ rag-image/
 │   ├── search_history_manager.py ← 搜尋歷史 (Phase 2-A)
 │   ├── eta_progress_controller.py ← ETA + PID (Phase 2-B)
 │   ├── indexing_lifecycle.py ← 掃描生命週期 (Phase 2-C)
-│   └── model_provider.py      ← 模型加載與共享 (Phase 3-A)
+│   ├── model_provider.py     ← 模型加載與共享 (Phase 3-A)
+│   ├── image_search_engine.py ← AI 核心引擎 (Phase 3-F)
+│   ├── taskbar_controller.py ← Windows 工作列 COM 橋接 (Phase 3-F)
+│   ├── win_event_filters.py  ← Win32 原生事件過濾器 + Jump List (Phase 3-F)
+│   └── workers.py            ← QThread/QRunnable 工作者執行緒 (Phase 3-F)
 │
 ├── ui/                       ← 視圖控制器與 widget 層
 │   ├── main_window_ui.py     ← MainWindow 佈局
@@ -29,14 +33,22 @@ rag-image/
 │   ├── navigation_manager.py ← 上一頁/下一頁導航
 │   ├── action_handler.py     ← 鍵盤滑鼠事件分發
 │   ├── inspector_panel.py    ← 右側 3 分頁面板
-│   ├── gallery_view_controller.py ← 畫廊視圖 (Phase 2-D)
+│   ├── gallery_view_controller.py ← 畫廊視圖控制器 (Phase 2-D)
 │   ├── window_state_manager.py   ← 視窗狀態 + Win32 (Phase 2-E)
+│   ├── gallery_model.py      ← 畫廊 Model + ListView (Phase 3-F)
+│   ├── preview_overlay.py    ← 全螢幕圖片預覽層 (Phase 3-F)
+│   ├── settings_dialog.py    ← 設定對話框 + Onboarding (Phase 3-F)
+│   ├── sidebar_widget.py     ← 左側邊欄 + Hover 選單 (Phase 3-F)
 │   │
 │   ├── widgets/
 │   │   ├── base.py           ← BaseToggleWidget 基類
 │   │   ├── drag_list.py      ← 半透明拖曳列表
-│   │   ├── elided_label.py   ← 自動省略文字的 QLabel
-│   │   └── search_capsule.py ← 頂部搜尋膠囊
+│   │   ├── elided_label.py   ← 自動省略文字的 QLabel (Phase 3-C)
+│   │   ├── search_capsule.py ← 頂部搜尋膠囊
+│   │   ├── empty_state.py    ← 空狀態覆蓋層 (Phase 3-F)
+│   │   ├── feature_widgets.py ← 特徵標籤面板 (Phase 3-F)
+│   │   ├── image_delegate.py ← 圖片卡片繪製代理 (Phase 3-F)
+│   │   └── ocr_widgets.py    ← OCR 框選與標籤 widget (Phase 3-F)
 │   │
 │   └── settings_pages/
 │       ├── folders_page.py   ← 資料夾管理
@@ -116,21 +128,29 @@ rag-image/
 ## 主程式棧
 
 ```
-main.py (L13)
+main.py
   ↓ runpy.run_path()
-Blur-main.py (L~6300)
-  ├── class MainWindow (L4900-6300+)
-  │   ├── class ImageDelegate (自繪卡片)
-  │   ├── class PreviewOverlay (圖片預覽)
-  │   ├── class SidebarWidget (側邊欄)
-  │   ├── class IndexerWorker (QThread)
-  │   ├── class SearchWorker (QThread)
-  │   └── class OCRImportWorker (QThread)
-  │
-  ├── class ImageSearchEngine (AI 核心，L1260-1950)
-  ├── class SettingsDialog (設定對話框)
-  ├── class WinMaxHoverFilter (Win32 事件)
+Blur-main.py (~1400 行，Phase 3-F 重構後)
+  ├── import 區段（所有模組集中 import）
+  ├── class MainWindow(QMainWindow)  ← 唯一保留的 class
+  │     ├── __init__: 組裝所有 core/ + ui/ 模組
+  │     ├── 訊號連接
+  │     └── 事件處理槽函式
   └── if __name__ == "__main__": QApplication 啟動
+
+已拆分到獨立模組的 class（Phase 3-F）：
+  core/image_search_engine.py  ← ImageSearchEngine (AI 核心)
+  core/taskbar_controller.py   ← TaskbarController (工作列 COM)
+  core/win_event_filters.py    ← WinMaxHoverFilter, WinScanCtrlFilter, Jump List
+  core/workers.py              ← IndexerWorker, SearchWorker, OCRImportWorker 等
+  ui/gallery_model.py          ← SearchResultsModel, GalleryListView
+  ui/preview_overlay.py        ← PreviewOverlay
+  ui/settings_dialog.py        ← SettingsDialog, OnboardingDialog
+  ui/sidebar_widget.py         ← SidebarWidget + StatsMenuWidget 等
+  ui/widgets/empty_state.py    ← EmptyStateOverlay
+  ui/widgets/feature_widgets.py ← TextFeatureWidget, FeatureBucketWidget 等
+  ui/widgets/image_delegate.py ← ImageItem, ImageDelegate, ThumbnailLoader 等
+  ui/widgets/ocr_widgets.py    ← CropOCRWorker, FloatingWidget, OCRLabel
 ```
 
 ---

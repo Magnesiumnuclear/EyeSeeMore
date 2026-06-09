@@ -1,6 +1,6 @@
-# MODULES_CORE.md — 8 個核心業務邏輯模組詳解
+# MODULES_CORE.md — 核心業務邏輯模組詳解
 
-> 這8個模組是 Phase 1 + Phase 2 從 MainWindow 中重構拆離出來的核心邏輯。
+> 這些模組是從 MainWindow / Blur-main.py 中重構拆離出來的核心邏輯，Phase 1-3 共計 16 個模組。
 
 ## 🗺 模組地圖
 
@@ -22,8 +22,12 @@ core/
 │  ├─ eta_progress_controller.py   ← ETA 進度 + PID
 │  └─ indexing_lifecycle.py        ← 索引掃描生命週期
 │
-├─ Phase 3 − 非阻塞模型加載 (3-A)
-│  └─ model_provider.py            ← 模型加載與共享（解耦 IndexerWorker）
+├─ Phase 3 − 非阻塞模型加載 (3-A) + 主檔拆分 (3-F)
+│  ├─ model_provider.py            ← 模型加載與共享（解耦 IndexerWorker）
+│  ├─ image_search_engine.py       ← AI 核心引擎（CLIP 向量化 + FAISS 搜尋）
+│  ├─ taskbar_controller.py        ← Windows 工作列進度條 COM 橋接
+│  ├─ win_event_filters.py         ← Win32 原生事件過濾器 + Jump List + AUMI
+│  └─ workers.py                   ← QThread/QRunnable 工作者執行緒群
 │
 └─ 其他
    └─ image_action_manager.py ← 圖片右鍵選單
@@ -516,8 +520,80 @@ if self.current_folder_path and self.current_folder_path != "ALL":
 
 ---
 
+---
+
+## Phase 3-F — 主檔拆分（Blur-main.py 縮減）
+
+> Phase 3-F 將 Blur-main.py 從 **6391 行**縮減至 **~1400 行**，拆出 12 個獨立模組。
+
+### `image_search_engine.py` (Phase 3-F)
+
+**職責：** AI 搜尋核心：CLIP 向量化、FAISS 索引建構與搜尋、SQLite 資料管理
+
+| 方法/屬性 | 含義 |
+|----------|------|
+| `load_data_from_db()` | 從 SQLite 讀取所有已索引圖片（含 os.scandir 預掃描優化） |
+| `build_faiss_index()` | 建構 FAISS 索引（≤10K 用 FlatIP，>10K 自動切換 HNSW） |
+| `search(query, top_k, ...)` | 文字語意搜尋或圖片相似搜尋 |
+| `get_all_images_sorted()` | 取所有圖片（支援多種排序） |
+| `data_store` | 所有已索引圖片的記憶體清單 |
+
+**依賴：** `core/model_provider.py`, `core/config_manager.py`, `indexer.py`
+
+---
+
+### `taskbar_controller.py` (Phase 3-F)
+
+**職責：** Windows 工作列進度條 COM 橋接（ITaskbarList3 介面）
+
+| 方法 | 含義 |
+|------|------|
+| `set_progress(value, max_val)` | 設定工作列進度條數值 |
+| `set_state(state)` | 設定狀態（NORMAL / PAUSED / ERROR / INDETERMINATE） |
+| `clear()` | 隱藏進度條 |
+
+**常數：** `TBPF_NOPROGRESS`, `TBPF_INDETERMINATE`, `TBPF_NORMAL`, `TBPF_ERROR`, `TBPF_PAUSED`
+
+**依賴：** `ctypes`, `ctypes.wintypes`（純 Win32，零 PyQt 依賴）
+
+---
+
+### `win_event_filters.py` (Phase 3-F)
+
+**職責：** Win32 原生訊息攔截、Jump List 管理、AppUserModelID 注入
+
+| 元件 | 含義 |
+|------|------|
+| `WinMaxHoverFilter` | 攔截 DLL 的 WM_APP+1，驅動最大化按鈕 hover QSS |
+| `WinScanCtrlFilter` | 攔截 WM_SYSCOMMAND（暫停/取消掃描選單項），透過 callback 通知 MainWindow |
+| `_set_window_aumi(hwnd)` | 設定視窗的 AppUserModelID，讓 Windows 工作列正確分組 |
+| `_install_sys_menu(hwnd)` | 在系統選單注入「暫停掃描」「取消掃描」項目 |
+| `_register_jump_list()` | 向 Windows 注冊 Jump List 跳躍清單項目 |
+
+**常數：** `_WM_MAX_HOVER`, `_WM_PAUSE_SCAN`, `_WM_CANCEL_SCAN`, `_APP_USER_MODEL_ID`
+
+---
+
+### `workers.py` (Phase 3-F)
+
+**職責：** 所有背景工作者執行緒的訊號定義與實作
+
+| 類別 | 繼承 | 含義 |
+|------|------|------|
+| `WorkerSignals` | QObject | 縮圖載入訊號（path, pixmap, is_final） |
+| `PreviewSignals` | QObject | 預覽圖載入訊號（path, image, boxes, ...） |
+| `IndexerWorker` | QThread | 背景索引：掃描 → AI 處理 → OCR |
+| `SearchWorker` | QThread | 背景搜尋：FAISS 向量搜尋 |
+| `OCRImportWorker` | QThread | OCR 語言包安裝 |
+| `ONNXExportWorker` | QThread | CLIP 模型匯出為 ONNX |
+
+**注意：** `CropOCRSignals` 定義在 `ui/widgets/ocr_widgets.py`（與 CropOCRWorker 同檔）
+
+---
+
 ## 相關詳細文檔
 
 - **依賴注入陷阱** → [DESIGN_PATTERNS.md §3.2](./DESIGN_PATTERNS.md#32-依賴注入三大策略)
 - **訊號規範** → [DESIGN_PATTERNS.md §3.3](./DESIGN_PATTERNS.md#33-pyqt-訊號-signal-解耦規範)
 - **各層職責邊界** → [LAYERS.md](./LAYERS.md)
+- **UI 模組詳解** → [MODULES_UI.md](./MODULES_UI.md)
