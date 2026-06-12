@@ -74,3 +74,9 @@ EyeSeeMore_installer/
 
 # AI Assistant Workspaces
 .claude/
+
+
+*.db-shm
+*.db-wal
+
+benchmarks/results
