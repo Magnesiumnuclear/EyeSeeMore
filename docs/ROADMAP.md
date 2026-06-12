@@ -7,7 +7,7 @@
 
 ## 目前定位
 
-EyeSeeMore 已完成 Phase 1 到 Phase 3-F 的主要重構，現階段重點不再是把主程式拆模組，而是：
+EyeSeeMore 已完成 Phase 1 到 Phase 3-G 的主要重構與效能修復，現階段重點不再是把主程式拆模組，而是：
 
 1. 補齊流程專題文件，讓 docs 與現況一致。
 2. 穩定搜尋、索引、OCR 與 Win32 整合的長期維護成本。
@@ -46,6 +46,14 @@ EyeSeeMore 已完成 Phase 1 到 Phase 3-F 的主要重構，現階段重點不�
 11. `ui/widgets/feature_widgets.py`
 12. `ui/widgets/image_delegate.py`
 13. `ui/widgets/ocr_widgets.py`
+
+### Phase 3-G — 快取統一、資料庫索引、import 瘦身與 FAISS 持久化
+
+1. L2 縮圖快取路徑統一至 `core/paths.py`（修復 indexer 與 UI 的快取分裂）
+2. `init_db()` 補上 `idx_ocr_file_id`、`idx_files_folder` 索引
+3. 主檔頂層 import 瘦身與重模組延後（含 onnxruntime DLL 順序保護）
+4. FAISS HNSW 索引磁碟快取
+5. `benchmarks/` 效能測試套件（量測與優化驗收）
 
 > 詳細完成紀錄與量化改善，統一維護於 PERFORMANCE_NOTES.md。
 

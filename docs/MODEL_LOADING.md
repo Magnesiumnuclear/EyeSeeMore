@@ -68,6 +68,28 @@ t+8000ms  models_loaded 發射，後續 AI 相關工作接手
 
 ---
 
+## import 延後策略與 DLL 順序（Phase 3-G）
+
+模型相關的重模組不在主檔頂層 import，而是延後到實際使用點，
+讓 UI 出現前的 import 成本從約 1.07 秒降到約 0.2 秒
+（冷開機另省 transformers 約 28 秒）：
+
+| 模組 | import 時機 |
+|------|-------------|
+| `transformers`（Tokenizer） | `ModelProvider._load_models_impl()`（背景執行緒） |
+| `faiss` / `ImageSearchEngine` | `MainWindow.load_engine()`（背景執行緒） |
+| `indexer`（連帶 cv2 / onnx_ocr） | `IndexerWorker.run()` 內 lazy 建立 IndexerService |
+
+### ⚠️ onnxruntime 的 DLL 順序約束
+
+`import onnxruntime` **必須在任何 PyQt6 模組之前執行**——實測 PyQt6
+先載入後，onnxruntime 的 pybind DLL 初始化必定失敗
+（`ImportError: DLL load failed`）。因此 `Blur-main.py` 最頂端保留一行
+`import onnxruntime` 作為順序保護，不可移除或移到 core/ui import 之後。
+其餘重模組（faiss / cv2 / transformers / shapely）實測在 PyQt6 之後載入皆安全。
+
+---
+
 ## 主要設計決策
 
 ### 1. 非阻塞優先

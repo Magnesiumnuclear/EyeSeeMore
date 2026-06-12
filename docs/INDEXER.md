@@ -87,6 +87,13 @@
 1. 若 `files` 缺少 `width`、`height`、`file_size`，就補欄位
 2. 若舊版 `ocr_text`、`ocr_data` 還殘留在 `files`，就嘗試移除
 
+此外它會冪等建立兩個二級索引（Phase 3-G）：
+
+1. `idx_ocr_file_id ON ocr_results(file_id)`：沒有它時，`files` 的級聯刪除會對 `ocr_results` 逐檔全表掃描；軌道 C 批查與預覽 OCR JOIN 也依賴它
+2. `idx_files_folder ON files(folder_path)`：加速資料夾統計與整夾移除
+
+注意：刻意**不**建立 `embeddings(model_name)` 索引——實測它反而拖慢 `update_folder_stats`，且掃描過濾選擇度太低無益（量測見 PERFORMANCE_NOTES.md Phase 3-G）。
+
 這代表 [indexer.py](../indexer.py) 同時是索引引擎與索引資料庫 schema 的守門人。
 
 ## 掃描階段：scan_for_new_files()
@@ -265,6 +272,10 @@
 `generate_l2_cache()` 會把圖片縮成最多 256x256，存進：
 
 - `.cache/thumbnails/{md5(file_path)}.webp`
+
+路徑取自 `core/paths.py` 的 `THUMBNAIL_CACHE_DIR`，與 UI 端 `ThumbnailLoader`
+**共用同一目錄**——兩端若各自以 `__file__` 計算路徑會造成快取分裂，
+indexer 預產的縮圖將永遠不被 UI 命中（Phase 3-G 修復的問題，勿回退）。
 
 這不是索引正確性所必需，但對 UI 卡片預覽與後續載入延遲有幫助。
 

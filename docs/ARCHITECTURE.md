@@ -63,12 +63,17 @@ rag-image/
 ├── utils/
 │   └── translator.py         ← i18n 翻譯器
 │
+├── benchmarks/               ← 效能測試套件（量測 + 優化驗收，見 benchmarks/README.md）
+│
 ├── models/                   ← AI 模型權重
 ├── themes/                   ← QSS 主題
 ├── languages/                ← i18n JSON
 ├── data/                     ← 範例圖片
 ├── src_cpp/                  ← C++ 元件源碼
 ├── build/                    ← C++ 編譯產物
+├── .cache/                   ← 執行期快取（自動生成，勿入版控）
+│   ├── thumbnails/           ← L2 縮圖快取（indexer 與 UI 共用，路徑見 core/paths.py）
+│   └── faiss/                ← FAISS HNSW 索引磁碟快取
 │
 ├── config.json               ← 使用者設定
 ├── images.db                 ← SQLite 索引資料庫
@@ -131,7 +136,8 @@ rag-image/
 main.py
   ↓ runpy.run_path()
 Blur-main.py (~1400 行，Phase 3-F 重構後)
-  ├── import 區段（所有模組集中 import）
+  ├── import 區段（僅輕量模組；最頂端的 import onnxruntime 是
+  │   DLL 順序保護，必須先於 PyQt6——重模組延後策略見 MODEL_LOADING.md）
   ├── class MainWindow(QMainWindow)  ← 唯一保留的 class
   │     ├── __init__: 組裝所有 core/ + ui/ 模組
   │     ├── 訊號連接
