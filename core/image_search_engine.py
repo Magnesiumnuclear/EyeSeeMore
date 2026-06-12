@@ -1,3 +1,4 @@
+import hashlib
 import os
 import sqlite3
 
@@ -5,6 +6,8 @@ import numpy as np
 import onnxruntime as ort
 import faiss
 from PIL import Image
+
+from core.paths import FAISS_CACHE_DIR
 
 from core.config_manager import ConfigManager
 from core.model_provider import ModelProvider
@@ -78,16 +81,69 @@ class ImageSearchEngine:
         # >10,000 張：IndexHNSWFlat (圖形演算, O(log N), 精度~98%)
         HNSW_THRESHOLD = 10_000
         if n > HNSW_THRESHOLD:
-            index = faiss.IndexHNSWFlat(dimension, 32, faiss.METRIC_INNER_PRODUCT)
+            # [Perf Phase 3-G] HNSW 建構成本高（2 萬筆實測約 1 秒，隨量增長），
+            # 但 read_index 載入只要毫秒級。指紋（筆數×維度×內容雜湊）一致時
+            # 直接從磁碟載入，向量有任何增刪改都會自動重建。
+            index = self._load_cached_hnsw(embeddings_matrix)
+            if index is None:
+                index = faiss.IndexHNSWFlat(dimension, 32, faiss.METRIC_INNER_PRODUCT)
+                index.add(embeddings_matrix.astype(np.float32))
+                self._save_hnsw_cache(index, embeddings_matrix)
             index.hnsw.efSearch = 64   # 提高搜尋品質（預設16，64在精度與速度間取得平衡）
             print(f"[FAISS] 資料量 {n} > {HNSW_THRESHOLD}，啟用 HNSW 圖索引 (efSearch=64)")
         else:
             index = faiss.IndexFlatIP(dimension)
+            # 將所有向量加入引擎 (必須是 float32 格式)
+            index.add(embeddings_matrix.astype(np.float32))
 
-        # 將所有向量加入引擎 (必須是 float32 格式)
-        index.add(embeddings_matrix.astype(np.float32))
         self.faiss_index = index
         print(f"[FAISS] 成功建立 {self.faiss_index.ntotal} 筆向量索引！")
+
+    # ==========================================
+    #  [Perf Phase 3-G] HNSW 索引磁碟快取
+    # ==========================================
+    def _emb_fingerprint(self, embeddings_matrix) -> str:
+        """以筆數×維度×內容雜湊作為索引快取指紋（順序敏感，與 data_store 對齊）。"""
+        h = hashlib.blake2b(
+            np.ascontiguousarray(embeddings_matrix, dtype=np.float32).tobytes(),
+            digest_size=16,
+        )
+        return f"{embeddings_matrix.shape[0]}x{embeddings_matrix.shape[1]}-{h.hexdigest()}"
+
+    def _faiss_cache_paths(self):
+        model = self.config.get("model_name") or "default"
+        safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in model)
+        base = os.path.join(FAISS_CACHE_DIR, safe)
+        return base + ".index", base + ".meta"
+
+    def _load_cached_hnsw(self, embeddings_matrix):
+        """指紋一致時載入磁碟上的 HNSW 索引；任何不符或例外都回 None 改為重建。"""
+        try:
+            idx_path, meta_path = self._faiss_cache_paths()
+            if not (os.path.exists(idx_path) and os.path.exists(meta_path)):
+                return None
+            with open(meta_path, "r", encoding="utf-8") as f:
+                if f.read().strip() != self._emb_fingerprint(embeddings_matrix):
+                    return None
+            index = faiss.read_index(idx_path)
+            if index.ntotal != len(embeddings_matrix):
+                return None
+            print(f"[FAISS] 命中磁碟快取，跳過 HNSW 重建")
+            return index
+        except Exception as e:
+            print(f"[FAISS] 快取載入失敗，改為重建: {e}")
+            return None
+
+    def _save_hnsw_cache(self, index, embeddings_matrix):
+        """寫入索引檔與指紋。失敗不影響功能，只是下次仍需重建。"""
+        try:
+            idx_path, meta_path = self._faiss_cache_paths()
+            os.makedirs(os.path.dirname(idx_path), exist_ok=True)
+            faiss.write_index(index, idx_path)
+            with open(meta_path, "w", encoding="utf-8") as f:
+                f.write(self._emb_fingerprint(embeddings_matrix))
+        except Exception as e:
+            print(f"[FAISS] 快取寫入失敗（不影響功能）: {e}")
 
     # ==========================================
     #  [新增] 統一的 WAL 資料庫連線產生器
@@ -215,14 +271,19 @@ class ImageSearchEngine:
 
             #  [效能封頂] 迴圈內不再做任何 json.loads()，啟動速度直接起飛！
             for path, blob, mtime, width, height, combined_text in rows:
-                if os.path.normpath(path) not in existing_paths: continue
+                norm_path = os.path.normpath(path)
+                if norm_path not in existing_paths: continue
 
                 emb_array = np.frombuffer(blob, dtype=np.float32)
                 temp_embeddings_list.append(emb_array)
                 text_content = combined_text if combined_text else ""
 
+                # [Perf Phase 3-G] norm_path 在載入時算一次並快取：
+                # 搜尋的資料夾過濾每次對全量做 os.path.normpath 實測佔 40ms/次
+                # （2 萬筆），預快取後降至 3ms
                 temp_data_store.append({
                     "path": path,
+                    "norm_path": norm_path,
                     "filename": os.path.basename(path),
                     "ocr_text": text_content.lower(),
                     "mtime": mtime,
@@ -231,7 +292,6 @@ class ImageSearchEngine:
                 })
 
                 #  [核心魔法] 將「正規化後的路徑」作為 Key，對應到陣列的 Index
-                norm_path = os.path.normpath(path)
                 temp_path_map[norm_path] = len(temp_data_store) - 1
 
             if temp_data_store and temp_embeddings_list:
@@ -319,8 +379,8 @@ class ImageSearchEngine:
 
         # 找出所有屬於此資料夾的索引位置
         keep_mask = [
-            os.path.normpath(item["path"]) != norm_folder and
-            not os.path.normpath(item["path"]).startswith(norm_folder + os.sep)
+            item["norm_path"] != norm_folder and
+            not item["norm_path"].startswith(norm_folder + os.sep)
             for item in self.data_store
         ]
 
@@ -334,7 +394,7 @@ class ImageSearchEngine:
         # 重建 path_map（新索引號與舊不同，需完整重建）
         new_path_map = {}
         for new_idx, item in enumerate(new_data_store):
-            new_path_map[os.path.normpath(item["path"])] = new_idx
+            new_path_map[item["norm_path"]] = new_idx
 
         # 重建 stored_embeddings 與 FAISS
         if self.stored_embeddings is not None and len(keep_indices) > 0:
@@ -360,14 +420,16 @@ class ImageSearchEngine:
             # [關鍵修復 3] 改為更新 files 表
             cursor.execute("UPDATE files SET file_path = ?, filename = ? WHERE file_path = ?", (new_path, new_name, old_path))
             conn.commit(); conn.close()
+            norm_new = os.path.normpath(new_path)
             for item in self.data_store:
                 if item["path"] == old_path:
-                    item["path"] = new_path; item["filename"] = new_name; break
+                    item["path"] = new_path; item["filename"] = new_name
+                    item["norm_path"] = norm_new  # 快取欄位同步更新
+                    break
 
             #  [新增] 同步更新 Hash Map 字典，維持 O(1) 搜尋的正確性
             if hasattr(self, 'path_map'):
                 norm_old = os.path.normpath(old_path)
-                norm_new = os.path.normpath(new_path)
                 if norm_old in self.path_map:
                     idx = self.path_map.pop(norm_old) # 抽出舊的
                     self.path_map[norm_new] = idx     # 塞入新的
@@ -389,7 +451,7 @@ class ImageSearchEngine:
             norm_target = os.path.normpath(folder_path)
             valid_indices = [
                 i for i, item in enumerate(current_data)
-                if os.path.normpath(item["path"]).startswith(norm_target)
+                if item["norm_path"].startswith(norm_target)
             ]
             if not valid_indices:
                 return []
@@ -564,7 +626,7 @@ class ImageSearchEngine:
                 item = current_data[idx]
 
                 # 如果有指定資料夾，且圖片不在該資料夾內，直接丟棄！
-                if norm_target and not os.path.normpath(item["path"]).startswith(norm_target):
+                if norm_target and not item["norm_path"].startswith(norm_target):
                     continue
 
                 score = top_scores[i]
@@ -662,7 +724,7 @@ class ImageSearchEngine:
         for i in range(fetch_limit):
             idx = top_indices[0][i]
             item = self.data_store[idx]
-            if norm_folder and not os.path.normpath(item["path"]).startswith(norm_folder): continue
+            if norm_folder and not item["norm_path"].startswith(norm_folder): continue
 
             results.append({
                 "score": float(top_scores[0][i]), "clip_score": float(top_scores[0][i]), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,

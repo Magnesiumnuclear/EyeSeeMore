@@ -146,7 +146,9 @@ class PinManager:
             return []
         results: List[Dict[str, Any]] = []
         for item in data_store:
-            if os.path.normpath(item["path"]) in self.pinned_paths:
+            # 優先使用 engine 載入時預快取的 norm_path，避免每次全量 normpath
+            norm = item.get("norm_path") or os.path.normpath(item["path"])
+            if norm in self.pinned_paths:
                 results.append({
                     "score": 0.0,
                     "clip_score": 0.0,

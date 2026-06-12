@@ -25,3 +25,9 @@ LANGS_DIR        = os.path.join(BASE_DIR, "languages")
 THEMES_DIR       = os.path.join(BASE_DIR, "themes")
 CONFIG_PATH      = os.path.join(BASE_DIR, "config.json")
 DB_PATH          = os.path.join(BASE_DIR, "images.db")
+
+# 快取路徑：indexer（寫入端）與 UI ThumbnailLoader（讀取端）必須共用同一目錄，
+# 各自以 __file__ 計算會導致快取分裂（indexer 在根目錄、UI 在 ui/widgets/）
+CACHE_DIR           = os.path.join(BASE_DIR, ".cache")
+THUMBNAIL_CACHE_DIR = os.path.join(CACHE_DIR, "thumbnails")
+FAISS_CACHE_DIR     = os.path.join(CACHE_DIR, "faiss")

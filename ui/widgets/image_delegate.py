@@ -276,8 +276,9 @@ class ThumbnailLoader(QRunnable):
             return
 
         import hashlib
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        cache_dir = os.path.join(base_dir, ".cache", "thumbnails")
+        # 必須與 indexer.generate_l2_cache() 共用同一目錄（core/paths.py），
+        # 否則 indexer 預產的縮圖永遠不會命中，每張卡片都退化成全圖解碼
+        from core.paths import THUMBNAIL_CACHE_DIR as cache_dir
 
         path_hash = hashlib.md5(self.file_path.encode('utf-8')).hexdigest()
         cache_path = os.path.join(cache_dir, f"{path_hash}.webp")

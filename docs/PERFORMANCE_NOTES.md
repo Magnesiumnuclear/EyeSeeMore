@@ -15,6 +15,7 @@
 4. Phase 3-D 啟動、索引與搜尋效能熱點修復。
 5. Phase 3-E 畫廊互動渲染 quick wins。
 6. Phase 3-F 主檔拆分成果摘要。
+7. Phase 3-G 快取統一、資料庫索引、import 瘦身與 FAISS 持久化。
 
 ---
 
@@ -148,6 +149,44 @@
 2. 工作列與 Win32 原生整合。
 3. 畫廊 model、預覽層、設定對話框、側邊欄。
 4. 多個原子 widget 與繪製代理。
+
+---
+
+## Phase 3-G — 快取統一、資料庫索引、import 瘦身與 FAISS 持久化
+
+### 問題清單
+
+1. L2 縮圖快取路徑分裂：indexer 寫入 `<root>/.cache/thumbnails`，UI 的 ThumbnailLoader 以自身 `__file__` 計算而讀取 `ui/widgets/.cache/thumbnails`，54,136 張預產縮圖從未被 UI 命中，每張卡片首次顯示都退化成全圖解碼。
+2. `init_db()` 未建立任何二級索引：`ocr_results` 缺 `file_id` 索引，導致 `files` 級聯刪除逐檔全表掃描、軌道 C 批查與預覽 OCR JOIN 全表掃描。
+3. 主檔頂層 import 過重：`transformers`（冷 import 實測 28 秒）與 `faiss` 在主檔未使用仍被 import；`core/workers.py` 頂層 import indexer 連帶拉入 cv2 / onnxruntime / onnx_ocr。
+4. FAISS HNSW 索引每次啟動從零重建（2 萬筆約 1 秒，隨量增長）。
+5. 搜尋的資料夾過濾每次對全量 data_store 做 `os.path.normpath`。
+
+### 主要改動
+
+1. `core/paths.py` 新增 `CACHE_DIR / THUMBNAIL_CACHE_DIR / FAISS_CACHE_DIR`，indexer 與 ThumbnailLoader 共用；UI 端舊快取已遷移合併。
+2. `init_db()` 新增 `idx_ocr_file_id`、`idx_files_folder` 兩個索引（冪等）。實測 `embeddings(model_name)` 索引反而拖慢 `update_folder_stats`，刻意不建。
+3. 主檔頂層僅保留輕量模組；`ImageSearchEngine` 延後至 `load_engine()`（背景執行緒）import；`IndexerService` 延後至 `IndexerWorker.run()` 內 lazy 建立。
+4. `build_faiss_index()` 對 HNSW 加入磁碟快取（`faiss.write_index` + 內容指紋驗證），指紋不符自動重建。
+5. `load_data_from_db()` 為每筆資料預快取 `norm_path` 欄位，搜尋／過濾／釘選改用快取值；`rename_file` 與 `remove_folder_data` 同步維護。
+
+### 量化改善摘要（實測，benchmarks/ 套件）
+
+| 類別 | 改善前 | 改善後 |
+|------|--------|--------|
+| 級聯刪除 300 檔（8k 圖） | 約 1.05s | 約 3ms（363x） |
+| 預覽 OCR 框查詢 200 次 | 約 660ms | 約 2ms（322x） |
+| 主檔頂層 import（暖快取） | 1.07s | 0.20s（5.4x；冷啟動另省 transformers 28s） |
+| HNSW 啟動建構（2 萬筆） | 約 1.2s 重建 | 約 32ms 載入（38x） |
+| 資料夾過濾（2 萬筆/次） | 約 31ms | 約 1.7ms（18x） |
+| 縮圖首次顯示（快取命中後） | 全圖解碼約 5.8ms/張 | WebP 載入約 0.6ms/張（9.4x） |
+
+### 設計取捨與注意事項
+
+1. **`import onnxruntime` 必須保留在主檔最頂端、任何 PyQt6 模組之前**：實測 PyQt6 先載入後 onnxruntime 的 DLL 初始化必定失敗。此行是 DLL 順序保護，不可移除或下移。
+2. FAISS 快取指紋為「筆數 × 維度 × 內容雜湊」，向量任何增刪改（含順序變動）都會自動重建，不會出現索引與 data_store 錯位。
+3. `data_store` 項目新增 `norm_path` 欄位後，任何改動 `path` 的程式碼都必須同步更新 `norm_path`。
+4. 驗證方式：`benchmarks/run_all.py` 量測、`bench_db_indexes.py --check-real` 與 `bench_thumbnail_cache.py --check-dirs` 為 PASS/FAIL 驗收檢查。
 
 ---
 

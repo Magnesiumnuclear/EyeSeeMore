@@ -5,7 +5,10 @@ import time
 from PyQt6.QtCore import QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QPixmap, QImage
 
-from indexer import IndexerService
+# [Perf Phase 3-G] 不在頂層 import indexer：
+# 它會連帶載入 cv2 / onnxruntime / onnx_ocr（shapely、pyclipper）等重模組，
+# 而本模組在 Blur-main.py 頂層被 import，會直接拖慢主視窗啟動。
+# IndexerService 改為 IndexerWorker.run()（背景執行緒）內 lazy 建立。
 from export_clip_onnx import export_to_onnx
 
 
@@ -36,13 +39,9 @@ class IndexerWorker(QThread):
         super().__init__()
         self.config = config
         self.main_window = main_window
-        self.service = IndexerService(
-            db_path=config.db_path,
-            model_name=config.get("model_name"),
-            pretrained_name=config.get("pretrained"),
-            use_gpu_ocr=config.get("use_gpu_ocr"),
-            perf_config=config.get("performance", {})
-        )
+        # IndexerService 延後到 run()（背景執行緒）才建立，
+        # 避免 import indexer 的重模組成本阻塞主視窗啟動
+        self.service = None
         #直接傳遞包含 use_ocr 屬性的完整字典列表！
         self.folders = config.get("source_folders")
 
@@ -59,6 +58,17 @@ class IndexerWorker(QThread):
         self._cancelled = False
         self._paused    = False
         self._resume_event.set()
+
+        # Lazy 建立 IndexerService（首次掃描時，於本背景執行緒內付 import 成本）
+        if self.service is None:
+            from indexer import IndexerService
+            self.service = IndexerService(
+                db_path=self.config.db_path,
+                model_name=self.config.get("model_name"),
+                pretrained_name=self.config.get("pretrained"),
+                use_gpu_ocr=self.config.get("use_gpu_ocr"),
+                perf_config=self.config.get("performance", {})
+            )
 
         # --- 階段 1: 智慧掃描 ---
         self.status_update.emit("Scanning for file changes...")

@@ -110,8 +110,7 @@ class NumpyPreprocess:
 def generate_l2_cache(img, original_path):
     """將記憶體中的圖片縮小並存入 .cache/thumbnails（保留透明通道）"""
     try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        cache_dir = os.path.join(base_dir, ".cache", "thumbnails")
+        from core.paths import THUMBNAIL_CACHE_DIR as cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         
         # 使用 MD5 雜湊原始路徑作為安全檔名
@@ -271,7 +270,16 @@ class IndexerService:
             confidence REAL,
             FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
         )''')
-        
+
+        # 9. 二級索引
+        # ocr_results.file_id 沒有索引時，files 的 ON DELETE CASCADE
+        # 會對 ocr_results 逐檔全表掃描（實測 8k 圖刪 300 檔需 1.7 秒，
+        # 加索引後 3ms）；軌道 C 批查與預覽 OCR 框 JOIN 同樣受惠。
+        # 注意：勿加 embeddings(model_name) 索引——實測反而拖慢
+        # update_folder_stats 的 GROUP BY JOIN，且 scan 過濾選擇度太低無益。
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ocr_file_id ON ocr_results(file_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_path)')
+
         conn.commit()
         return conn
 

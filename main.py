@@ -6,7 +6,12 @@ EyeSeeMore — Entry Point
 """
 import os
 import runpy
+import sys
 
 if __name__ == "__main__":
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Blur-main.py")
-    runpy.run_path(script, run_name="__main__")
+    root = os.path.dirname(os.path.abspath(__file__))
+    # embedded Python（._pth 隔離模式）不會自動把腳本目錄加入 sys.path，
+    # 需顯式插入專案根目錄，core/ui 等套件才找得到
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    runpy.run_path(os.path.join(root, "Blur-main.py"), run_name="__main__")

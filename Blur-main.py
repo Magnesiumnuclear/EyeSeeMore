@@ -30,28 +30,24 @@ if __name__ == "__main__":
         sys.exit(0)
 # ─────────────────────────────────────────────────────────────────────────
 
-import math
 import os
 import time
-import sqlite3
 import threading
-import json
-from PIL import Image
-
-import numpy as np
-import onnxruntime as ort
-
-from transformers import AutoTokenizer 
-from datetime import datetime
-from collections import OrderedDict
-from indexer import IndexerService
 import re
 
-from indexer import IndexerService, NumpyPreprocess
+# ⚠️ [DLL 載入順序保護] onnxruntime 必須在任何 PyQt6 模組之前 import，
+# 否則其 pybind DLL 初始化會失敗（實測 PyQt6 → onnxruntime 必定
+# ImportError: DLL load failed）。下方 core.* 模組會拉入 PyQt6，
+# 所以這行必須保持在所有 core/ui import 之前，不可移除或下移。
+import onnxruntime  # noqa: F401
 
-import subprocess
-
-import faiss
+# [Perf Phase 3-G] 頂層只保留真正用到的輕量模組。
+# 曾經在這裡的 transformers（冷 import 實測 28 秒）、faiss、indexer
+# （連帶 cv2 / onnx_ocr / shapely）在本檔皆未使用或已延後：
+#   - transformers → ModelProvider._load_models_impl() 內 lazy import
+#   - faiss / ImageSearchEngine → load_engine()（背景執行緒）內 import
+#   - IndexerService → core/workers.py 的 IndexerWorker.run() 內 lazy 建立
+# （faiss / cv2 / transformers / shapely 實測在 PyQt6 之後載入皆安全）
 
 from core.search_orchestrator import SearchOrchestrator
 from core.image_action_manager import ImageActionManager
@@ -92,7 +88,6 @@ from PyQt6.QtGui import (QPixmap, QImage, QCursor, QAction, QColor, QFont, QKeyS
 from core.taskbar_controller import (
     TaskbarController, TBPF_NOPROGRESS, TBPF_INDETERMINATE,
     TBPF_NORMAL, TBPF_ERROR, TBPF_PAUSED)
-from core.image_search_engine import ImageSearchEngine
 import ctypes
 from core.win_event_filters import (
     WinMaxHoverFilter, WinScanCtrlFilter,
@@ -676,7 +671,7 @@ class MainWindow(QMainWindow):
             prefix = norm_path + os.sep
             filtered = [
                 item for item in self.engine.data_store
-                if os.path.normpath(item["path"]).startswith(prefix)
+                if item["norm_path"].startswith(prefix)
             ]
             
             # 轉換格式給 Model
@@ -1129,6 +1124,11 @@ class MainWindow(QMainWindow):
         try:
             # [新增] 載入模型時，工作列顯示綠色流光 (跑動條)
             self.taskbar_ctrl.set_state(TBPF_INDETERMINATE)
+
+            # [Perf Phase 3-G] 在背景執行緒才 import：
+            # image_search_engine 頂層會拉入 faiss / onnxruntime / numpy，
+            # 移到這裡讓主視窗不必等這些重模組載入完成
+            from core.image_search_engine import ImageSearchEngine
 
             # 正確建立 Engine 實例
             self.engine = ImageSearchEngine(self.config)
