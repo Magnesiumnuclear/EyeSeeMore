@@ -57,10 +57,8 @@
 2. 窄範圍 import 檢查。
 3. UI smoke test。
 4. 功能操作的最小手動驗證。
-5. 自動化回歸測試：`python run_tests.py`（核心資料層、索引分類、schema、
-   import/DLL 衛生等已有守門測試；改到 `core/`、`indexer.py`、schema 或
-   啟動流程時務必跑過。詳見 [tests/README.md](../tests/README.md)）。
-   若改動涉及效能熱點，另以 `benchmarks/`（見 [benchmarks/README.md](../benchmarks/README.md)）量測。
+5. 自動化回歸測試（見 [tests/README.md](../tests/README.md)）。
+6. 效能量測與優化驗收（見 [benchmarks/README.md](../benchmarks/README.md)）。
 
 ### 6. 同步更新文檔
 
@@ -155,7 +153,7 @@
 - [ ] 訊號與執行緒邊界清楚。
 - [ ] 新字串已進語言檔。
 - [ ] 新樣式已進 QSS 或主題變數。
-- [ ] 至少做過一種最窄驗證（改到 core/indexer/schema/啟動流程時已跑 `python run_tests.py`）。
+- [ ] 至少做過一種最窄驗證（必要時執行自動化測試，見 tests/README.md）。
 - [ ] 需要時已同步更新 docs。
 
 ---
