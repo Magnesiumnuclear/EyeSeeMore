@@ -23,6 +23,7 @@
 | **理解模型加載與啟動時序** | [MODEL_LOADING.md](./MODEL_LOADING.md) | ModelProvider、非阻塞模型加載、Lazy Load OCR、啟動期間 UI 協調 |
 | **查看已完成優化與量測** | [PERFORMANCE_NOTES.md](./PERFORMANCE_NOTES.md) | 已完成的效能優化、互動改善與設計取捨 |
 | **執行效能測試與優化驗收** | [../benchmarks/README.md](../benchmarks/README.md) | benchmarks 套件用法、各腳本對應的問題與 PASS/FAIL 驗收 |
+| **執行自動化測試（回歸防護）** | [../tests/README.md](../tests/README.md) | unittest 測試套件、測試項目一覽與執行方式 |
 | **查看 OCR 推論引擎腳本** | [../onnx_ocr.py](../onnx_ocr.py) | ONNX PaddleOCR 推論入口，提供統一 `ocr()` 介面 |
 | **查看 CLIP ONNX 轉換腳本** | [../export_clip_onnx.py](../export_clip_onnx.py) | 將 PyTorch CLIP 匯出為 ONNX 的開發工具腳本 |
 | **新增功能的逐步指南** | [CONTRIBUTION.md](./CONTRIBUTION.md) | 從需求 → 設計 → 實裝 → i18n / QSS 規範 → 測試 |
