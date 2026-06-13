@@ -53,10 +53,25 @@ python bench_search_hotpath.py --items 100000 --dim 1024
 每次執行寫入 `results/{bench}_{label}_{timestamp}.json`，內含：
 
 - `metrics`：各指標的 min / mean / median / max（秒）
-- `sysinfo`：平台與 Python 版本（跨機器比較時注意硬體差異）
+- `sysinfo`：平台、Python 版本，以及 **`git_commit`**（產生報告時的程式碼版本）
 - `extra`：資料規模、驗收檢查結果等附帶資訊
 
 `compare.py` 以 **median** 為準計算倍率；±30% 內視為雜訊，不標記。
+
+### Git 版本追蹤（效能回溯）
+
+每份報告的 `sysinfo.git_commit` 會自動填入產生當下 `git rev-parse --short HEAD`
+的結果（由 `bench_common.get_git_commit_hash()` 取得；非 git 環境或取得失敗時
+為 `"unknown"`，不影響量測）。這讓每筆效能數據都精準綁定一個程式碼版本，用途：
+
+- **追蹤效能退化**：發現某指標變慢時，可直接比對兩份報告的 `git_commit`，
+  鎖定是哪段期間的變更造成退化。
+- **支援 `git bisect`**：對可疑區間逐一 checkout commit、重跑同一 bench，
+  以 JSON 內的 `git_commit` 對照，二分搜尋出引入退化的那個 commit。
+- **跨機器/長期比較的可信度**：數據不再是「某次跑出來的」，而是「某個版本在某台機器上的」。
+
+> 建議：要保留為基準的報告，commit 後再跑（確保 `git_commit` 指向乾淨版本，
+> 而非含未提交變更的工作狀態）。
 
 ## 注意事項
 

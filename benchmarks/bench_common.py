@@ -12,6 +12,7 @@ import json
 import os
 import platform
 import statistics
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -19,6 +20,30 @@ from datetime import datetime
 BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BENCH_DIR)
 RESULTS_DIR = os.path.join(BENCH_DIR, "results")
+
+
+def get_git_commit_hash() -> str:
+    """回傳目前 HEAD 的短 commit hash，供效能報告綁定版本。
+
+    用於追蹤效能退化與支援 git bisect：每份 JSON 報告都標記產生時的程式碼版本。
+    任何失敗（非 git 環境、git 未安裝、不在 repo 內、逾時等）都優雅回傳
+    "unknown"，絕不讓測試腳本崩潰。
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            commit = result.stdout.strip()
+            if commit:
+                return commit
+        return "unknown"
+    except Exception:
+        return "unknown"
 
 
 def timeit(fn, repeat=5, warmup=1):
@@ -57,6 +82,8 @@ def sysinfo():
         "python": sys.version.split()[0],
         "machine": platform.machine(),
         "processor": platform.processor(),
+        # 綁定產生報告時的程式碼版本，支援效能回溯與 git bisect
+        "git_commit": get_git_commit_hash(),
     }
 
 
