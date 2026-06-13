@@ -66,6 +66,25 @@ t+8000ms  models_loaded 發射，後續 AI 相關工作接手
 2. 掃描可先進行。
 3. 模型完成後只補足 AI 能力，不應重置已穩定的 UI 狀態。
 
+### 初始資料夾顯示與模型解耦（Phase 3-G）
+
+初始畫廊內容由 `random_data_ready` 訊號觸發 `_on_initial_data_ready()`
+（主執行緒），**在引擎資料就緒時立即**依 config 的 `default_startup_folder`
+決定顯示哪個資料夾：
+
+- `"ALL"`：顯示全部圖片。
+- 特定資料夾 / `"col:{id}"` 虛擬資料夾：立即套用對應過濾。
+
+關鍵在於：資料夾過濾只依賴 `engine.data_store`，與模型載入完全無關，
+因此**不需等模型就緒**。`_on_models_loaded()` 不再重複套用資料夾過濾，
+只負責刷新需要統計的 sidebar / collections。
+
+這修正了兩個曾出現的症狀：
+
+1. 初始顯示忽略 `default_startup_folder`，一律先顯示全部圖片。
+2. 因資料夾切換被延到模型載入後，使用者誤以為「要先互動／模型才會加載」。
+   （模型本來就自動在背景載入，與任何 UI 互動無關。）
+
 ---
 
 ## import 延後策略與 DLL 順序（Phase 3-G）
