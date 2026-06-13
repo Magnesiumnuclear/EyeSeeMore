@@ -333,7 +333,9 @@ class MainWindow(QMainWindow):
         self.img_actions = ImageActionManager(self, toast_fn=self._show_toast)
 
         # [修改 2] 連接訊號：當 AI 準備好時，執行 on_ai_loaded
-        self.random_data_ready.connect(self.set_base_results)
+        # 初始資料就緒走 _on_initial_data_ready，依 default_startup_folder
+        # 立即顯示正確資料夾（不必等模型；資料夾過濾只用 data_store）
+        self.random_data_ready.connect(self._on_initial_data_ready)
         self.ai_ready.connect(self.on_ai_loaded)
         # [Refactor Phase 2-C] db_reloaded 訊號移至 IndexingLifecycleHandler 內部處理
 
@@ -1163,6 +1165,24 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
 
+    def _on_initial_data_ready(self, all_images):
+        """[Callback] 引擎資料就緒時的初始顯示（主執行緒，由 random_data_ready 觸發）。
+
+        依 config 的 default_startup_folder 決定初始畫面：
+        - "ALL"：顯示全部圖片
+        - 特定資料夾 / "col:{id}" 虛擬資料夾：套用對應過濾
+
+        關鍵：資料夾過濾只依賴 engine.data_store，與模型載入無關，
+        所以這裡就先顯示正確資料夾，不必等到 _on_models_loaded
+        （否則使用者會先看到全部圖片，等模型載入後才跳轉，造成
+         「初始顯示忽略設定」與「彷彿要互動才生效」的錯覺）。
+        """
+        folder = self.current_folder_path
+        if folder and folder != "ALL":
+            self._apply_folder_filter(folder)
+        else:
+            self.set_base_results(all_images)
+
     def _on_models_loaded(self):
         """
         [Callback] 模型加載完成
@@ -1188,11 +1208,9 @@ class MainWindow(QMainWindow):
                 collections_open=ui_state.get("collections_accordion_open", False),
             )
 
-            # [Phase 3-B] 只在非 "ALL" 的啟動資料夾時才需要套用資料夾過濾
-            # "ALL" 的情況已由 random_data_ready 訊號（t~100ms）的 set_base_results() 處理
-            # 避免不必要的 beginResetModel() 重置，使圖片得以更早出現
-            if self.current_folder_path and self.current_folder_path != "ALL":
-                self._apply_folder_filter(self.current_folder_path)
+            # [Phase 3-G] 初始資料夾過濾已在 _on_initial_data_ready（資料就緒時）
+            # 套用，這裡不再重複過濾——否則模型載入完成後會再 reset 一次畫廊，
+            # 造成捲動位置跳回頂端與縮圖重載的可見閃動。
 
         # 發射 ai_ready 訊號（供舊程式碼相容）
         self.ai_ready.emit()

@@ -103,8 +103,8 @@ class SettingsDialog(QDialog):
         self.setObjectName("SettingsDialog")
 
         # ── 共用上下文：注入到所有子頁面 ──────────────────────────────────
-        # OCRImportWorker 尚在 Blur-main.py，使用延遲匯入避免循環依賴
-        from Blur_main import OCRImportWorker  # noqa: F401 — 待 workers 模組完成後更新
+        # OCRImportWorker 已移至 core/workers.py（Blur-main.py 含連字號無法 import）
+        from core.workers import OCRImportWorker  # noqa: F401
 
         ctx = {
             "config":             mw.config,
