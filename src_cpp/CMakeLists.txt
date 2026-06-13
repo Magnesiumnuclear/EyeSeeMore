@@ -28,6 +28,10 @@ add_library(EyeSeeMoreWin SHARED
     win_titlebar/titlebar_hook.cpp
 )
 target_include_directories(EyeSeeMoreWin PRIVATE win_titlebar)
+# 編 DLL 時定義 TITLEBARHOOK_EXPORTS，讓 titlebar_hook.h 的 ESM_API 走 dllexport
+# 分支（否則預設 dllimport，會出現「definition is marked dllimport」編譯錯誤）。
+# 注意：CMake 自動定義的是 EyeSeeMoreWin_EXPORTS，與標頭要的名字不同，必須顯式補上。
+target_compile_definitions(EyeSeeMoreWin PRIVATE TITLEBARHOOK_EXPORTS)
 target_link_libraries(EyeSeeMoreWin dwmapi user32)
 # 保持 C ABI 輸出名稱，不加 lib 前綴
 set_target_properties(EyeSeeMoreWin PROPERTIES PREFIX "")
