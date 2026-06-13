@@ -64,6 +64,8 @@ rag-image/
 │   └── translator.py         ← i18n 翻譯器
 │
 ├── benchmarks/               ← 效能測試套件（量測 + 優化驗收，見 benchmarks/README.md）
+├── tests/                    ← 自動化回歸測試（unittest，見 tests/README.md）
+├── run_tests.py              ← 測試一鍵執行器（python run_tests.py）
 │
 ├── models/                   ← AI 模型權重
 ├── themes/                   ← QSS 主題

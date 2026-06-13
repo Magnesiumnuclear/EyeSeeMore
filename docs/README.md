@@ -6,7 +6,7 @@
 
 > **EyeSeeMore** — CLIP 視覺向量 + OCR 文字 + FAISS 本地圖片語意搜尋器
 
-本索引幫助開發者快速定位需要的技術文檔。多數文檔位於本資料夾內；少數連結指向專案根目錄的腳本（如 onnx_ocr.py）與 [benchmarks/](../benchmarks/README.md) 效能測試套件。
+本索引幫助開發者快速定位需要的技術文檔。多數文檔位於本資料夾內；少數連結指向專案根目錄的腳本（如 onnx_ocr.py）、[benchmarks/](../benchmarks/README.md) 效能測試套件與 [tests/](../tests/README.md) 自動化測試套件。
 
 ## 📖 快速導航
 
