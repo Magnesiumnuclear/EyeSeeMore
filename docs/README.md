@@ -6,7 +6,7 @@
 
 > **EyeSeeMore** — CLIP 視覺向量 + OCR 文字 + FAISS 本地圖片語意搜尋器
 
-本索引幫助開發者快速定位需要的技術文檔。所有文檔位於本文件夾內。
+本索引幫助開發者快速定位需要的技術文檔。多數文檔位於本資料夾內；少數連結指向專案根目錄的腳本（如 onnx_ocr.py）與 [benchmarks/](../benchmarks/README.md) 效能測試套件。
 
 ## 📖 快速導航
 
@@ -26,13 +26,13 @@
 | **查看 OCR 推論引擎腳本** | [../onnx_ocr.py](../onnx_ocr.py) | ONNX PaddleOCR 推論入口，提供統一 `ocr()` 介面 |
 | **查看 CLIP ONNX 轉換腳本** | [../export_clip_onnx.py](../export_clip_onnx.py) | 將 PyTorch CLIP 匯出為 ONNX 的開發工具腳本 |
 | **新增功能的逐步指南** | [CONTRIBUTION.md](./CONTRIBUTION.md) | 從需求 → 設計 → 實裝 → i18n / QSS 規範 → 測試 |
-| **多國語系 & 樣式表規範** | [CONTRIBUTION.md](./CONTRIBUTION.md#-ui-文字與樣式規範) | JSON 語言檔、QSS 集中管理、禁止 hardcode |
+| **多國語系 & 樣式表規範** | [CONTRIBUTION.md](./CONTRIBUTION.md#ui-文字與樣式規範) | JSON 語言檔、QSS 集中管理、禁止 hardcode |
 | **查看未來規劃與風險** | [ROADMAP.md](./ROADMAP.md) | 優先級、待處理議題、文件與程式面的下一階段規劃 |
 
 ## 🎯 常見問題速查
 
 **Q: 我要新增一個功能，從哪開始？**
-A: 先讀 [CONTRIBUTION.md](./CONTRIBUTION.md) 的「新增功能流程」章節。
+A: 先讀 [CONTRIBUTION.md](./CONTRIBUTION.md) 的「標準修改流程」章節。
 
 **Q: 依賴注入老是報錯，為什麼？**
 A: [DESIGN_PATTERNS.md](./DESIGN_PATTERNS.md) §3.2「Callable Provider 陷阱」有修復法。

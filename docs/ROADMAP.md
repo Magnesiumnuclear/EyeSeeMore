@@ -65,14 +65,15 @@ EyeSeeMore 已完成 Phase 1 到 Phase 3-G 的主要重構與效能修復，現�
 
 1. 將大型總表拆為索引文與專題文。
 2. 讓 README、ROADMAP、CONTRIBUTION、MODULES_* 各自只承擔單一責任。
-3. 補上搜尋流程、OCR 流程、模型加載、Win32 整合等專題文。
+3. 補上搜尋流程、OCR 流程、Win32 整合等專題文（模型加載專題文已完成，見 MODEL_LOADING.md）。
 
 ### P1 — 功能鏈路文件補齊
 
+> 模型加載與共享策略已由 `MODEL_LOADING.md` 涵蓋，以下為尚未產出者。
+
 1. 搜尋查詢從輸入到結果顯示的完整文件。
 2. OCR 推論、存取、編輯與 UI 顯示的完整文件。
-3. 模型加載與共享策略文件。
-4. Win32 原生整合與視窗狀態文件。
+3. Win32 原生整合與視窗狀態文件。
 
 ### P2 — 中期維護性改善
 
@@ -108,10 +109,12 @@ EyeSeeMore 已完成 Phase 1 到 Phase 3-G 的主要重構與效能修復，現�
 
 ### 文件面
 
-1. 完成 `MODULES_CORE.md` 的索引化。
-2. 完成 `MODULES_UI.md` 的索引化。
-3. 收斂 `CONTRIBUTION.md`，只保留開發流程與規範。
-4. 新增 `MODEL_LOADING.md`、`WINDOW_INTEGRATION.md`、`OCR_FLOW.md`、`SEARCH_FLOW.md`。
+> 已完成項（`MODULES_CORE/UI.md` 索引化、`CONTRIBUTION.md` 收斂、新增 `MODEL_LOADING.md`）
+> 已移至上方「已完成里程碑摘要」。以下僅保留尚未產出的專題文。
+
+1. 新增 `WINDOW_INTEGRATION.md`（Win32、工作列、原生事件與視窗狀態整合）。
+2. 新增 `OCR_FLOW.md`（OCR 推論、存取、編輯與 UI 顯示鏈路）。
+3. 新增 `SEARCH_FLOW.md`（搜尋查詢從輸入到結果顯示的完整流程）。
 
 ### 程式面
 
