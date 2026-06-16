@@ -224,6 +224,20 @@
 >
 > 基準 Commit：`未量測` → 優化 Commit：`未量測`
 
+### 向量建立路徑 baseline（profiling，優化尚未實作）
+
+以 `benchmarks/bench_vectorize.py` 對 CLIP 向量建立路徑做基準剖析，得到一個**推翻直覺**的結論：
+
+- 模型 image encoder 為**動態 batch 軸**（`['batch_size',3,224,224]`），可自由調大 batch。
+- 但在本機 **DML GPU** 上，batch 1→16 的吞吐幾乎持平（每張推論約 38–58ms，~25 張/秒）——
+  **調大 batch 在此環境幾乎不增吞吐**，原先「Tier 1：加大 batch」的假設被實測否定。
+- 真正瓶頸是 **CPU 前處理**：「解碼+轉正+RGB+`NumpyPreprocess`」單張約為 GPU 推論的 **~3 倍**
+  （其中 `NumpyPreprocess` 的 `cv2.resize(INTER_CUBIC)` 佔顯著比重）。目前 CPU、GPU **序列**執行。
+
+→ 優化方向應改為:**多執行緒平行化 CPU 前處理 + CPU/GPU 管線化(pipelining)**，而非加大 batch。
+（絕對數字隨機器/GPU 而異,故此處只記錄相對結論;量測機制與重現方式見 benchmarks/README.md
+「向量建立量測」。實作優化後再以 baseline→optimized 對照補數據表。）
+
 ---
 
 ## 維護規則

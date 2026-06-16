@@ -34,6 +34,31 @@ python compare.py --latest startup_imports
 | `bench_thumbnail_cache.py` | **P0-1** L2 快取路徑分裂：indexer 寫 `<root>/.cache`，UI 讀 `ui/widgets/.cache`，54k 張預產縮圖全被浪費 | 兩端統一從 `core/paths.py` 取得快取路徑；遷移/清除 `ui/widgets/.cache` | `--check-dirs` 回報 PASS（UI 端目錄不存在或為空）；快取命中比未命中快一個數量級 |
 | `bench_startup_imports.py` | **P0-3** 主檔頂層 import 過重（`transformers`、`faiss` 未使用仍被 import；`indexer` 連帶拉入 cv2/onnxruntime） | 刪除未使用的頂層 import、延後重模組到實際使用點 | `blur_main_top_level_imports` 指標明顯下降（腳本以 AST 讀取主檔實際 import 清單，改完即生效） |
 
+## 向量建立量測（profiling 工具，非回歸守門）
+
+`bench_vectorize.py` 是**剖析型** benchmark，用來在優化 CLIP 向量建立路徑前後做對照（尚未實作優化）。
+與上表不同，它不是 PASS/FAIL 守門，而是量出瓶頸分佈：
+
+- 印出 image encoder 的輸入 shape → 判斷是否**動態 batch 軸**（調大 batch 的前提）。
+- 各 batch size 的 `session.run` 吞吐（張/秒、ms/張）。
+- `NumpyPreprocess` 與「解碼+轉正+RGB+前處理」的單張 CPU 成本。
+- CPU 階段 vs GPU 推論的對比 → 量出 CPU/GPU 管線化可省的上限。
+
+需要真實 `models/onnx_clip/{model}_image.onnx`（找不到則只量前處理）。因相依模型 + GPU
+且耗時較長，**刻意不納入 `run_all.py`**，作為針對性工具單獨執行：
+
+```powershell
+python bench_vectorize.py --inspect                 # 只印輸入 shape / providers
+python bench_vectorize.py --label baseline          # 完整量測,存基準
+python bench_vectorize.py --batches 1,4,8,16,32 --repeat 8
+# 優化 indexer 後:
+python bench_vectorize.py --label optimized
+python compare.py --latest vectorize
+```
+
+> 量測結論摘要請見 PERFORMANCE_NOTES.md Phase 3-H（向量建立段）；數據隨機器/GPU 而異，
+> 跨 label 比較務必在同一台機器。
+
 ## 單獨執行與驗收檢查
 
 ```powershell
