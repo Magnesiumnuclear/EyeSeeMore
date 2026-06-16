@@ -224,19 +224,35 @@
 >
 > 基準 Commit：`未量測` → 優化 Commit：`未量測`
 
-### 向量建立路徑 baseline（profiling，優化尚未實作）
+### 向量建立路徑優化（Phase 3-I：平行前處理 + 管線化）
 
-以 `benchmarks/bench_vectorize.py` 對 CLIP 向量建立路徑做基準剖析，得到一個**推翻直覺**的結論：
+先以 `benchmarks/bench_vectorize.py` 剖析 CLIP 向量建立路徑，得到一個**推翻直覺**的結論：
 
 - 模型 image encoder 為**動態 batch 軸**（`['batch_size',3,224,224]`），可自由調大 batch。
-- 但在本機 **DML GPU** 上，batch 1→16 的吞吐幾乎持平（每張推論約 38–58ms，~25 張/秒）——
-  **調大 batch 在此環境幾乎不增吞吐**，原先「Tier 1：加大 batch」的假設被實測否定。
-- 真正瓶頸是 **CPU 前處理**：「解碼+轉正+RGB+`NumpyPreprocess`」單張約為 GPU 推論的 **~3 倍**
-  （其中 `NumpyPreprocess` 的 `cv2.resize(INTER_CUBIC)` 佔顯著比重）。目前 CPU、GPU **序列**執行。
+- 但在本機 **DML GPU** 上，batch 1→16 的吞吐幾乎持平（每張推論約 38–58ms）——
+  **調大 batch 在此環境幾乎不增吞吐**，原先「加大 batch」的假設被實測否定。
+- 真正瓶頸是 **CPU 前處理**：「解碼+轉正+RGB+`NumpyPreprocess`」單張約為 GPU 推論的 **~3 倍**，
+  且原本 CPU、GPU **序列**執行。
 
-→ 優化方向應改為:**多執行緒平行化 CPU 前處理 + CPU/GPU 管線化(pipelining)**，而非加大 batch。
-（絕對數字隨機器/GPU 而異,故此處只記錄相對結論;量測機制與重現方式見 benchmarks/README.md
-「向量建立量測」。實作優化後再以 baseline→optimized 對照補數據表。）
+**實作（`run_ai_processing` 軌道 A／B）：** 以執行緒池平行做 CPU 前處理並向前預取
+（`_pipelined` generator，背壓上限 `inflight`），GPU 推論（`_compute_clip`）與 sqlite
+寫入、OCR 推論則留在單一消費執行緒——使 CPU 前處理與 GPU 推論重疊。worker 數由
+`perf_config.preprocess_workers` 控制（預設 `min(8, cpu)`）。OCR 僅在該圖資料夾有啟用
+語系時才備 BGR（省記憶體）。
+
+**端到端實測（軌道 B 純 CLIP，24 張合成圖，本機 DML）：**
+
+> 基準 Commit：`未綁定（本機 e2e）` → 優化 Commit：`未綁定（本機 e2e）`
+>
+> | 前處理 workers | ms/張 | 張/秒 |
+> |------|------|------|
+> | 1（僅管線化重疊） | 129 | 7.7 |
+> | 4 | 65 | 15.5 |
+> | 8 | 63 | 15.9 |
+>
+> 對比原序列估算（CPU+GPU 約 157ms/張）→ **約 2–2.5× 吞吐**；workers≥4 後 CPU 不再是瓶頸
+> （趨近 GPU-bound）。絕對值隨機器/GPU 而異，重現方式見 benchmarks/README.md「向量建立量測」
+> （`bench_vectorize.py --e2e N`）。
 
 ---
 

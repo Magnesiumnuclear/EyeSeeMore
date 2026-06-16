@@ -114,6 +114,58 @@ def bench_preprocess(repeat, warmup):
     return timeit(lambda: pp(img), repeat=repeat, warmup=warmup)
 
 
+def bench_e2e(model_name, n, workers, batch_size):
+    """端到端量測:真實模型跑「軌道 B(純 CLIP 補算)」的 run_ai_processing。
+
+    這驗證「平行前處理 + 管線化」的實際效果(不是元件估算)。模型載入不計時
+    (以 shared_model 傳入)。回傳 (stats_like, imgs)。
+    """
+    from PIL import Image, ImageDraw
+    from indexer import IndexerService
+    import time
+
+    with tempfile.TemporaryDirectory(prefix="esm_bench_e2e_") as tmp:
+        db = os.path.join(tmp, "e2e.db")
+        svc = IndexerService(db_path=db, model_name=model_name,
+                             perf_config={"preprocess_workers": workers,
+                                          "indexing_batch_size": batch_size,
+                                          "db_commit_threshold": 10_000})
+        conn = svc.init_db()
+        # 產生 n+2 張合成圖(後 2 張當 DML 暖機,不計入 timed 集合)
+        all_paths = []
+        for i in range(n + 2):
+            p = os.path.join(tmp, f"img_{i}.jpg")
+            img = Image.new("RGB", (3000 + (i % 5) * 200, 2200 + (i % 3) * 200))
+            d = ImageDraw.Draw(img)
+            for k in range(40):
+                x, y = (k * 137) % 2600, (k * 211) % 1900
+                d.ellipse([x, y, x + 220, y + 220], fill=((k * 41) % 256, (k * 73) % 256, 180))
+            img.save(p, "JPEG", quality=88)
+            conn.execute("INSERT INTO files (file_path, filename, folder_path, mtime) VALUES (?,?,?,?)",
+                         (p, os.path.basename(p), tmp, 1.0))
+            all_paths.append(p)
+        conn.commit()
+        conn.close()
+
+        # 載入模型(不計時)
+        model, preprocess, _ = svc.load_ai_models(need_ocr=False)
+        svc._shared_pp = preprocess  # 保活
+
+        warm, timed = all_paths[:0], all_paths  # 預設全跑
+        warm = all_paths[:2]
+        timed = all_paths[2:]
+
+        # 暖機(DML 首次 run 會編譯特化 kernel)
+        svc.run_ai_processing([], warm, [], {}, shared_model=model, shared_preprocess=preprocess)
+
+        t0 = time.perf_counter()
+        svc.run_ai_processing([], timed, [], {}, shared_model=model, shared_preprocess=preprocess)
+        elapsed = time.perf_counter() - t0
+
+    stats = {"min": elapsed, "mean": elapsed, "median": elapsed, "max": elapsed, "repeat": 1}
+    return stats, len(timed)
+
+
 def bench_decode_preprocess(repeat, warmup):
     """解碼(Image.open)+ EXIF 轉正 + RGB 安全轉換 + NumpyPreprocess 的單張 CPU 階段。"""
     from PIL import Image, ImageDraw, ImageOps
@@ -148,6 +200,11 @@ def main():
     parser.add_argument("--warmup", type=int, default=2, help="計時前的暖機次數(DML 需要)")
     parser.add_argument("--model-path", default=None, help="直接指定 image encoder .onnx 路徑")
     parser.add_argument("--inspect", action="store_true", help="只印模型輸入 shape / providers")
+    parser.add_argument("--e2e", type=int, default=0, metavar="N",
+                        help="端到端量測:對 N 張合成圖跑真實 run_ai_processing(軌道 B)")
+    parser.add_argument("--e2e-workers", default="1,8",
+                        help="--e2e 要比較的前處理 worker 數(逗號分隔,預設 1,8)")
+    parser.add_argument("--e2e-batch", type=int, default=8, help="--e2e 的 indexing_batch_size")
     args = parser.parse_args()
 
     if not HAS_ORT:
@@ -181,6 +238,28 @@ def main():
 
     if args.inspect:
         save_results("vectorize", args.label, metrics, extra=extra)
+        return
+
+    # ── 端到端:平行前處理 + 管線化的實測(軌道 B) ──
+    if args.e2e:
+        if not os.path.exists(model_path):
+            print("[錯誤] --e2e 需要真實模型,但找不到模型檔。")
+            sys.exit(1)
+        del sess  # 釋放本檔先前載入的 session,避免與 e2e 內的重複佔用
+        e2e_workers = [int(w) for w in args.e2e_workers.split(",") if w.strip()]
+        print(f"\n=== 端到端 run_ai_processing(軌道 B,純 CLIP) · {args.e2e} 張 · batch={args.e2e_batch} ===")
+        e2e_metrics = {}
+        e2e_summary = {}
+        for w in e2e_workers:
+            stats, imgs = bench_e2e(model_name, args.e2e, w, args.e2e_batch)
+            ms_per = stats["median"] / imgs * 1000
+            ips = imgs / stats["median"]
+            e2e_metrics[f"e2e_workers{w}_total"] = stats
+            e2e_summary[w] = {"ms_per_image": round(ms_per, 2), "img_per_s": round(ips, 1)}
+            print(f"  workers={w:>2}: {stats['median']:7.2f}s 總計 → {ms_per:6.2f} ms/張, {ips:5.1f} 張/秒")
+        save_results("vectorize", args.label, e2e_metrics,
+                     extra={"model_name": model_name, "mode": "e2e",
+                            "n": args.e2e, "batch": args.e2e_batch, "summary": e2e_summary})
         return
 
     # ── 1. 各 batch 推論吞吐 ──

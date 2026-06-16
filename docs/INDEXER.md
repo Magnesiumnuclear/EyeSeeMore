@@ -404,6 +404,14 @@ OCR 使用 [onnx_ocr.py](../onnx_ocr.py) 的 ONNXOCR 類別。
 
 這能壓低磁碟 I/O 與重複 decode 成本。
 
+### 平行前處理 + 管線化（Phase 3-I）
+
+軌道 A／B 的 CPU 前處理（解碼／EXIF／RGB／縮放／正規化／L2 縮圖／OCR BGR）實測約為
+GPU 推論的 ~3 倍且原為序列執行。現以模組函式 `_pipelined()` 用執行緒池平行做前處理並
+向前預取，GPU 推論（`_compute_clip`）與 sqlite 寫入、OCR 推論則**只在單一消費執行緒**進行
+（ONNX session 與 DB 連線都不跨執行緒）。worker 數由 `perf_config.preprocess_workers`
+控制（預設 `min(8, cpu)`）。端到端實測約 2–2.5× 吞吐（量化見 PERFORMANCE_NOTES.md Phase 3-I）。
+
 ### 掃描階段優化（Phase 3-H）
 
 `scan_for_new_files` 的數項純掃描優化（不影響分類語意）：

@@ -151,6 +151,41 @@ import psutil
 # from torch.profiler import profile as torch_profile, record_function, ProfilerActivity
 # ==========================================
 
+
+def _pipelined(items, fn, workers, max_inflight):
+    """以 workers 條執行緒平行對 items 套用 fn，依「原順序」yield 結果。
+
+    最多保持 max_inflight 個任務在處理中（背壓），避免一次把所有前處理結果塞滿記憶體。
+    fn 內部應自行 try/except 並對失敗回傳 None；消費端負責略過 None。
+
+    這讓「CPU 前處理（解碼／縮放／正規化／OCR BGR）」能與消費端的「GPU 推論 + DB 寫入」
+    重疊（pipelining）：當主執行緒在跑當前批的 GPU 推論時，背景執行緒已在準備後續的圖。
+    """
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    if not items:
+        return
+    workers = max(1, int(workers))
+    max_inflight = max(workers + 1, int(max_inflight))
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        it = iter(items)
+        futures = deque()
+        for _ in range(max_inflight):
+            try:
+                futures.append(ex.submit(fn, next(it)))
+            except StopIteration:
+                break
+        while futures:
+            fut = futures.popleft()
+            try:
+                futures.append(ex.submit(fn, next(it)))
+            except StopIteration:
+                pass
+            yield fut.result()  # fn 已吞例外回傳 None，此處不會 re-raise
+
+
 class IndexerService:
     def __init__(self, db_path, model_name='xlm-roberta-large-ViT-H-14', pretrained_name='frozen_laion5b_s13b_b90k', use_gpu_ocr=False, perf_config=None):
         self.db_path = db_path
@@ -165,6 +200,10 @@ class IndexerService:
         cfg = perf_config or {}
         self.batch_size       = int(cfg.get("indexing_batch_size",  4))
         self.commit_threshold = int(cfg.get("db_commit_threshold",  24))
+        # [Perf Phase 3-I] 前處理平行度：解碼/縮放/正規化屬 I/O+SIMD（會釋放 GIL），
+        # 多執行緒平行前處理並向前預取，可與 GPU 推論重疊（pipelining）。
+        # 實測 CPU 前處理約為 GPU 推論的 3 倍且原為序列執行，這是向量建立的主要瓶頸。
+        self.preprocess_workers = int(cfg.get("preprocess_workers", min(8, (os.cpu_count() or 4))))
 
         # [修改] 使用 perf_print 取代一般的 print
         perf_print(f"\n{'='*50}")
@@ -570,153 +609,153 @@ class IndexerService:
         except Exception as e:
             print(f"Model Load Failed: {e}"); conn.close(); return
 
+        # ==========================================
+        # [Perf Phase 3-I] 平行前處理 + 管線化
+        # CPU 前處理（解碼／EXIF／RGB／縮放／正規化／L2 縮圖／OCR BGR）實測約為 GPU 推論的
+        # ~3 倍，且原為序列執行。以下用執行緒池平行做前處理並向前預取（pipelining）；
+        # GPU 推論（_compute_clip）與 DB 寫入、OCR 推論則留在本（消費）執行緒序列進行——
+        # ONNX session 與 sqlite 連線都只在單一執行緒被觸碰，確保安全。
+        # ==========================================
+        inflight = max(self.batch_size * 2, self.preprocess_workers + self.batch_size)
+
         # --- 軌道 A: 全新圖片 (OCR + CLIP) ---
-        for i in range(0, len(files_full), self.batch_size):
-            batch_paths = files_full[i : i + self.batch_size]
-            batch_images = []
-            batch_meta = [] 
-            
-            # 🌟 [新增] 本批次的統一資料暫存站
-            ocr_batch_cache = {} 
-            
-            if progress_callback: progress_callback(current_progress, total_files, f"Full AI: {current_progress}/{total_files}...")
+        def _prep_full(path):
+            """[背景執行緒] 單張全流程前處理；任何失敗回傳 None 由消費端略過。"""
+            try:
+                file_size = os.path.getsize(path)
+                # 統一讀取中心：唯一一次觸碰硬碟，完成尺寸／EXIF／轉正／RGB
+                with Image.open(path) as pil_img:
+                    raw_w, raw_h = pil_img.size
+                    orientation = 1
+                    exif = pil_img.getexif()
+                    if exif:
+                        for k, v in exif.items():
+                            if ExifTags.TAGS.get(k) == 'Orientation':
+                                orientation = v
+                                break
+                    img_transposed = ImageOps.exif_transpose(pil_img)
+                    img_rgb = pil_to_rgb_safe(img_transposed)
+                w, h = (raw_h, raw_w) if orientation in (5, 6, 7, 8) else (raw_w, raw_h)
+                generate_l2_cache(img_transposed, path)
+                clip_input = np.expand_dims(preprocess(img_rgb), axis=0)
+                # 僅當該圖所屬資料夾有啟用 OCR 時才備 BGR（省 cvtColor 與在途記憶體）
+                required_langs = self._get_folder_ocr_setting(path, folder_ocr_map)
+                img_bgr = cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR) if required_langs else None
+                meta = (path, os.path.basename(path), os.path.dirname(path),
+                        os.path.getmtime(path), w, h, file_size)
+                return {"path": path, "meta": meta, "clip": clip_input,
+                        "bgr": img_bgr, "langs": required_langs}
+            except Exception:
+                return None
 
-            for path in batch_paths:
-                try:
-                    file_size = os.path.getsize(path)
-                    
-                    # ==========================================
-                    # 🌟 [統一讀取中心] 唯一一次觸碰硬碟！
-                    # 一次性完成：讀取尺寸、解析 EXIF、轉正、轉 RGB
-                    # ==========================================
-                    with Image.open(path) as pil_img:
-                        raw_w, raw_h = pil_img.size
-                        orientation = 1
-                        exif = pil_img.getexif()
-                        if exif:
-                            for k, v in exif.items():
-                                if ExifTags.TAGS.get(k) == 'Orientation':
-                                    orientation = v
-                                    break
-                                    
-                        # 轉正 (保留原始模式，含透明通道)
-                        img_transposed = ImageOps.exif_transpose(pil_img)
-                        # 轉為 RGB (用於 CLIP 向量與 OCR，透明像素合成至白色背景)
-                        img_rgb = pil_to_rgb_safe(img_transposed)
-                        
-                    # 計算視覺上正確的長寬
-                    w, h = raw_w, raw_h
-                    if orientation in [5, 6, 7, 8]:
-                        w, h = raw_h, raw_w
+        def _flush_full(recs):
+            """[消費執行緒] 將一批已備好的記錄寫入 files / embeddings / ocr_results。"""
+            nonlocal commit_counter
+            if not recs:
+                return
+            batch_paths = [r["path"] for r in recs]
+            try:
+                cursor.executemany(
+                    'INSERT OR IGNORE INTO files (file_path, filename, folder_path, mtime, width, height, file_size) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    [r["meta"] for r in recs])
+            except sqlite3.Error as e:
+                print(f"DB Error: {e}")
 
-                    # 1. 派發給 L2 快取 (傳入含透明通道的原始轉正圖)
-                    generate_l2_cache(img_transposed, path)
-                        
-                    # 2. 派發給 CLIP 預處理
-                    batch_images.append(np.expand_dims(preprocess(img_rgb), axis=0))
-                    batch_meta.append((path, os.path.basename(path), os.path.dirname(path), os.path.getmtime(path), w, h, file_size))
-                    
-                    # 3. 派發給 OCR：預先將 RGB 轉為 OpenCV 需要的 BGR 陣列
-                    # 注意：img_bgr 來自已轉正的 img_rgb，座標系已是視覺正確方向，不需再翻轉
-                    img_bgr = cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR)
-                    ocr_batch_cache[path] = img_bgr
+            placeholders = ','.join(['?'] * len(batch_paths))
+            cursor.execute(f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders})", tuple(batch_paths))
+            id_map = {row[0]: row[1] for row in cursor.fetchall()}
 
-                except Exception: continue
+            # CLIP 向量（GPU，單執行緒）
+            embeddings_list = self._compute_clip(model, [r["clip"] for r in recs])
+            emb_insert_data = [(id_map.get(batch_paths[idx]), self.model_name, embeddings_list[idx])
+                               for idx in range(len(batch_paths)) if id_map.get(batch_paths[idx]) is not None]
+            try:
+                cursor.executemany('INSERT OR IGNORE INTO embeddings (file_id, model_name, embedding) VALUES (?, ?, ?)', emb_insert_data)
+            except sqlite3.Error:
+                pass
 
-            if batch_images:
-                try:
-                    # 寫入 files：包含 width, height, file_size
-                    cursor.executemany(
-                        'INSERT OR IGNORE INTO files (file_path, filename, folder_path, mtime, width, height, file_size) VALUES (?, ?, ?, ?, ?, ?, ?)', 
-                        batch_meta
-                    )
-                except sqlite3.Error as e: print(f"DB Error: {e}")
+            # OCR（BGR 已於前處理備妥；偵測/辨識推論留在本執行緒）
+            ocr_insert_data = []
+            for r in recs:
+                file_id = id_map.get(r["path"])
+                if not file_id or r["bgr"] is None:
+                    continue
+                img_bgr = r["bgr"]
+                for target_lang in r["langs"]:
+                    if ensure_ocr_engine(target_lang) and target_lang in ocr_engines:
+                        ocr_text_final, ocr_data_final = "[NONE]", "[]"
+                        ocr_result = ocr_engines[target_lang].ocr(img_bgr, cls=False)
+                        if ocr_result and ocr_result[0]:
+                            detected_text_list = []
+                            json_data_list = []
+                            for line in ocr_result[0]:
+                                box, (text, conf) = line[0], line[1]
+                                detected_text_list.append(text)
+                                json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
+                            ocr_text_final = " ".join(detected_text_list)
+                            ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
+                        ocr_insert_data.append((file_id, target_lang, ocr_text_final, ocr_data_final, 1.0))
+            if ocr_insert_data:
+                cursor.executemany('INSERT INTO ocr_results (file_id, lang, ocr_text, ocr_data, confidence) VALUES (?, ?, ?, ?, ?)', ocr_insert_data)
 
-                paths_tuple = tuple(batch_paths)
-                placeholders = ','.join(['?'] * len(paths_tuple))
-                # ... 後面寫入 CLIP 與 OCR 的程式碼維持不變 ...
-                cursor.execute(f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders})", paths_tuple)
-                id_map = {row[0]: row[1] for row in cursor.fetchall()}
-                
-                # 2. 寫入 CLIP 向量
-                embeddings_list = self._compute_clip(model, batch_images)
-                emb_insert_data = [(id_map.get(batch_paths[idx]), self.model_name, embeddings_list[idx]) for idx in range(len(batch_paths)) if id_map.get(batch_paths[idx]) is not None]
-                try:
-                    cursor.executemany('INSERT OR IGNORE INTO embeddings (file_id, model_name, embedding) VALUES (?, ?, ?)', emb_insert_data)
-                except sqlite3.Error: pass
-                
-                # 3. 分語系跑 OCR，並寫入 ocr_results 子表
-                ocr_insert_data = []
-                for path in batch_paths:
-                    file_id = id_map.get(path)
-                    if not file_id or path not in ocr_batch_cache: continue
-
-                    # 🌟 從記憶體拿現成的 BGR 圖片，不准再讀硬碟！
-                    img_bgr = ocr_batch_cache[path]
-                    
-                    required_langs = self._get_folder_ocr_setting(path, folder_ocr_map)
-                    for target_lang in required_langs:
-                        # [Refactor Phase 3-A] 改為 Lazy Load：需要時才加載
-                        if ensure_ocr_engine(target_lang) and target_lang in ocr_engines:
-                            ocr_text_final, ocr_data_final = "[NONE]", "[]"
-                            
-                            # 🌟 將記憶體中的 numpy 陣列直接餵給 OCR 引擎！
-                            ocr_result = ocr_engines[target_lang].ocr(img_bgr, cls=False)
-                            
-                            if ocr_result and ocr_result[0]:
-                                detected_text_list = []
-                                json_data_list = []
-                                for line in ocr_result[0]:
-                                    box, (text, conf) = line[0], line[1]
-                                    detected_text_list.append(text)
-                                    json_data_list.append({"box": [[int(pt[0]), int(pt[1])] for pt in box], "text": text, "conf": round(float(conf), 4)})
-                                ocr_text_final = " ".join(detected_text_list)
-                                ocr_data_final = json.dumps(json_data_list, ensure_ascii=False)
-                            
-                            ocr_insert_data.append((file_id, target_lang, ocr_text_final, ocr_data_final, 1.0))
-                
-                if ocr_insert_data:
-                    cursor.executemany('INSERT INTO ocr_results (file_id, lang, ocr_text, ocr_data, confidence) VALUES (?, ?, ?, ?, ?)', ocr_insert_data)
-            current_progress += len(batch_paths)
-
-            commit_counter += len(batch_paths)
+            commit_counter += len(recs)
             if commit_counter >= self.commit_threshold:
                 conn.commit()
                 commit_counter = 0
+
+        batch = []
+        for rec in _pipelined(files_full, _prep_full, self.preprocess_workers, inflight):
+            current_progress += 1
+            if progress_callback and (current_progress % self.batch_size == 0):
+                progress_callback(current_progress, total_files, f"Full AI: {current_progress}/{total_files}...")
+            if rec is not None:
+                batch.append(rec)
+                if len(batch) >= self.batch_size:
+                    _flush_full(batch); batch = []
+        _flush_full(batch); batch = []
 
         # --- 軌道 B: 切換模型補算 (光速 CLIP) ---
-        for i in range(0, len(files_emb_only), self.batch_size):
-            batch_paths = files_emb_only[i : i + self.batch_size]
-            batch_images = []; valid_paths = []
-            if progress_callback: progress_callback(current_progress, total_files, f"Fast CLIP: {current_progress}/{total_files}...")
-            for path in batch_paths:
-                try:
-                    with Image.open(path) as pil_img:
-                        # 轉正 (保留原始模式，含透明通道)
-                        img_transposed = ImageOps.exif_transpose(pil_img)
-                        # 🌟 [新增] 軌道 B 也搭便車 (保留透明通道)
-                        generate_l2_cache(img_transposed, path)
-                        # 🌟 [AI 準確度升級] 轉正送給 CLIP (透明像素合成至白色背景)
-                        img_rgb = pil_to_rgb_safe(img_transposed)
-                    batch_images.append(np.expand_dims(preprocess(img_rgb), axis=0)); valid_paths.append(path)
-                except Exception: continue
+        def _prep_emb(path):
+            """[背景執行緒] 純 CLIP 補算的單張前處理；失敗回傳 None。"""
+            try:
+                with Image.open(path) as pil_img:
+                    img_transposed = ImageOps.exif_transpose(pil_img)
+                    generate_l2_cache(img_transposed, path)
+                    img_rgb = pil_to_rgb_safe(img_transposed)
+                return {"path": path, "clip": np.expand_dims(preprocess(img_rgb), axis=0)}
+            except Exception:
+                return None
 
-            if batch_images:
-                embeddings_list = self._compute_clip(model, batch_images)
-                paths_tuple = tuple(valid_paths)
-                placeholders = ','.join(['?'] * len(paths_tuple))
-                cursor.execute(f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders})", paths_tuple)
-                id_map = {row[0]: row[1] for row in cursor.fetchall()}
-                emb_insert_data = [(id_map.get(p), self.model_name, embeddings_list[idx]) for idx, p in enumerate(valid_paths) if id_map.get(p) is not None]
-                try:
-                    cursor.executemany('INSERT OR IGNORE INTO embeddings (file_id, model_name, embedding) VALUES (?, ?, ?)', emb_insert_data)
-                except sqlite3.Error: pass
-            current_progress += len(batch_paths)
-
-            commit_counter += len(batch_paths)
+        def _flush_emb(recs):
+            """[消費執行緒] 將一批已備好的記錄寫入 embeddings。"""
+            nonlocal commit_counter
+            if not recs:
+                return
+            valid_paths = [r["path"] for r in recs]
+            embeddings_list = self._compute_clip(model, [r["clip"] for r in recs])
+            placeholders = ','.join(['?'] * len(valid_paths))
+            cursor.execute(f"SELECT file_path, id FROM files WHERE file_path IN ({placeholders})", tuple(valid_paths))
+            id_map = {row[0]: row[1] for row in cursor.fetchall()}
+            emb_insert_data = [(id_map.get(p), self.model_name, embeddings_list[idx])
+                               for idx, p in enumerate(valid_paths) if id_map.get(p) is not None]
+            try:
+                cursor.executemany('INSERT OR IGNORE INTO embeddings (file_id, model_name, embedding) VALUES (?, ?, ?)', emb_insert_data)
+            except sqlite3.Error:
+                pass
+            commit_counter += len(recs)
             if commit_counter >= self.commit_threshold:
                 conn.commit()
                 commit_counter = 0
+
+        for rec in _pipelined(files_emb_only, _prep_emb, self.preprocess_workers, inflight):
+            current_progress += 1
+            if progress_callback and (current_progress % self.batch_size == 0):
+                progress_callback(current_progress, total_files, f"Fast CLIP: {current_progress}/{total_files}...")
+            if rec is not None:
+                batch.append(rec)
+                if len(batch) >= self.batch_size:
+                    _flush_emb(batch); batch = []
+        _flush_emb(batch); batch = []
 
         # --- 軌道 C: 精準補算文字 (缺哪國補哪國) ---
         for i in range(0, len(files_ocr_only), self.batch_size):
