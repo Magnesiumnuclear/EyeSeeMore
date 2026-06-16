@@ -283,26 +283,31 @@ class IndexerService:
         conn.commit()
         return conn
 
-    def scan_for_new_files(self, source_folders_config):
+    def scan_for_new_files(self, source_folders_config, prune_missing=True):
         if not source_folders_config: return [], [], [], 0, {}
 
         folder_ocr_map = {}
-        valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
+        # tuple 形式供 str.endswith 一次比對(比 os.path.splitext 配置字串更省)
+        valid_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
         disk_paths = set()
-        
+
+        # [Perf] 預先聚合本次需要的 OCR 語系;若為空代表沒有任何資料夾啟用 OCR,
+        # 後續可整段跳過 ocr_results 載入與比對。
+        needed_langs = set()
         for f_conf in source_folders_config:
             folder = os.path.normpath(f_conf["path"])
             enabled_langs = f_conf.get("enabled_langs", [])
             folder_ocr_map[folder] = enabled_langs
-            
+            needed_langs.update(enabled_langs)
+
         # [Debug 日誌 1] 檢查從主程式傳遞過來的資料夾設定是否正確
         print(f"\n[Debug] 目前資料夾的 OCR 設定: {folder_ocr_map}")
-            
+
         for folder in folder_ocr_map.keys():
             if not os.path.exists(folder): continue
-            for root, _, files in os.walk(folder):
+            for root, _dirs, files in os.walk(folder):
                 for file in files:
-                    if os.path.splitext(file)[1].lower() in valid_extensions:
+                    if file.lower().endswith(valid_extensions):
                         full_path = os.path.normpath(os.path.join(root, file))
                         disk_paths.add(full_path)
 
@@ -318,56 +323,60 @@ class IndexerService:
         cursor.execute("SELECT file_id FROM embeddings WHERE model_name = ?", (self.model_name,))
         db_has_emb = set(row[0] for row in cursor.fetchall())
         
-        # 3. 取得所有檔案「已完成」的 OCR 語系
-        cursor.execute("SELECT file_id, lang FROM ocr_results")
+        # 3. 取得各檔「已完成」的 OCR 語系
+        # [Perf] 沒有任何資料夾啟用 OCR 時,完全跳過載入整張 ocr_results;
+        # 有需要時也只撈本次相關語系(WHERE lang IN ...),減少掃描列數與記憶體。
         ocr_history = {}
-        for file_id, lang in cursor.fetchall():
-            if file_id not in ocr_history: ocr_history[file_id] = set()
-            ocr_history[file_id].add(lang)
+        if needed_langs:
+            _nl = list(needed_langs)
+            _ph = ','.join(['?'] * len(_nl))
+            cursor.execute(
+                f"SELECT file_id, lang FROM ocr_results WHERE lang IN ({_ph})", _nl)
+            for file_id, lang in cursor.fetchall():
+                ocr_history.setdefault(file_id, set()).add(lang)
             
         # [Debug 日誌 2] 檢查資料庫讀取狀況
         print(f"[Debug] 資料庫狀態 -> 總圖片數: {len(db_files)}, 有 CLIP 向量: {len(db_has_emb)}, 有 OCR 紀錄的圖片數: {len(ocr_history)}")
         
-        to_delete = db_paths - disk_paths
-        deleted_count = len(to_delete)
-        if to_delete:
-            to_delete_list = list(to_delete)
-            BATCH = 900
-            for i in range(0, len(to_delete_list), BATCH):
-                batch = to_delete_list[i:i+BATCH]
-                placeholders = ','.join(['?'] * len(batch))
-                cursor.execute(f"DELETE FROM files WHERE file_path IN ({placeholders})", batch)
-            conn.commit()
+        # [安全] 刪除偵測是「全庫性」的(db_paths - disk_paths)。逐資料夾掃描時
+        # disk_paths 只含單一資料夾,必須關閉(prune_missing=False),否則會把
+        # 其他資料夾的檔案全部誤判為已刪而清除。全量掃描才用預設 True。
+        if prune_missing:
+            to_delete = db_paths - disk_paths
+            deleted_count = len(to_delete)
+            if to_delete:
+                to_delete_list = list(to_delete)
+                BATCH = 900
+                for i in range(0, len(to_delete_list), BATCH):
+                    batch = to_delete_list[i:i+BATCH]
+                    placeholders = ','.join(['?'] * len(batch))
+                    cursor.execute(f"DELETE FROM files WHERE file_path IN ({placeholders})", batch)
+                conn.commit()
+        else:
+            deleted_count = 0
             
         files_full = list(disk_paths - db_paths) # 完全新圖
         files_emb_only = []
         files_ocr_only = []
         
-        debug_print_limit = 0 # 限制印出次數避免洗頻
-        
         # 交叉比對：找出缺 CLIP 或缺特定語系 OCR 的圖片
+        # [Perf] p 來自 disk_paths∩db_paths,兩端皆已 normpath,走
+        # _match_folder_langs_norm 免去每張圖重複正規化;無 OCR 需求時整段短路。
+        check_ocr = bool(needed_langs)
         for p in (disk_paths & db_paths):
             file_id = db_files[p]
-            
+
             # 檢查是否缺 CLIP
             if file_id not in db_has_emb:
                 files_emb_only.append(p)
-                
+
             # 檢查 OCR (該資料夾勾選的 vs 該圖片實際跑過的)
-            required_langs = self._get_folder_ocr_setting(p, folder_ocr_map)
-            done_langs = ocr_history.get(file_id, set())
-            
-            # [Debug 日誌 3] 抽出前 5 張圖片來看看系統到底是怎麼判斷的
-            '''
-            if debug_print_limit < 5:
-                print(f"[Debug] 圖片: {os.path.basename(p)}")
-                print(f"         - 此資料夾需要的語系 (Required): {required_langs}")
-                print(f"         - 此圖片已完成的語系 (Done): {done_langs}")
-                debug_print_limit += 1
-            '''
-            # 只要有任何一個需要的語系沒跑過，就排入補算名單！
-            if any(lang not in done_langs for lang in required_langs):
-                files_ocr_only.append(p)
+            if check_ocr:
+                required_langs = self._match_folder_langs_norm(p, folder_ocr_map)
+                done_langs = ocr_history.get(file_id, set())
+                # 只要有任何一個需要的語系沒跑過，就排入補算名單！
+                if any(lang not in done_langs for lang in required_langs):
+                    files_ocr_only.append(p)
                 
         # [Debug 日誌 4] 最終分類結果
         print(f"[Debug] 掃描分類結果 -> 全新圖(Full): {len(files_full)}, 缺向量(Emb): {len(files_emb_only)}, 缺OCR(Ocr): {len(files_ocr_only)}\n")
@@ -377,42 +386,132 @@ class IndexerService:
         # ==========================================
         cursor.execute("SELECT id, file_path FROM files WHERE width IS NULL OR file_size IS NULL")
         missing_meta_rows = cursor.fetchall()
+        meta_updates = []
         if missing_meta_rows:
-            perf_print(f"[Indexer] 發現 {len(missing_meta_rows)} 張圖片缺少尺寸資訊，開始光速補齊...")
-            meta_updates = []
-            for row_id, path in missing_meta_rows:
+            perf_print(f"[Indexer] 發現 {len(missing_meta_rows)} 張圖片缺少尺寸資訊，開始平行補齊...")
+
+            def _read_one_meta(row):
+                row_id, path = row
                 try:
                     file_size = os.path.getsize(path)
-                    
-                    # 🌟 [Opt] 讀取 EXIF 並交換長寬
+                    # 讀取 EXIF 並依方向交換長寬(視覺正確尺寸)
                     raw_w, raw_h, orientation = get_image_metadata(path)
-                    w, h = raw_w, raw_h
-                    if orientation in [5, 6, 7, 8]:
-                        w, h = raw_h, raw_w
-                        
-                    meta_updates.append((w, h, file_size, row_id))
-                except Exception: pass
-            
+                    w, h = (raw_h, raw_w) if orientation in (5, 6, 7, 8) else (raw_w, raw_h)
+                    return (w, h, file_size, row_id)
+                except Exception:
+                    return None
+
+            # [Perf] 影像 header 讀取與 stat 屬 I/O 密集(讀檔/解碼會釋放 GIL),
+            # 平行化可把這段一次性補齊時間縮短數倍。執行緒只做 FS/PIL 讀取,
+            # 不碰 sqlite cursor,寫入仍集中在主執行緒,確保連線安全。
+            if len(missing_meta_rows) > 1:
+                from concurrent.futures import ThreadPoolExecutor
+                workers = min(8, len(missing_meta_rows))
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    meta_updates = [r for r in ex.map(_read_one_meta, missing_meta_rows) if r]
+            else:
+                meta_updates = [r for r in map(_read_one_meta, missing_meta_rows) if r]
+
             if meta_updates:
-                cursor.executemany("UPDATE files SET width=?, height=?, file_size=? WHERE id=?", meta_updates)
+                cursor.executemany(
+                    "UPDATE files SET width=?, height=?, file_size=? WHERE id=?", meta_updates)
                 conn.commit()
             perf_print(f"[Indexer] 已成功補齊 {len(meta_updates)} 張圖片的尺寸與大小資訊！")
         # ==========================================
         
-        self.update_folder_stats(conn)
+        # [Perf] 索引內容無任何變動(無新增/補算/刪除/補欄位)時,統計必然不變,
+        # 跳過 model_stats 的 JOIN+GROUP BY 重建,讓例行的無變更掃描幾乎零寫入。
+        if (files_full or files_emb_only or files_ocr_only
+                or deleted_count or meta_updates):
+            self.update_folder_stats(conn)
         conn.close()
-        
+
         return files_full, files_emb_only, files_ocr_only, deleted_count, folder_ocr_map
 
-    def _get_folder_ocr_setting(self, path, folder_ocr_map):
-        path_norm = os.path.normpath(path)
+    def _match_folder_langs_norm(self, path_norm, folder_ocr_map):
+        """最長前綴匹配,回傳該圖應套用的 OCR 語系清單。
+
+        [Perf] 假設 path_norm 已是 os.path.normpath 的結果(掃描熱路徑使用),
+        省去每張圖重複正規化;並先比長度(便宜)再比 startswith(較貴)。
+        """
         matched_folder = ""
-        enabled_langs = [] # 預設空陣列
+        enabled_langs = []
         for folder_path, langs in folder_ocr_map.items():
-            if path_norm.startswith(folder_path) and len(folder_path) > len(matched_folder):
+            if len(folder_path) > len(matched_folder) and path_norm.startswith(folder_path):
                 matched_folder = folder_path
                 enabled_langs = langs
         return enabled_langs
+
+    def _get_folder_ocr_setting(self, path, folder_ocr_map):
+        """對外相容介面:先正規化 path,再做最長前綴匹配。"""
+        return self._match_folder_langs_norm(os.path.normpath(path), folder_ocr_map)
+
+    # ==========================================
+    # 🌟 [新增] 資料夾拆分任務:把多資料夾來源拆成可獨立執行的逐資料夾任務
+    # ==========================================
+    def split_into_folder_tasks(self, source_folders_config):
+        """將多資料夾來源設定拆成「每個頂層資料夾一個獨立掃描任務」。
+
+        用途:讓上層(如 IndexerWorker)能逐資料夾掃描/索引,取得每資料夾
+        獨立的結果與進度,並支援單一資料夾的精準重掃。
+
+        規則:
+          • 以 normpath 去重(同一路徑只保留第一次出現)。
+          • 巢狀歸併:被其他「已設定資料夾」包含的子資料夾不另開任務,而是
+            併入其最頂層被設定祖先的任務,使各任務掃描範圍互斥、不重複走訪
+            同一批檔案;同時把子資料夾設定一併放進該任務 config,scan 仍以
+            最長前綴匹配保留子資料夾自身的 OCR 語系設定。
+
+        Args:
+            source_folders_config: 與 scan_for_new_files 相同格式的設定陣列。
+
+        Returns:
+            [{"path": 頂層資料夾(normpath),
+              "enabled_langs": 該頂層資料夾語系,
+              "config": [屬於此子樹的所有資料夾設定]}...];傳入空設定回傳 []。
+        """
+        if not source_folders_config:
+            return []
+
+        # 1. 正規化 + 去重(保留首次出現)
+        norm_confs = []   # [(norm_path, conf)]
+        seen = set()
+        for fc in source_folders_config:
+            n = os.path.normpath(fc["path"])
+            if n in seen:
+                continue
+            seen.add(n)
+            norm_confs.append((n, fc))
+
+        norm_paths = [n for n, _ in norm_confs]
+
+        def _has_ancestor(target):
+            return any(target != m and target.startswith(m + os.sep) for m in norm_paths)
+
+        # 2. 每個「沒有被設定祖先」的資料夾各成一個任務,蒐集其子樹下全部設定
+        tasks = []
+        for n, fc in norm_confs:
+            if _has_ancestor(n):
+                continue  # 併入祖先任務,不另開
+            sub = [c for m, c in norm_confs if m == n or m.startswith(n + os.sep)]
+            tasks.append({
+                "path": n,
+                "enabled_langs": fc.get("enabled_langs", []),
+                "config": sub,
+            })
+        return tasks
+
+    def scan_folder_task(self, task):
+        """掃描單一資料夾任務(split_into_folder_tasks 回傳的元素之一)。
+
+        回傳值格式與 scan_for_new_files 相同:
+        (files_full, files_emb_only, files_ocr_only, deleted_count, folder_ocr_map)。
+
+        注意:此處以 prune_missing=False 呼叫——逐資料夾掃描「不做」全庫刪除偵測,
+        因為單一資料夾的 disk_paths 無法代表整個索引庫(否則會誤刪其他資料夾)。
+        全庫的刪除清理請改用 scan_for_new_files(完整 config) 走預設 prune_missing=True。
+        """
+        return self.scan_for_new_files(task["config"], prune_missing=False)
 
     @optional_mem_profile
     def run_ai_processing(self, files_full, files_emb_only, files_ocr_only, folder_ocr_map, progress_callback=None, shared_model=None, shared_preprocess=None, shared_ocr_engines=None):

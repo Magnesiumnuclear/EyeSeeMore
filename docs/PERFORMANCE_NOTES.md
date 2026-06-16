@@ -16,6 +16,7 @@
 5. Phase 3-E 畫廊互動渲染 quick wins。
 6. Phase 3-F 主檔拆分成果摘要。
 7. Phase 3-G 快取統一、資料庫索引、import 瘦身與 FAISS 持久化。
+8. Phase 3-H 掃描階段優化與資料夾拆分任務。
 
 ---
 
@@ -198,6 +199,30 @@
 2. FAISS 快取指紋為「筆數 × 維度 × 內容雜湊」，向量任何增刪改（含順序變動）都會自動重建，不會出現索引與 data_store 錯位。
 3. `data_store` 項目新增 `norm_path` 欄位後，任何改動 `path` 的程式碼都必須同步更新 `norm_path`。
 4. 驗證方式：`benchmarks/run_all.py` 量測、`bench_db_indexes.py --check-real` 與 `bench_thumbnail_cache.py --check-dirs` 為 PASS/FAIL 驗收檢查。
+
+---
+
+## Phase 3-H — 掃描階段優化與資料夾拆分任務
+
+### 掃描優化（`scan_for_new_files`，不改變分類語意）
+
+1. 副檔名比對改 `str.endswith(tuple)`，省去每檔 `os.path.splitext` 字串配置。
+2. 無資料夾啟用 OCR 時跳過載入整張 `ocr_results`；有需要也只撈相關語系。
+3. 交叉比對走 `_match_folder_langs_norm`（輸入已正規化），免每張圖重複 normpath。
+4. 缺尺寸 metadata 補齊改用執行緒池平行讀取（I/O 密集）。
+5. 本次掃描無新增／補算／刪除／補欄位時，跳過 `update_folder_stats` 重建。
+
+### 新增：資料夾拆分任務
+
+- `split_into_folder_tasks()` 把多資料夾來源拆成「每頂層資料夾一個任務」（normpath 去重、
+  巢狀歸併、保留子資料夾 OCR 語系），`scan_folder_task()` 逐任務掃描。
+- 安全取捨：逐資料夾掃描以 `prune_missing=False` 執行，**不做**全庫刪除偵測，避免誤刪
+  其他資料夾；失蹤檔清理仍走完整 config 的掃描。
+
+> 行為與 API 細節以 INDEXER.md 為準（唯一真理源）。本次屬結構性／一次性成本優化，
+> 量化基準待補：可先新增 `benchmarks/bench_scan.py` 量測後，再依下方標準格式補上數據表。
+>
+> 基準 Commit：`未量測` → 優化 Commit：`未量測`
 
 ---
 

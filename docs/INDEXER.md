@@ -98,12 +98,16 @@
 
 ## 掃描階段：scan_for_new_files()
 
-`scan_for_new_files(source_folders_config)` 的任務是「分類」，不是「做 AI」。
+`scan_for_new_files(source_folders_config, prune_missing=True)` 的任務是「分類」，不是「做 AI」。
 
 輸入是資料夾設定陣列，每個元素至少包含：
 
 - `path`
 - `enabled_langs`
+
+`prune_missing`（預設 `True`）控制是否執行「全庫刪除偵測」：全量掃描用預設值；
+逐資料夾掃描必須傳 `False`（見下方「資料夾拆分任務」），否則會把未走訪到的其他
+資料夾誤判為已刪而清除。
 
 輸出是五個值：
 
@@ -142,10 +146,14 @@
 - `files`：用來知道哪些檔案已存在於索引中
 - `embeddings`：用來知道哪些檔案已有目前模型的 embedding
 - `ocr_results`：用來知道每張圖哪些語系已完成 OCR
+  （效能：若所有資料夾都未啟用 OCR，整段跳過不載入；有需要時也只撈本次相關語系）
 
-#### 4. 清理已刪檔案
+#### 4. 清理已刪檔案（僅 `prune_missing=True`）
 
 若檔案存在於 DB 但已不在磁碟，就從 `files` 刪除。由於其他表有外鍵級聯，相關 embedding 與 OCR 記錄也會一併清掉。
+
+此判斷是「全庫性」的（`db_paths - disk_paths`），只在掃描完整 config 時成立；
+逐資料夾掃描（`prune_missing=False`）會跳過此步。
 
 #### 5. 分成三條待處理軌道
 
@@ -165,6 +173,8 @@
 - 檔案大小
 
 這個步驟讓舊資料庫可以漸進升級，而不需要另開一次性 migration script。
+讀取影像 header／尺寸屬 I/O 密集，改以執行緒池平行處理（執行緒只讀檔，不碰 sqlite，
+寫入仍集中在主執行緒以確保連線安全）。
 
 ## 路徑對應規則：_get_folder_ocr_setting()
 
@@ -176,6 +186,24 @@
 - 若沒有命中，回傳空陣列
 
 這使得父資料夾與子資料夾可以有不同 OCR 語系策略。
+
+> 效能：掃描熱路徑改走內部 `_match_folder_langs_norm(path_norm, ...)`，它假設傳入路徑
+> 已正規化（掃描迴圈的 `p` 來自已 normpath 的集合），省去每張圖重複一次 `os.path.normpath`；
+> `_get_folder_ocr_setting` 保留為會先正規化的對外相容介面。
+
+## 資料夾拆分任務：split_into_folder_tasks() / scan_folder_task()
+
+為支援「逐資料夾掃描／索引」（獨立進度、單一資料夾精準重掃），提供兩個 API：
+
+- `split_into_folder_tasks(source_folders_config)`：把多資料夾來源拆成「每個頂層資料夾
+  一個任務」。以 normpath 去重；**巢狀歸併**——被其他已設定資料夾包含的子資料夾不另開
+  任務，而是併入其最頂層祖先的任務（各任務範圍互斥、不重複走訪），且子資料夾設定一併
+  放進該任務 `config`，scan 仍以最長前綴匹配保留子資料夾自身的 OCR 語系。
+  回傳 `[{"path", "enabled_langs", "config"}, ...]`，傳入空設定回傳 `[]`。
+- `scan_folder_task(task)`：掃描單一任務，等同 `scan_for_new_files(task["config"], prune_missing=False)`。
+
+> ⚠️ 安全前提：逐資料夾掃描**不做**全庫刪除偵測（`prune_missing=False`）。失蹤檔的清理
+> 仍須以完整 config 呼叫 `scan_for_new_files`（預設 `prune_missing=True`）。
 
 ## AI 處理主流程：run_ai_processing()
 
@@ -375,6 +403,18 @@ OCR 使用 [onnx_ocr.py](../onnx_ocr.py) 的 ONNXOCR 類別。
 - 同一份記憶體資料分派給 metadata、縮圖、CLIP、OCR
 
 這能壓低磁碟 I/O 與重複 decode 成本。
+
+### 掃描階段優化（Phase 3-H）
+
+`scan_for_new_files` 的數項純掃描優化（不影響分類語意）：
+
+- **副檔名比對**改 `str.endswith(tuple)`，省去每檔 `os.path.splitext` 的字串配置。
+- **條件式載入 `ocr_results`**：無資料夾啟用 OCR 時整段跳過；有需要也只 `WHERE lang IN (...)`。
+- **免重複 normpath**：交叉比對走 `_match_folder_langs_norm`（輸入已正規化）。
+- **平行補齊**缺尺寸 metadata（執行緒池，I/O 密集）。
+- **無變更早退**：本次掃描無新增／補算／刪除／補欄位時，跳過 `update_folder_stats` 的 JOIN+GROUP BY 重建。
+
+量化驗收方式見 PERFORMANCE_NOTES.md 與 benchmarks/。
 
 ## 與其他模組的邊界
 
