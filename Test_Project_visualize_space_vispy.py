@@ -27,6 +27,11 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+# ── 靜音第三方雜訊(務必在 import tensorflow / vispy(Qt) 之前設定才有效) ──
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")           # TF C++ 日誌只留 FATAL(含 oneDNN INFO)
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")          # 關 oneDNN → 移除其提示與 absl 前置 WARNING
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.*=false")  # 靜音 Qt 的 DPI「存取被拒」警告
+
 # 避免在非 UTF-8 主控台(如 cp950)印 emoji 時崩潰
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -74,8 +79,8 @@ def reduce_umap(X):
         print("⚠️  找不到 UMAP encoder,改用 PCA-3。")
         return reduce_pca3(X)
     try:
-        os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
         import tensorflow as tf
+        tf.get_logger().setLevel("ERROR")   # 靜音 Python 端 tf logger(如 GPU 不可用警告)
         enc = tf.keras.models.load_model(ENCODER_SAVE_PATH, compile=False)
         return np.asarray(enc.predict(X, batch_size=256, verbose=0), dtype=np.float32)
     except Exception as e:
@@ -159,30 +164,33 @@ def main():
             _last["q"] = cam.q.copy()
     gizmo_cam.set_q(cam.q)
 
-    # ── MMB 點擊 picking → 設旋轉中心(在 viewer 端讀點,相機不碰點資料) ──
-    state = {"press": None}
+    # ── 旋轉樞紐:中鍵按下時依「點雲在畫面中的可見比例」決定(取代舊的點擊 picking) ──
+    #   可見比例 = 投影落在 viewport 內且在相機前方的點數 ÷ 總點數
+    #     = 100%(整個點雲全在畫面內) → 點雲質心(本場景已置中於原點)
+    #     < 100%(只要有任何點被裁到畫面外) → 游標 2D 最近點(相機前方)
+    #   讀點資料只在此 callback(press 當下)發生一次;相機本身不碰 per-point buffer,
+    #   拖曳旋轉過程零資料傳輸。
+    PIVOT_VISIBLE_FRAC = 1.0    # 只有「整團點雲都在畫面內」才繞質心,否則一律繞游標最近點
 
-    @canvas.events.mouse_press.connect
-    def _press(ev):
-        if ev.button == SolidWorksCamera.MMB:
-            state["press"] = np.array(ev.pos, dtype=float)
-
-    @canvas.events.mouse_release.connect
-    def _release(ev):
-        if ev.button != SolidWorksCamera.MMB or state["press"] is None:
-            return
-        moved = np.linalg.norm(np.array(ev.pos, dtype=float) - state["press"])
-        state["press"] = None
-        if moved > 5:           # 視為拖曳旋轉,不改 pivot
-            return
+    def _pivot_for_press(press_pos):
         tr = markers.get_transform("visual", "canvas")
-        scr = tr.map(P)                       # (N,4) → 投影到畫布像素
-        scr = scr[:, :2] / scr[:, 3:4]
-        d = np.linalg.norm(scr - np.array(ev.pos), axis=1)
-        i = int(np.argmin(d))
-        if d[i] < 18:                         # 命中閾值(像素)
-            cam.animate_to(cam.q, pivot_target=P[i])   # 飛到新旋轉中心
-            print(f"🎯 旋轉中心 → 點 #{i}" + (f"  {os.path.basename(paths[i])}" if paths else ""))
+        scr = tr.map(P)                       # (N,4) 齊次像素座標
+        w = scr[:, 3]
+        infront = w > 1e-6                    # 相機前方(w>0)
+        denom = np.where(infront, w, 1.0)
+        sx, sy = scr[:, 0] / denom, scr[:, 1] / denom
+        W, H = canvas.size
+        inview = infront & (sx >= 0) & (sx <= W) & (sy >= 0) & (sy <= H)
+        frac = float(inview.sum()) / max(1, len(P))
+        if frac >= PIVOT_VISIBLE_FRAC:
+            return (0.0, 0.0, 0.0)            # 整體 → 質心(原點)
+        cand = np.where(infront)[0]           # 局部 → 2D 最近點
+        if cand.size == 0:
+            return None
+        d2 = (sx[cand] - press_pos[0]) ** 2 + (sy[cand] - press_pos[1]) ** 2
+        return tuple(float(c) for c in P[cand[int(np.argmin(d2))]])
+
+    cam.pivot_provider = _pivot_for_press
 
     # ── 數字鍵標準視角(SLERP 飛行) ──
     @canvas.events.key_press.connect

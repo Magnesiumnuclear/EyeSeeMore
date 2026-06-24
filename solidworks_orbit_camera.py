@@ -54,7 +54,8 @@ class SolidWorksCamera(Base3DRotationCamera):
       Ctrl + MMB 拖       : pan(沿相機 right/up 平移 pivot)
       Shift + MMB / 滾輪  : zoom(改 dist;滾輪為 zoom-to-cursor)
       Alt + MMB 拖        : roll(繞視軸)
-      MMB 點實體後旋轉    : 由 viewer 呼叫 set_pivot() 改旋轉中心
+      MMB 旋轉樞紐        : 按下時由 viewer 經 pivot_provider 決定(整體→質心 / 局部→游標最近點);
+                           整個拖曳繞該點旋轉且該點釘在畫面不動(no-jump)。set_pivot() 介面保留可手動設定
       方向鍵 / Shift / Alt / Ctrl + 方向鍵 : 固定增量 旋轉 / 90°步進 / roll / pan
     """
 
@@ -86,6 +87,11 @@ class SolidWorksCamera(Base3DRotationCamera):
         self._sf0 = None
         self._dist0 = None
         self._press_pos = None
+        self._orbit_pivot = None      # 本次拖曳的旋轉樞紐(世界座標;press 時由 viewer 提供)
+
+        # viewer 設定的樞紐提供者:callback(press_pos_px) → 世界座標 tuple 或 None。
+        # 相機本身不碰 per-point 資料;可見比例/最近點由 viewer 端計算後回傳。
+        self.pivot_provider = None
 
         # ── 動畫狀態 ──
         self._anim = None
@@ -121,6 +127,11 @@ class SolidWorksCamera(Base3DRotationCamera):
         rot, x, y, z = Q.axis_angle(self.q)
         return transforms.rotate(math.degrees(rot), (x, z, y))
 
+    def _rot3(self, q):
+        """取任一 q 的 3x3 旋轉矩陣(與 _get_rotation_tr 同慣例),供 no-jump 樞紐補償用。"""
+        rot, x, y, z = Q.axis_angle(q)
+        return transforms.rotate(math.degrees(rot), (x, z, y))[:3, :3]
+
     def _dist_to_trans(self, dist):
         rot, x, y, z = Q.axis_angle(self.q)
         tr = MatrixTransform()
@@ -152,6 +163,10 @@ class SolidWorksCamera(Base3DRotationCamera):
         if event.type == "mouse_press":
             self._snapshot()
             self._press_pos = np.array(event.pos[:2], dtype=np.float64)
+            self._orbit_pivot = None
+            # 中鍵按下時,向 viewer 索取本次拖曳的旋轉樞紐(整體→質心 / 局部→最近點)
+            if event.button == self.MMB and self.pivot_provider is not None:
+                self._orbit_pivot = self.pivot_provider(self._press_pos)
             event.handled = True
             return
 
@@ -183,6 +198,7 @@ class SolidWorksCamera(Base3DRotationCamera):
 
     def _snapshot_clear(self):
         self._q0 = self._center0 = self._sf0 = self._dist0 = self._press_pos = None
+        self._orbit_pivot = None
 
     # ── 螢幕點 → 虛擬球 ──
     def _ball(self, p):
@@ -199,8 +215,26 @@ class SolidWorksCamera(Base3DRotationCamera):
         dq = Q.trackball_delta(a, b)
         if self.invert_orbit:          # 反向以對齊 SolidWorks(共軛 = 反轉旋轉)
             dq = Q.conjugate(dq)
-        self.q = Q.normalize(Q.multiply(dq, self._q0))
-        self.view_changed()
+        q_new = Q.normalize(Q.multiply(dq, self._q0))
+
+        P = self._orbit_pivot
+        if P is None:
+            # viewer 未提供樞紐 → 繞畫面注視點(center)旋轉
+            self.q = q_new
+            self.view_changed()
+            return
+
+        # no-jump:把世界樞紐 P 釘在 press 當下的眼睛空間位置(畫面位置與深度皆不變),
+        # 整個拖曳繞 P 旋轉而 P 不動。由 press 的 q0/center0 推導當前 center:
+        #   eye(P) 不變  ⇒  C = P − (P − C0) · R(q0)ᵀ · R(q_new)
+        # (R 取自相機自身的 _get_rotation_tr 慣例;flip=(1,1,1) 下精確。)
+        R0 = self._rot3(self._q0)
+        Rn = self._rot3(q_new)
+        Pv = np.asarray(P, dtype=np.float64)
+        v = Pv - self._center0
+        C_new = Pv - v @ (R0.T @ Rn)
+        self.q = q_new
+        self.center = tuple(C_new)     # center property setter 觸發 view_changed
 
     # ── roll:繞視軸 Z,q = q_roll ⊗ q0 ──
     def _do_roll(self, p2):
