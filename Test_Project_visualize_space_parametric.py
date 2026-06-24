@@ -1,5 +1,5 @@
 """
-visualize_space_parametric.py
+Test_Project_visualize_space_parametric.py
 EyeSeeMore — AI 圖片潛在空間視覺化工具 (Parametric UMAP 3D 版本)
 
 核心優勢：
