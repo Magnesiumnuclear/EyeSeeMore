@@ -192,6 +192,26 @@ def main():
 
     cam.pivot_provider = _pivot_for_press
 
+    # ── 旋轉中心標示:中鍵旋轉時在樞紐處顯示一個環(no-jump 下樞紐釘住,標示穩定不動) ──
+    pivot_marker = scene.visuals.Markers(parent=view.scene)
+    pivot_marker.visible = False
+    pivot_marker.set_gl_state(depth_test=False, blend=True)   # 永遠畫在最上層,不被點遮住
+
+    def _show_pivot(world_pt):
+        pivot_marker.set_data(np.array([world_pt], dtype=np.float32),
+                              face_color=(1, 1, 1, 0.0),            # 中空
+                              edge_color=(1.0, 0.85, 0.1, 1.0),     # 亮黃環
+                              size=22, edge_width=2.5, symbol="ring")
+        pivot_marker.visible = True
+        canvas.update()
+
+    def _hide_pivot():
+        pivot_marker.visible = False
+        canvas.update()
+
+    cam.on_orbit_begin = _show_pivot
+    cam.on_orbit_end = _hide_pivot
+
     # ── 數字鍵標準視角(SLERP 飛行) ──
     @canvas.events.key_press.connect
     def _key(ev):

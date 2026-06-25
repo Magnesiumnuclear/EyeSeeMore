@@ -93,6 +93,11 @@ class SolidWorksCamera(Base3DRotationCamera):
         # 相機本身不碰 per-point 資料;可見比例/最近點由 viewer 端計算後回傳。
         self.pivot_provider = None
 
+        # 旋轉中心標示:中鍵 arcball 開始/結束時通知 viewer(由 viewer 畫標記,相機不碰場景物件)
+        self.on_orbit_begin = None   # callback(pivot_world_tuple)
+        self.on_orbit_end = None     # callback()
+        self._orbiting = False
+
         # ── 動畫狀態 ──
         self._anim = None
         self._timer = None
@@ -171,6 +176,10 @@ class SolidWorksCamera(Base3DRotationCamera):
             return
 
         if event.type == "mouse_release":
+            if self._orbiting:          # 結束旋轉:通知 viewer 收起旋轉中心標記
+                self._orbiting = False
+                if self.on_orbit_end is not None:
+                    self.on_orbit_end()
             self._snapshot_clear()
             return
 
@@ -210,6 +219,11 @@ class SolidWorksCamera(Base3DRotationCamera):
 
     # ── arcball 旋轉:Δq = trackball(press→now),pre-multiply q = Δq ⊗ q0 ──
     def _do_arcball(self, p2):
+        if not self._orbiting:          # 進入旋轉:通知 viewer 在旋轉中心畫標記
+            self._orbiting = True
+            if self.on_orbit_begin is not None:
+                piv = self._orbit_pivot if self._orbit_pivot is not None else self.center
+                self.on_orbit_begin(tuple(float(c) for c in piv))
         a = self._ball(self._press_pos)
         b = self._ball(p2)
         dq = Q.trackball_delta(a, b)
@@ -234,7 +248,8 @@ class SolidWorksCamera(Base3DRotationCamera):
         v = Pv - self._center0
         C_new = Pv - v @ (R0.T @ Rn)
         self.q = q_new
-        self.center = tuple(C_new)     # center property setter 觸發 view_changed
+        self.center = tuple(C_new)     # 更新樞紐補償;注意 vispy center setter 值不變時會短路
+        self.view_changed()            # q 必變,務必強制刷新主視圖(不可只靠 center setter)
 
     # ── roll:繞視軸 Z,q = q_roll ⊗ q0 ──
     def _do_roll(self, p2):
