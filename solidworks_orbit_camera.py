@@ -282,11 +282,16 @@ class SolidWorksCamera(Base3DRotationCamera):
             self._distance = self._dist0 * zoom
         self.view_changed()
 
-    # ── 滾輪 zoom-to-cursor:縮放並把 pivot 朝游標方向位移,使游標下的點近似不動 ──
+    # ── 滾輪 zoom-to-cursor:縮放並把 pivot 朝游標方向位移,使游標下的點釘住不動 ──
+    # 對焦平面上的游標世界點做「以 s 比例的縮放」:new_center = center + (1−s)·(游標世界點−center)。
+    # 像素↔世界比例 = scale_factor / min(寬,高)(焦平面方形像素的精確值),故用 min 而非 mean,
+    # 否則非正方形視窗下換算偏小、游標下的點會在縮放時漂移。
     def _zoom_to_cursor(self, pos, s):
         w, h = self._viewbox.size
+        if w <= 0 or h <= 0:
+            return
         off = np.array([pos[0] - w / 2.0, pos[1] - h / 2.0], dtype=np.float64)
-        norm = np.mean((w, h))
+        norm = float(min(w, h))
         dist = off / norm * self._scale_factor
         dist[1] *= -1
         dx, dy, dz = self._dist_to_trans(dist)
