@@ -21,6 +21,17 @@
 #include <dwmapi.h>
 #include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM
 
+// ── Win10+ 訊息 / 常數（舊版 MinGW 標頭可能未定義）──────────
+#ifndef WM_GETTITLEBARINFOEX
+#define WM_GETTITLEBARINFOEX 0x033F
+#endif
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+#ifndef SM_CXPADDEDBORDER
+#define SM_CXPADDEDBORDER 92
+#endif
+
 // DWM 函式庫（MinGW 以 -ldwmapi 連結，MSVC 以 #pragma comment 連結）
 #ifdef _MSC_VER
 #   pragma comment(lib, "dwmapi.lib")
@@ -52,6 +63,38 @@ static inline BOOL PtInR(const RECT& r, LONG x, LONG y)
     return (x >= r.left) && (x < r.right) && (y >= r.top) && (y < r.bottom);
 }
 
+// 最大化時的框架突出量（實體像素）。
+// WS_THICKFRAME 視窗最大化時，視窗矩形會超出螢幕四邊各
+// SM_C{X,Y}SIZEFRAME + SM_CXPADDEDBORDER 的寬度。
+// GetDpiForWindow / GetSystemMetricsForDpi 需 Win10 1607+，
+// 以 GetProcAddress 動態解析；舊系統退回 GetSystemMetrics。
+static void MaximizedFrameInset(HWND hwnd, LONG* fx, LONG* fy)
+{
+    typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
+    typedef int  (WINAPI *PFN_GetSystemMetricsForDpi)(int, UINT);
+    static PFN_GetDpiForWindow        p_dpi = NULL;
+    static PFN_GetSystemMetricsForDpi p_met = NULL;
+    static bool resolved = false;
+    if (!resolved) {
+        resolved = true;
+        HMODULE u32 = GetModuleHandleW(L"user32.dll");
+        if (u32) {
+            p_dpi = reinterpret_cast<PFN_GetDpiForWindow>(
+                reinterpret_cast<void*>(GetProcAddress(u32, "GetDpiForWindow")));
+            p_met = reinterpret_cast<PFN_GetSystemMetricsForDpi>(
+                reinterpret_cast<void*>(GetProcAddress(u32, "GetSystemMetricsForDpi")));
+        }
+    }
+    if (p_dpi && p_met) {
+        UINT dpi = p_dpi(hwnd);
+        *fx = p_met(SM_CXSIZEFRAME, dpi) + p_met(SM_CXPADDEDBORDER, dpi);
+        *fy = p_met(SM_CYSIZEFRAME, dpi) + p_met(SM_CXPADDEDBORDER, dpi);
+    } else {
+        *fx = GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+        *fy = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────
 //  自訂 WndProc
 // ─────────────────────────────────────────────────────────────
@@ -59,9 +102,23 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 {
     // ── 1. 移除 Non-Client Area ────────────────────────────
     // 設計書 §4.4：回傳 0 告訴 Windows 不繪製系統標題列框架，
-    // DWM 仍負責視窗陰影與 Win11 圓角
+    // DWM 仍負責視窗陰影與 Win11 圓角。
+    // 最大化時視窗矩形超出螢幕四邊各一個框架寬度（WS_THICKFRAME 行為）；
+    // 若不內縮，client (0,0) 落在螢幕外，按鈕頂部 ~8px 被裁切、
+    // shell 推算的按鈕位置整體偏移 → 依框架量內縮回可見區域。
     if (msg == WM_NCCALCSIZE && wParam == TRUE)
+    {
+        if (IsZoomed(hwnd)) {
+            NCCALCSIZE_PARAMS* p = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+            LONG fx = 0, fy = 0;
+            MaximizedFrameInset(hwnd, &fx, &fy);
+            p->rgrc[0].left   += fx;
+            p->rgrc[0].top    += fy;
+            p->rgrc[0].right  -= fx;
+            p->rgrc[0].bottom -= fy;
+        }
         return 0;
+    }
 
     // ── 1b. NC 左鍵按下 ────────────────────────────────────
     if (msg == WM_NCLBUTTONDOWN) {
@@ -130,6 +187,42 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
     }
 
+    // ── 1d. Snap Layouts 彈窗錨點 ──────────────────────────
+    // Win11 23H2+ 的 shell 以 WM_GETTITLEBARINFOEX 詢問標題列各元件的
+    // 「螢幕座標」矩形來決定 Snap Layouts 彈窗位置。本視窗無 NC 區域，
+    // DefWindowProc 只會回報退化矩形 → 彈窗錯位到視窗左上角並遮住
+    // 其他 TopBar 按鈕。此處直接回報自訂按鈕的實際螢幕矩形。
+    // rgrect / rgstate 索引：0=標題列本體 2=最小化 3=最大化 5=關閉。
+    if (msg == WM_GETTITLEBARINFOEX) {
+        TITLEBARINFOEX* info = reinterpret_cast<TITLEBARINFOEX*>(lParam);
+        if (info && info->cbSize >= sizeof(TITLEBARINFOEX)) {
+            POINT org = { 0, 0 };
+            ClientToScreen(hwnd, &org);   // client 原點的螢幕座標
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            LONG tbh = static_cast<LONG>(s_titlebar_height * s_dpr);
+            info->rcTitleBar = { org.x, org.y, org.x + rc.right, org.y + tbh };
+            // 先全部標為不可見，只回報實際存在的元件
+            for (int i = 0; i <= CCHILDREN_TITLEBAR; ++i) {
+                info->rgstate[i] = STATE_SYSTEM_INVISIBLE;
+                RECT zero = { 0, 0, 0, 0 };
+                info->rgrect[i] = zero;
+            }
+            info->rgstate[0] = 0;  // 標題列本體：可見
+            // s_*_rect 為 client 相對實體像素 → 加上 org 即為螢幕實體像素
+            RECT mn = { org.x + s_min_rect.left,   org.y + s_min_rect.top,
+                        org.x + s_min_rect.right,  org.y + s_min_rect.bottom };
+            RECT mx = { org.x + s_max_rect.left,   org.y + s_max_rect.top,
+                        org.x + s_max_rect.right,  org.y + s_max_rect.bottom };
+            RECT cl = { org.x + s_close_rect.left,  org.y + s_close_rect.top,
+                        org.x + s_close_rect.right, org.y + s_close_rect.bottom };
+            info->rgrect[2] = mn; info->rgstate[2] = 0;  // 最小化
+            info->rgrect[3] = mx; info->rgstate[3] = 0;  // 最大化（Snap 錨點）
+            info->rgrect[5] = cl; info->rgstate[5] = 0;  // 關閉
+            return TRUE;
+        }
+    }
+
     // ── 2. Hit-Test 判斷 ───────────────────────────────────
     if (msg == WM_NCHITTEST)
     {
@@ -141,6 +234,19 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         GetClientRect(hwnd, &rc);
         LONG w = rc.right;
         LONG h = rc.bottom;
+
+        // ── 按鈕感應區優先（座標已是縮放後實際像素）──
+        // 設計書 §4.3。按鈕必須先於邊框縮放帶判斷：否則按鈕頂端
+        // 6*dpr px 會回傳 HTTOP 形成 Snap Layouts 觸發死點、
+        // 關閉按鈕右緣回傳 HTRIGHT 無法點擊。
+        // Win11 原生視窗行為相同：標題列按鈕延伸到視窗最上緣，
+        // 縮放帶讓位給按鈕（Chromium / Windows Terminal 同此做法）。
+        // HTMAXBUTTON：讓 Windows 11 彈出 Snap Layouts 選單（hover 觸發）
+        // 點擊後由 WM_NCLBUTTONDOWN 攔截，透過 WM_APP+1 通知 Python
+        if (PtInR(s_max_rect,   pt.x, pt.y)) return HTMAXBUTTON;
+        if (PtInR(s_close_rect, pt.x, pt.y)) return HTCLIENT;   // Qt 處理關閉
+        if (PtInR(s_min_rect,   pt.x, pt.y)) return HTCLIENT;   // Qt 處理最小化
+        if (PtInR(s_pin_rect,   pt.x, pt.y)) return HTCLIENT;   // Qt 處理釘選
 
         // 邊框縮放感應寬度（已依 DPI 縮放）
         LONG bw = static_cast<LONG>(6.0f * s_dpr);
@@ -163,20 +269,19 @@ static LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (on_top)    return HTTOP;
         if (on_bottom) return HTBOTTOM;
 
-        // ── 按鈕感應區（座標已是縮放後實際像素）──
-        // 設計書 §4.3
-        if (PtInR(s_close_rect, pt.x, pt.y)) return HTCLIENT;   // Qt 處理關閉
-        // HTMAXBUTTON：讓 Windows 11 彈出 Snap Layouts 選單（hover 觸發）
-        // 點擊後由 WM_NCLBUTTONDOWN 攔截，透過 WM_APP+1 通知 Python
-        if (PtInR(s_max_rect,   pt.x, pt.y)) return HTMAXBUTTON;
-        if (PtInR(s_min_rect,   pt.x, pt.y)) return HTCLIENT;   // Qt 處理最小化
-        if (PtInR(s_pin_rect,   pt.x, pt.y)) return HTCLIENT;   // Qt 處理釘選
-
         // ── TopBar / 客戶端區域 ────────────────────────────
         // 所有非邊框區域一律回傳 HTCLIENT，讓 Qt 完全控制事件分發。
         // 視窗拖曳改由 Python event filter 在 TopBar 空白區觸發
         // ReleaseCapture() + PostMessageW(WM_NCLBUTTONDOWN, HTCAPTION)。
         return HTCLIENT;
+    }
+
+    // ── DPI 變更：更新 s_dpr（不攔截，交回 Qt 重佈局）──────
+    // 未更新時跨螢幕移動後 bw 與 tbh 沿用舊 DPI，感應區錯位。
+    if (msg == WM_DPICHANGED) {
+        float new_dpr = static_cast<float>(HIWORD(wParam)) / 96.0f;
+        if (new_dpr > 0.0f) s_dpr = new_dpr;
+        // 刻意不 return：Python 端 screenChanged 會重送按鈕矩形
     }
 
     // 其餘訊息交回原始 WndProc

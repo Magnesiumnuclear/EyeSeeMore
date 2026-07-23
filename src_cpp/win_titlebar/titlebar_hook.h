@@ -46,7 +46,7 @@ extern "C" {
 ESM_API int ESM_InstallHook(HWND hwnd, int titlebar_height, float dpr);
 
 // ── 更新四個按鈕感應區域 ─────────────────────────────────
-// 座標為相對於 MainWindow 客戶端左上角（邏輯像素，未 DPI 縮放）
+// 座標為相對於 MainWindow 客戶端左上角（實體像素，已乘 DPR）
 // 每個按鈕以 left, top, width, height 四個 int 傳入
 ESM_API void ESM_SetButtonRects(
     int close_l, int close_t, int close_w, int close_h,

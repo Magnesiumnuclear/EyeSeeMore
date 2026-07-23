@@ -138,7 +138,8 @@ def update_button_rects(
     pin_rect:   tuple | None = None,
 ):
     """
-    更新四個按鈕的感應座標（相對於 MainWindow 客戶端座標，邏輯像素）。
+    更新四個按鈕的感應座標（相對於 MainWindow 客戶端座標，
+    **實體像素**——呼叫端已乘上 devicePixelRatio）。
 
     :param min_rect:   (x, y, width, height)  最小化按鈕
     :param max_rect:   (x, y, width, height)  最大化按鈕

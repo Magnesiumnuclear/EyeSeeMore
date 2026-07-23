@@ -234,12 +234,25 @@ class MainWindow(QMainWindow):
 
         # --- 安裝 Win32 WndProc 掛鉤（補回邊框縮放與 DWM 陰影）---
         from core import win_titlebar
-        QTimer.singleShot(0, lambda: win_titlebar.install(
-            int(self.winId()),
-            titlebar_height=60,
-            dpr=self.devicePixelRatioF(),
-        ))
-        QTimer.singleShot(50, self._update_button_rects)
+
+        def _install_titlebar_hook():
+            ok = win_titlebar.install(
+                int(self.winId()),
+                titlebar_height=60,
+                dpr=self.devicePixelRatioF(),
+            )
+            if ok:
+                # 安裝成功後「立即」推送按鈕感應矩形：
+                # DLL 端矩形初始為空，原本盲目延遲 50ms 造成啟動死點空窗
+                self._update_button_rects()
+            # 跨螢幕（不同 DPI）移動後實體像素矩形需重算重送
+            wh = self.windowHandle()
+            if wh is not None:
+                wh.screenChanged.connect(
+                    lambda _s: QTimer.singleShot(0, self._update_button_rects)
+                )
+
+        QTimer.singleShot(0, _install_titlebar_hook)
 
         # --- NC hover filter（WinMaxBtn hover 補丁）---
         # DLL 回傳 HTMAXBUTTON 時 Windows 接管 NC 滑鼠事件，Qt :hover 不觸發。

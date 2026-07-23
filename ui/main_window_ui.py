@@ -186,13 +186,18 @@ class Ui_MainWindow:
                                     b_pin=MainWindow.btn_pin,
                                     b_min=MainWindow.btn_win_min,
                                     b_max=MainWindow.btn_win_max,
-                                    b_close=MainWindow.btn_win_close):
+                                    b_close=MainWindow.btn_win_close,
+                                    win=MainWindow):
             w = top_bar.width()
             b_close.move(w - 48,  0)
             b_max.move(w - 96,   0)
             b_min.move(w - 144,  0)
             b_pin.move(w - 192,  0)
             b_inspector.move(w - 240, 0)
+            # 按鈕移動後立即同步 WndProc 感應矩形，避免與視覺位置脫鉤
+            # （window_state_mgr 建立前的早期 resize 略過，安裝前為 no-op）
+            if hasattr(win, "window_state_mgr"):
+                win._update_button_rects()
 
         # 儲存為普通 callable（不用 staticmethod，避免 instance 屬性上 staticmethod 無法自動 unpack）
         MainWindow._reposition_win_buttons = _reposition_win_buttons
