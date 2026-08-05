@@ -141,7 +141,11 @@ class PinManager:
         """
         if not self.pinned_paths:
             return []
-        data_store = self._get_data_store()
+        # [並行安全] 先做一次原子快照再迭代：背景重載執行緒會整批換掉這個
+        # list（切片賦值，單一原子操作）。直接迭代共享 list 時，若新資料較短
+        # （使用者刪過檔），迭代器會在新長度處提早結束，部分釘選圖無聲消失。
+        # list() 複製在 GIL 下不可中斷，拿到的必然是換手前或換手後的完整清單。
+        data_store = list(self._get_data_store() or ())
         if not data_store:
             return []
         results: List[Dict[str, Any]] = []

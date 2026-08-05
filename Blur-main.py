@@ -143,6 +143,13 @@ class MainWindow(QMainWindow):
     ai_ready = pyqtSignal()
     # [Refactor Phase 2-C] db_reloaded 訊號已移至 IndexingLifecycleHandler 內部
 
+    # ── 跨執行緒 UI 橋接訊號 ──────────────────────────────────────────
+    # load_engine() 跑在 daemon thread 上，狀態列與工作列都屬於 GUI 資源，
+    # 一律經由佇列訊號切回主執行緒，不可在背景執行緒直接呼叫
+    # （與 IndexingLifecycleHandler.taskbar_state_changed 同一模式）
+    status_text_ready = pyqtSignal(str)
+    taskbar_state_ready = pyqtSignal(int)
+
     def __init__(self, config: ConfigManager):
         # [關鍵修正] 這行一定要在第一行，且不能漏掉！
         super().__init__()
@@ -165,6 +172,10 @@ class MainWindow(QMainWindow):
 
         self.is_ocr_locked = False
         self._ocr_hold_active = False  # hold 模式：Shift 按著時為 True
+
+        # SearchCapsule 傳來的待用 use_ocr（一次性消費）
+        # None = 沒有待處理值 → start_search 回退讀取 btn_ocr_toggle 真實狀態
+        self._pending_use_ocr = None
 
         # [Refactor Phase 2-D] 以下 4 個屬性已移至 GalleryViewController
         # (last_search_results / last_search_stats / is_in_search_mode /
@@ -197,6 +208,11 @@ class MainWindow(QMainWindow):
         # 此時才能將 EtaProgressController 的訊號連接到 UI 元件
         self.eta_ctrl.status_text_changed.connect(self.status.setText)
         self.eta_ctrl.progress_updated.connect(self._on_eta_progress)
+
+        # 背景執行緒 → GUI 執行緒的狀態列 / 工作列橋接
+        # （接收端是 MainWindow 的訊號，自動使用 QueuedConnection）
+        self.status_text_ready.connect(self.status.setText)
+        self.taskbar_state_ready.connect(self.taskbar_ctrl.set_state)
 
         # [Refactor Phase 2-C] 索引生命週期管理器
         # engine 與 indexer_worker 採延遲注入（兩者於下方才建立）
@@ -470,8 +486,16 @@ class MainWindow(QMainWindow):
     def on_weights_changed(self, weight_config):
         q = self.input.text().strip()
         if q:
+            #  [修正] 如果目前是「向量運算」狀態，必須用暫存的特徵重跑多向量搜尋；
+            #  否則會拿麵包屑字串 "[Multi-Vector] Pos:N Neg:M" 當文字查詢送出，
+            #  正確的向量運算結果會被垃圾結果覆蓋
+            mv = getattr(self, "current_multi_vector_features", None)
+            if q.startswith("[Multi-Vector]") and mv:
+                pos_features, neg_features = mv
+                self.start_multi_vector_search(
+                    pos_features, neg_features, triggered_by_slider=True)
             #  [新增] 如果目前是「以圖搜圖」狀態，切換 Limit 時就重跑以圖搜圖
-            if q.startswith("[Image]") and getattr(self, "current_image_search_path", None):
+            elif q.startswith("[Image]") and getattr(self, "current_image_search_path", None):
                 self.start_image_search(self.current_image_search_path)
             else:
                 self.start_search(triggered_by_slider=True)
@@ -680,35 +704,43 @@ class MainWindow(QMainWindow):
         self.breadcrumb_lbl.setText(f"Folder: {os.path.basename(path)}")
         
         # 這邊簡單用 Python list comprehension 過濾 (高效能做法建議在 Engine 寫 SQL)
-        if self.engine.data_store:
-            # 正規化路徑並加上分隔符，防止 D:\img 誤匹配 D:\img-backup
-            norm_path = os.path.normpath(path)
-            prefix = norm_path + os.sep
-            filtered = [
-                item for item in self.engine.data_store
-                if item["norm_path"].startswith(prefix)
-            ]
-            
-            # 轉換格式給 Model
-            results = []
-            for item in filtered:
-                results.append({
-                    "score": 0.0,
-                    "path": item["path"],
-                    "filename": item["filename"],
-                    "mtime": item.get("mtime", 0),
-                    "width": item.get("width", 0),   #  補上
-                    "height": item.get("height", 0)  #  補上
-                })
-            
-            # 按時間排序
-            results.sort(key=lambda x: x["mtime"], reverse=True)
-            
-            # 釘選圖無視資料夾範圍：合併至頂端
-            results = self.engine._merge_pinned(results)
+        # [Thread Safety] 背景重載會整批換掉 data_store。
+        # 這裡刻意「不取 engine.data_lock」：GUI 執行緒一旦去搶那把鎖，就可能被
+        # 正在跑「全部」範圍搜尋的 SearchWorker 擋住數秒，整個視窗停止重繪。
+        # 改為先做一次原子快照——engine 端換手已改用切片賦值（單一原子操作），
+        # 而 list(shared) 的複製在 GIL 下同樣不可中斷，因此快照只會拿到
+        # 「換手前」或「換手後」的完整清單，不存在讀到半套的可能。
+        snapshot = list(self.engine.data_store)
+        if not snapshot:
+            return
+        # 正規化路徑並加上分隔符，防止 D:\img 誤匹配 D:\img-backup
+        norm_path = os.path.normpath(path)
+        prefix = norm_path + os.sep
+        filtered = [
+            item for item in snapshot
+            if item["norm_path"].startswith(prefix)
+        ]
 
-            self.set_base_results(results)
-            self.status.setText(f"Folder: {os.path.basename(path)} ({len(results)} items)")
+        # 轉換格式給 Model
+        results = []
+        for item in filtered:
+            results.append({
+                "score": 0.0,
+                "path": item["path"],
+                "filename": item["filename"],
+                "mtime": item.get("mtime", 0),
+                "width": item.get("width", 0),   #  補上
+                "height": item.get("height", 0)  #  補上
+            })
+
+        # 按時間排序
+        results.sort(key=lambda x: x["mtime"], reverse=True)
+
+        # 釘選圖無視資料夾範圍：合併至頂端
+        results = self.engine._merge_pinned(results)
+
+        self.set_base_results(results)
+        self.status.setText(f"Folder: {os.path.basename(path)} ({len(results)} items)")
 
     def eventFilter(self, obj, event):
         # ── TopBar 空白區拖曳 ────────────────────────────────
@@ -1136,9 +1168,15 @@ class MainWindow(QMainWindow):
         self.search_capsule.show_history_popup()
     
     def load_engine(self):
+        """[背景執行緒] 建立 ImageSearchEngine 並啟動非阻塞模型加載。
+
+        注意：本方法整段跑在 daemon thread 上，**不得**直接碰任何 GUI 物件，
+        狀態列與工作列一律透過 status_text_ready / taskbar_state_ready 訊號
+        交由主執行緒處理。
+        """
         try:
             # [新增] 載入模型時，工作列顯示綠色流光 (跑動條)
-            self.taskbar_ctrl.set_state(TBPF_INDETERMINATE)
+            self.taskbar_state_ready.emit(TBPF_INDETERMINATE)
 
             # [Perf Phase 3-G] 在背景執行緒才 import：
             # image_search_engine 頂層會拉入 faiss / onnxruntime / numpy，
@@ -1159,7 +1197,8 @@ class MainWindow(QMainWindow):
 
             if all_images:
                 self.random_data_ready.emit(all_images)
-                self.status.setText(f"Loaded {len(all_images)} images. Loading AI in background...")
+                self.status_text_ready.emit(
+                    f"Loaded {len(all_images)} images. Loading AI in background...")
 
             time.sleep(0.05)
 
@@ -1171,7 +1210,9 @@ class MainWindow(QMainWindow):
             # 立刻啟動非阻塞模型加載（在背景執行緒）
             self.engine.load_ai_models()
 
-            QApplication.processEvents()
+            # [移除] 原本此處的 QApplication.processEvents()：
+            # 事件迴圈只能由 GUI 執行緒抽取，在背景執行緒呼叫會與主執行緒的
+            # 繪製競爭而偶發崩潰；載入已是非阻塞，這裡也不需要讓出時間片。
 
         except Exception as e:
             print(f"Engine Load Error: {e}")
@@ -1203,11 +1244,13 @@ class MainWindow(QMainWindow):
         由 ModelProvider.models_loaded 訊號觸發（在主執行緒）
         """
         count = len(self.engine.data_store) if self.engine else 0
-        self.status.setText(f"System Ready ({count} images)")
+        # 走訊號而非直接 setText / set_state：本 callback 由 ModelProvider 的
+        # 訊號觸發，萬一發射端改成非 GUI 執行緒也不會直接動到 GUI 資源
+        self.status_text_ready.emit(f"System Ready ({count} images)")
         self.progress.hide()
 
         # [新增] AI 準備好後，關閉工作列的進度條狀態
-        self.taskbar_ctrl.set_state(TBPF_NOPROGRESS)
+        self.taskbar_state_ready.emit(TBPF_NOPROGRESS)
 
         # 這裡會去抓取資料夾統計，並建立二級選單的按鈕
         if self.engine:
@@ -1235,9 +1278,9 @@ class MainWindow(QMainWindow):
         由 ModelProvider.models_load_failed 訊號觸發（在主執行緒）
         """
         print(f"[Error] 模型加載失敗: {error_msg}")
-        self.status.setText(f"❌ 模型加載失敗: {error_msg}")
+        self.status_text_ready.emit(f"❌ 模型加載失敗: {error_msg}")
         self.progress.hide()
-        self.taskbar_ctrl.set_state(TBPF_ERROR)
+        self.taskbar_state_ready.emit(TBPF_ERROR)
 
     # ------------------------------------------------------------------
     #  搜尋 UI 前置：重設進度條 / 狀態列 / 排序下拉
@@ -1253,10 +1296,18 @@ class MainWindow(QMainWindow):
         self.inspector_panel.combo_sort.blockSignals(False)
 
     def start_search(self, *args, triggered_by_slider=False):
+        # 從 SearchCapsule payload 或按鈕狀態取得 use_ocr
+        # 在所有提前 return 之前就消費掉 pending 值，避免中止的搜尋
+        # （例如下方中文不支援的守衛）把過期的 True/False 留給下一次搜尋
+        _pending_ocr = self._pending_use_ocr
+        self._pending_use_ocr = None  # 消費後清除
+        # None 代表「本次不是由膠囊帶入」→ 回退讀取 OCR 切換鈕的真實狀態
+        use_ocr = self.btn_ocr_toggle.isChecked() if _pending_ocr is None else _pending_ocr
+
         #  新增：如果是使用者手動按 Enter 搜尋，立刻交出焦點釋放 WASD 快捷鍵
         if not triggered_by_slider:
             self.input.clearFocus()
-            
+
         q = self.input.text().strip()
         if not q or not self.engine: return
         
@@ -1276,10 +1327,6 @@ class MainWindow(QMainWindow):
             self.add_to_history(q)
             self.search_capsule.hide_history()
             self._prepare_search_ui("Searching...", "Search Results")
-
-        # 從 SearchCapsule payload 或按鈕狀態取得 use_ocr
-        use_ocr = getattr(self, '_pending_use_ocr', self.btn_ocr_toggle.isChecked())
-        self._pending_use_ocr = None  # 消費後清除
 
         self.gallery_ctrl.is_in_search_mode = True  # 進入搜尋結果模式
         fetch_k, target_folder = self.search_orch.resolve_search_params(
@@ -1317,16 +1364,21 @@ class MainWindow(QMainWindow):
             folder_path=target_folder, fetch_k=fetch_k,
         )
 
-    def start_multi_vector_search(self, pos_features, neg_features):
+    def start_multi_vector_search(self, pos_features, neg_features, triggered_by_slider=False):
         if not self.engine: return
-        if not self.nav.is_navigating: self.nav.push()
+        # 權重滑桿觸發的重跑只是換參數重算同一頁，不可再壓一筆導航紀錄
+        if not triggered_by_slider and not self.nav.is_navigating: self.nav.push()
 
         self.current_image_search_path = None
         self.current_multi_vector_features = (pos_features, neg_features)
 
         self.history_list.hide()
         self.input.setText(f"[Multi-Vector] Pos:{len(pos_features)} Neg:{len(neg_features)}")
-        self._prepare_search_ui("Calculating Vector Math...", "Vector Arithmetic Results")
+        # 滑桿重跑不重置 UI：_prepare_search_ui 會把排序下拉選單強制打回
+        # 「搜尋相關度 ↓」，使用者剛選好的日期排序會在每次微調滑桿時被彈回去。
+        # 與 start_search 的處理方式一致（僅在非滑桿觸發時才重置）。
+        if not triggered_by_slider:
+            self._prepare_search_ui("Calculating Vector Math...", "Vector Arithmetic Results")
 
         self.gallery_ctrl.is_in_search_mode = True  # 進入搜尋結果模式
         fetch_k, target_folder = self.search_orch.resolve_search_params(
@@ -1392,10 +1444,48 @@ class MainWindow(QMainWindow):
         # 一次性原子寫入，避免兩次 set 之間的狀態不一致
         self.config.set("ui_state", ui_state)
 
+        # 索引中直接關窗會觸發 "QThread: Destroyed while thread is still running"，
+        # 設定寫入完成後才處理，確保就算 Worker 卡死也不會賠掉 UI 狀態
+        self._shutdown_indexer()
+
         # [Refactor Phase 2-E] Win32 資源回收（NC filter + WndProc Hook）委派至 manager
         self.window_state_mgr.uninstall()
 
         super().closeEvent(event)
+
+    def _shutdown_indexer(self, timeout_ms: int = 5000):
+        """關窗前優雅中止 IndexerWorker：取消 → 有界等待。
+
+        流程：
+          1. 走既有的 cancel_indexing() 取消路徑（設定 _cancelled，
+             Worker 的 callback 會拋 InterruptedError 讓 run() 收尾）
+          2. 補一次 _resume_event.set()：暫停中的 Worker 阻塞在
+             _resume_event.wait()，不放行就永遠等不到它結束
+          3. wait() 給定逾時上限，卡死的 Worker 不會讓視窗永遠關不掉
+        """
+        worker = getattr(self, 'indexer_worker', None)
+        if not (worker and worker.isRunning()):
+            return
+
+        print("[Shutdown] 偵測到索引進行中，發出取消指令並等待 Worker 結束…")
+        self.cancel_indexing()
+
+        # cancel_indexing 只在 _paused 為 True 時解除阻塞，這裡再保險一次
+        try:
+            worker._resume_event.set()
+        except AttributeError:
+            pass
+
+        worker.quit()  # 若 Worker 帶事件迴圈則請求退出（純迴圈式 run() 無副作用）
+        if not worker.wait(timeout_ms):
+            # 逾時代表 Worker 卡在無檢查點的長任務（例如單張圖的模型推論）。
+            # [絕不呼叫 terminate()] Windows 上 QThread::terminate() 走 TerminateThread()，
+            # 會在任意指令處砍掉執行緒且不釋放它持有的資源——包含 CPython 的 GIL。
+            # Worker 幾乎整段時間都在跑 Python bytecode（PIL 解碼 / cv2 / ONNX / sqlite），
+            # 極可能正持有 GIL，一旦被砍，GUI 執行緒下一次取 GIL 就永久卡死，
+            # 視窗留在畫面上再也關不掉——比原本的解構警告嚴重得多。
+            # 讓它隨行程結束自然收掉：DB 寫入是交易式的，最壞情況只是本批未提交。
+            print(f"[Shutdown] Worker 未在 {timeout_ms} ms 內結束，交由行程結束時收尾。")
 
 
     def on_finished(self, elapsed, total): self.progress.hide(); self.status.setText(f"Found {total} items ({elapsed:.2f}s)")

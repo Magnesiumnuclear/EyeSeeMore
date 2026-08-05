@@ -1,6 +1,7 @@
 import hashlib
 import os
 import sqlite3
+import threading
 
 import numpy as np
 import onnxruntime as ort
@@ -25,6 +26,21 @@ class ImageSearchEngine:
 
         # [修正] 預先定義 stored_embeddings
         self.stored_embeddings = None
+        self.path_map = {}
+        self.faiss_index = None
+
+        # [並行安全] data_lock 保護 data_store / stored_embeddings /
+        # faiss_index / path_map 這四個必須「同進同出」的狀態。
+        # 背景重載執行緒（load_data_from_db）與 SearchWorker 搜尋執行緒
+        # 會同時碰觸它們，換手期間若被讀到半套資料，輕則結果錯位、
+        # 重則 current_data[idx] 直接 IndexError。
+        # 採 RLock（可重入），引擎內部巢狀取用同一把鎖不會自我死鎖。
+        self.data_lock = threading.RLock()
+
+        # [並行安全] 世代計數：每完成一次整批換手就 +1。
+        # 讓「鎖外做重活、鎖內才寫回」的流程（remove_folder_data）能在寫回前
+        # 確認快照沒過期，避免蓋掉並行重載剛換上的新資料。
+        self._data_generation = 0
 
         # [Refactor Phase 3-A] 模型加載委派至獨立的 ModelProvider
         # 支援非阻塞加載，MainWindow 透過訊號監聽加載完成
@@ -66,9 +82,20 @@ class ImageSearchEngine:
         將 Numpy 矩陣轉換為 FAISS 光速索引引擎
         :param embeddings_matrix: shape 為 (N, 1024) 的 Numpy 陣列
         """
+        # [並行安全] 重建（可能長達數秒）在鎖外進行，只有最後的指派持鎖，
+        # 避免整個 UI 被 HNSW 建構卡住。
+        index = self._build_faiss_index_local(embeddings_matrix)
+        with self.data_lock:
+            self.faiss_index = index
+
+    def _build_faiss_index_local(self, embeddings_matrix):
+        """
+        [並行安全] 只「建立並回傳」索引，不碰任何 self 狀態。
+        呼叫端可在鎖外完成重建，再與 data_store / stored_embeddings 一起原子換手。
+        :return: FAISS index 物件；空矩陣時回傳 None
+        """
         if len(embeddings_matrix) == 0:
-            self.faiss_index = None
-            return
+            return None
 
         dimension = embeddings_matrix.shape[1]
         n = len(embeddings_matrix)
@@ -96,8 +123,8 @@ class ImageSearchEngine:
             # 將所有向量加入引擎 (必須是 float32 格式)
             index.add(embeddings_matrix.astype(np.float32))
 
-        self.faiss_index = index
-        print(f"[FAISS] 成功建立 {self.faiss_index.ntotal} 筆向量索引！")
+        print(f"[FAISS] 成功建立 {index.ntotal} 筆向量索引！")
+        return index
 
     # ==========================================
     #  [Perf Phase 3-G] HNSW 索引磁碟快取
@@ -209,14 +236,17 @@ class ImageSearchEngine:
         用於冷啟動時的瀑布流顯示。
         """
         #  [終極防呆：取得當下的指標快照，防止被雙緩衝覆蓋]
-        current_data = getattr(self, 'data_store', [])
-        if not current_data:
-            return []
+        #  [並行安全] 排序本身即是一次全量走訪，持鎖取得一致快照，
+        #  避免背景重載在中途 clear()+extend() 造成漏讀。
+        with self.data_lock:
+            current_data = getattr(self, 'data_store', [])
+            if not current_data:
+                return []
 
-        print(f"[Engine] Sorting {len(current_data)} images by date...")
+            print(f"[Engine] Sorting {len(current_data)} images by date...")
 
-        # 1. 使用 Python 內建 Timsort 進行快速排序 (mtime 大的排前面)
-        sorted_data = sorted(current_data, key=lambda x: x["mtime"], reverse=True)
+            # 1. 使用 Python 內建 Timsort 進行快速排序 (mtime 大的排前面)
+            sorted_data = sorted(current_data, key=lambda x: x["mtime"], reverse=True)
 
         # 2. 轉換為 UI 需要的格式
         results = []
@@ -296,19 +326,37 @@ class ImageSearchEngine:
 
             if temp_data_store and temp_embeddings_list:
                 temp_emb_matrix = np.stack(temp_embeddings_list)
-                self.stored_embeddings = temp_emb_matrix
-                # [Refactor Phase 1-C] 改為就地修改 list，保留 PinManager /
-                # CollectionManager 持有的同一個 list 參照（避免 rebinding）
-                self.data_store.clear()
-                self.data_store.extend(temp_data_store)
-                self.path_map = temp_path_map
-                self.build_faiss_index(temp_emb_matrix)
+
+                # [並行安全] FAISS 重建（HNSW 兩萬筆約 1 秒）刻意在鎖外先做完，
+                # 只把「換手」留在鎖內，UI 與搜尋執行緒最多被擋住微秒級。
+                temp_faiss_index = self._build_faiss_index_local(temp_emb_matrix)
+
+                # [並行安全] 四份狀態必須在同一個臨界區內一起換掉，否則
+                # SearchWorker 可能拿到「新 FAISS 索引 + 舊 data_store」而錯位／越界
+                with self.data_lock:
+                    self.stored_embeddings = temp_emb_matrix
+                    # [Refactor Phase 1-C] 就地修改 list，保留 PinManager /
+                    # CollectionManager 持有的同一個 list 參照（避免 rebinding）
+                    # [並行安全] 用切片賦值而非 clear()+extend()：CPython 的
+                    # list 切片賦值在 GIL 下是單一原子操作，中途不會被其他執行緒
+                    # 觀察到；clear()+extend() 之間則存在「清單為空」的可見空窗，
+                    # 未持鎖的讀取者（PinManager.get_pinned_results /
+                    # CollectionManager）會提早結束迭代而靜默漏資料。
+                    self.data_store[:] = temp_data_store
+                    self.path_map = temp_path_map
+                    self.faiss_index = temp_faiss_index
+                    self._data_generation += 1
+                    loaded_count = len(self.data_store)
+
                 self.pin_manager.reload()
-                print(f"[Engine] Loaded {len(self.data_store)} records for model '{current_model}'.")
+                print(f"[Engine] Loaded {loaded_count} records for model '{current_model}'.")
             else:
-                self.stored_embeddings = None
-                self.data_store.clear()  # 就地清空，維持 list 參照不變
-                self.path_map = {}
+                with self.data_lock:
+                    self.stored_embeddings = None
+                    self.data_store[:] = []   # 就地清空（原子），維持 list 參照不變
+                    self.path_map = {}
+                    self.faiss_index = None   # 索引必須一併作廢，不可留下舊的
+                    self._data_generation += 1
                 self.pin_manager.pinned_paths = set()
 
         except sqlite3.Error as e:
@@ -362,11 +410,23 @@ class ImageSearchEngine:
         :return: True 表示成功
         """
         norm_folder = os.path.normpath(folder_path)
+        # indexer.py 寫入的 folder_path = os.path.dirname(已 normpath 的 file_path)，
+        # 因此 D:\Photos\2024\a.jpg 的 folder_path 是 D:\Photos\2024。
+        # 移除來源根目錄 D:\Photos 時，只比對「完全相等」會漏掉所有子資料夾，
+        # 造成記憶體被遞迴清掉、DB 卻殘留，下次重載又整批復活。
+        prefix = norm_folder + os.sep
         try:
-            # --- 1. 資料庫清理（foreign_keys 保護 cascade） ---
+            # --- 1. 資料庫清理（foreign_keys 保護 cascade 到 embeddings / ocr_results） ---
             conn = self.get_db_conn()
             conn.execute("PRAGMA foreign_keys = ON;")
-            conn.execute("DELETE FROM files WHERE folder_path = ?", (folder_path,))
+            # 與記憶體清除同語意：本資料夾 OR 其所有子孫資料夾。
+            # 以 substr 做前綴比對（全參數化，不把使用者路徑串進 SQL，
+            # 也避開 LIKE 的 % _ 萬用字元與跳脫問題）。
+            conn.execute(
+                "DELETE FROM files WHERE folder_path = ? OR folder_path = ? "
+                "OR substr(folder_path, 1, ?) = ?",
+                (folder_path, norm_folder, len(prefix), prefix),
+            )
             conn.commit()
             conn.close()
         except Exception as e:
@@ -374,41 +434,66 @@ class ImageSearchEngine:
             return False
 
         # --- 2. 記憶體索引同步 ---
-        if not self.data_store:
-            return True
+        # [並行安全] 先在鎖內算出所有「新狀態」的 local，鎖外重建 FAISS，
+        # 最後再進一次短臨界區完成換手。
+        with self.data_lock:
+            if not self.data_store:
+                return True
 
-        # 找出所有屬於此資料夾的索引位置
-        keep_mask = [
-            item["norm_path"] != norm_folder and
-            not item["norm_path"].startswith(norm_folder + os.sep)
-            for item in self.data_store
-        ]
+            # 找出所有屬於此資料夾的索引位置
+            keep_mask = [
+                item["norm_path"] != norm_folder and
+                not item["norm_path"].startswith(prefix)
+                for item in self.data_store
+            ]
 
-        new_data_store = [item for item, keep in zip(self.data_store, keep_mask) if keep]
-        keep_indices = [i for i, keep in enumerate(keep_mask) if keep]
+            new_data_store = [item for item, keep in zip(self.data_store, keep_mask) if keep]
+            keep_indices = [i for i, keep in enumerate(keep_mask) if keep]
 
-        if len(new_data_store) == len(self.data_store):
-            # 沒有任何項目被移除（路徑可能不符），仍視為成功
-            return True
+            if len(new_data_store) == len(self.data_store):
+                # 沒有任何項目被移除（路徑可能不符），仍視為成功
+                return True
 
-        # 重建 path_map（新索引號與舊不同，需完整重建）
-        new_path_map = {}
-        for new_idx, item in enumerate(new_data_store):
-            new_path_map[item["norm_path"]] = new_idx
+            # 重建 path_map（新索引號與舊不同，需完整重建）
+            new_path_map = {}
+            for new_idx, item in enumerate(new_data_store):
+                new_path_map[item["norm_path"]] = new_idx
 
-        # 重建 stored_embeddings 與 FAISS
-        if self.stored_embeddings is not None and len(keep_indices) > 0:
-            new_emb = self.stored_embeddings[keep_indices]
-            self.stored_embeddings = new_emb
-            self.build_faiss_index(new_emb)
+            base_embeddings = self.stored_embeddings
+            # [並行安全] 記下這份快照所屬的世代；FAISS 重建期間（HNSW 可達 1 秒）
+            # 背景重載執行緒可能完成自己的換手，屆時這份結果已對應到舊世代，
+            # 直接寫回會把剛載入的資料整批蓋掉。
+            snapshot_generation = self._data_generation
+
+        # 重建 stored_embeddings 與 FAISS（耗時，刻意放在鎖外）
+        if base_embeddings is not None and len(keep_indices) > 0:
+            new_emb = base_embeddings[keep_indices]
+            new_index = self._build_faiss_index_local(new_emb)
         else:
-            self.stored_embeddings = None
-            self.faiss_index = None
+            new_emb = None
+            new_index = None
 
-        self.data_store = new_data_store
-        self.path_map = new_path_map
+        # [Fix] 這裡原本是 self.data_store = new_data_store（rebinding），
+        # 會讓 CollectionManager 手上那份 by-reference 的 list 永遠停在舊資料
+        # （docs/DESIGN_PATTERNS.md §策略C 記載的陷阱）。改為就地切片賦值，
+        # 與 load_data_from_db 一致，保住 list 身分且換手為原子操作。
+        with self.data_lock:
+            if self._data_generation != snapshot_generation:
+                # 世代已變（背景重載在鎖外重建期間完成了換手）。這份結果建立在
+                # 過期快照上，寫回會讓剛載入的資料憑空消失。DB 端刪除已提交，
+                # 放棄記憶體換手即可——最新那份資料本來就不含被刪的資料夾。
+                print("[Engine] remove_folder_data: 偵測到並行重載，略過記憶體換手"
+                      "（DB 已更新，以最新載入結果為準）")
+                return True
+            self.stored_embeddings = new_emb
+            self.faiss_index = new_index
+            self.data_store[:] = new_data_store
+            self.path_map = new_path_map
+            self._data_generation += 1
+            remain_count = len(self.data_store)
+
         print(f"[Engine] remove_folder_data: removed folder '{folder_path}', "
-              f"{len(self.data_store)} records remain.")
+              f"{remain_count} records remain.")
         return True
 
     def rename_file(self, old_path, new_name):
@@ -416,47 +501,60 @@ class ImageSearchEngine:
         if os.path.exists(new_path): return False, "Target filename already exists."
         try:
             os.rename(old_path, new_path)
+            norm_old = os.path.normpath(old_path)
+            norm_new = os.path.normpath(new_path)
+
             conn = self.get_db_conn(); cursor = conn.cursor()
             # [關鍵修復 3] 改為更新 files 表
             cursor.execute("UPDATE files SET file_path = ?, filename = ? WHERE file_path = ?", (new_path, new_name, old_path))
-            conn.commit(); conn.close()
-            norm_new = os.path.normpath(new_path)
-            for item in self.data_store:
-                if item["path"] == old_path:
-                    item["path"] = new_path; item["filename"] = new_name
-                    item["norm_path"] = norm_new  # 快取欄位同步更新
-                    break
 
-            #  [新增] 同步更新 Hash Map 字典，維持 O(1) 搜尋的正確性
-            if hasattr(self, 'path_map'):
-                norm_old = os.path.normpath(old_path)
-                if norm_old in self.path_map:
-                    idx = self.path_map.pop(norm_old) # 抽出舊的
-                    self.path_map[norm_new] = idx     # 塞入新的
+            # [Fix] pinned 表以 file_path 為主鍵、且與 files 無外鍵關聯，
+            # 不一起改名的話釘選會在下次重載時無聲消失，DB 還留下一列孤兒。
+            # PinManager.toggle 寫入的是「呼叫端原始路徑」，但歷史資料可能是
+            # normpath 形式，兩種寫法都比對以免漏改；OR REPLACE 用於
+            # 新路徑早已存在於 pinned 的極端情況。
+            cursor.execute(
+                "UPDATE OR REPLACE pinned SET file_path = ? WHERE file_path IN (?, ?)",
+                (new_path, old_path, norm_old),
+            )
+            pin_moved = cursor.rowcount > 0
+            conn.commit(); conn.close()
+
+            # [並行安全] 記憶體索引的修改持鎖進行，避免與背景重載交錯
+            with self.data_lock:
+                for item in self.data_store:
+                    if item["path"] == old_path:
+                        item["path"] = new_path; item["filename"] = new_name
+                        item["norm_path"] = norm_new  # 快取欄位同步更新
+                        break
+
+                #  [新增] 同步更新 Hash Map 字典，維持 O(1) 搜尋的正確性
+                if hasattr(self, 'path_map'):
+                    if norm_old in self.path_map:
+                        idx = self.path_map.pop(norm_old) # 抽出舊的
+                        self.path_map[norm_new] = idx     # 塞入新的
+
+            # 同步 PinManager 的記憶體集合（其快取存的是 normpath 形式）
+            if pin_moved:
+                self.pin_manager.pinned_paths.discard(norm_old)
+                self.pin_manager.pinned_paths.add(norm_new)
 
             return True, new_path
         except Exception as e: return False, str(e)
 
     #  [新增] folder_path 參數
     def search_hybrid(self, query, top_k=50, use_ocr=True, weight_config=None, folder_path=None):
-        current_embeddings = self.stored_embeddings
-        current_data = self.data_store
-
-        #  防呆檢查：確保 FAISS 引擎已經啟動
-        if not self.is_ready or current_embeddings is None or not hasattr(self, 'faiss_index'):
+        #  防呆檢查：確保模型已經就緒
+        if not self.is_ready:
             return []
 
-        valid_indices = None
-        if folder_path and folder_path != "ALL":
-            norm_target = os.path.normpath(folder_path)
-            valid_indices = [
-                i for i, item in enumerate(current_data)
-                if item["norm_path"].startswith(norm_target)
-            ]
-            if not valid_indices:
-                return []
-
         query_lower = query.lower()
+
+        # ==========================================
+        #  [並行安全] CLIP 文字推論刻意在鎖外執行
+        #  tokenizer + ONNX run 動輒數十毫秒，持鎖會把背景重載整個卡住
+        # ==========================================
+        query_vector = None
         try:
             if hasattr(self, 'last_text_query') and self.last_text_query == query and hasattr(self, 'last_text_features'):
                 text_features = self.last_text_features
@@ -473,110 +571,138 @@ class ImageSearchEngine:
             query_vector = text_features.astype(np.float32)
             if len(query_vector.shape) == 1:
                 query_vector = np.expand_dims(query_vector, axis=0)
-
-            # ==========================================
-            #  [關鍵修復 2] 動態發動 FAISS (支援「完全展開」)
-            # 確保最少抓 1000 張當作文字緩衝，但如果 UI 選擇 All (top_k=100000)，就水門全開！
-            # ==========================================
-            k_results = min(max(1000, top_k), len(current_data))
-            top_scores_matrix, top_indices_matrix = self.faiss_index.search(query_vector, k_results)
-            top_scores = top_scores_matrix[0]
-            top_indices = top_indices_matrix[0]
-
-            # 建立 CLIP 分數對照表
-            clip_score_map = {int(idx): float(score) for idx, score in zip(top_indices, top_scores)}
-
         except Exception as e:
             print(f"CLIP Search Error: {e}")
+            query_vector = None
+
+        # ==========================================
+        #  [並行安全] 取得一致快照：FAISS 查詢與整段計分迴圈都在鎖內完成。
+        #  否則背景重載一旦在中途換掉 data_store，current_data[original_idx]
+        #  會直接 IndexError（刪檔後變短），或拿舊索引對到新資料而全盤錯位。
+        # ==========================================
+        with self.data_lock:
+            current_embeddings = self.stored_embeddings
+            current_data = self.data_store
+            faiss_index = getattr(self, 'faiss_index', None)
+
+            #  防呆檢查：確保 FAISS 引擎已經啟動
+            if current_embeddings is None or faiss_index is None:
+                return []
+
+            valid_indices = None
+            if folder_path and folder_path != "ALL":
+                norm_target = os.path.normpath(folder_path)
+                valid_indices = [
+                    i for i, item in enumerate(current_data)
+                    if item["norm_path"].startswith(norm_target)
+                ]
+                if not valid_indices:
+                    return []
+
             clip_score_map = {}
             top_indices = []
+            if query_vector is not None:
+                try:
+                    # ==========================================
+                    #  [關鍵修復 2] 動態發動 FAISS (支援「完全展開」)
+                    # 確保最少抓 1000 張當作文字緩衝，但如果 UI 選擇 All (top_k=100000)，就水門全開！
+                    # ==========================================
+                    k_results = min(max(1000, top_k), len(current_data))
+                    top_scores_matrix, top_indices_matrix = faiss_index.search(query_vector, k_results)
+                    top_scores = top_scores_matrix[0]
+                    top_indices = top_indices_matrix[0]
 
-        # ==========================================
-        #  混合候選名單篩選 (Hybrid Selection)
-        # ==========================================
-        candidate_set = set(top_indices)
+                    # 建立 CLIP 分數對照表
+                    clip_score_map = {int(idx): float(score) for idx, score in zip(top_indices, top_scores)}
 
-        # 光速篩選出文字或檔名命中的項目 (把它們也加入候選名單，保證文字搜尋絕對不漏接！)
-        if query_lower:
-            text_matched_indices = [
-                i for i, item in enumerate(current_data)
-                if (use_ocr and query_lower in item["ocr_text"]) or (query_lower in item["filename"].lower())
-            ]
-            candidate_set.update(text_matched_indices)
+                except Exception as e:
+                    print(f"CLIP Search Error: {e}")
+                    clip_score_map = {}
+                    top_indices = []
 
-        # 如果有資料夾過濾，剔除不在該資料夾的圖片
-        if valid_indices is not None:
-            candidate_set = candidate_set.intersection(set(valid_indices))
+            # ==========================================
+            #  混合候選名單篩選 (Hybrid Selection)
+            # ==========================================
+            candidate_set = set(top_indices)
 
-        # ==========================================
-        #  執行計分迴圈 (只針對幾千張的候選名單，不跑十萬張！)
-        # ==========================================
-        if weight_config is None:
-            weight_config = {"mode": "multiply", "clip_w": 1.0, "ocr_w": 1.0, "name_w": 0.4, "thresh_mode": "auto", "thresh_val": 0.15}
+            # 光速篩選出文字或檔名命中的項目 (把它們也加入候選名單，保證文字搜尋絕對不漏接！)
+            if query_lower:
+                text_matched_indices = [
+                    i for i, item in enumerate(current_data)
+                    if (use_ocr and query_lower in item["ocr_text"]) or (query_lower in item["filename"].lower())
+                ]
+                candidate_set.update(text_matched_indices)
 
-        mode = weight_config.get("mode", "multiply")
-        clip_w = weight_config.get("clip_w", 1.0)
-        ocr_w = weight_config.get("ocr_w", 1.0)
-        name_w = weight_config.get("name_w", 0.4)
-        thresh_mode = weight_config.get("thresh_mode", "auto")
-        thresh_val = weight_config.get("thresh_val", 0.15)
+            # 如果有資料夾過濾，剔除不在該資料夾的圖片
+            if valid_indices is not None:
+                candidate_set = candidate_set.intersection(set(valid_indices))
 
-        raw_results = []
-        max_score = 0.0
+            # ==========================================
+            #  執行計分迴圈 (只針對幾千張的候選名單，不跑十萬張！)
+            # ==========================================
+            if weight_config is None:
+                weight_config = {"mode": "multiply", "clip_w": 1.0, "ocr_w": 1.0, "name_w": 0.4, "thresh_mode": "auto", "thresh_val": 0.15}
 
-        for original_idx in candidate_set:
-            item = current_data[original_idx]
+            mode = weight_config.get("mode", "multiply")
+            clip_w = weight_config.get("clip_w", 1.0)
+            ocr_w = weight_config.get("ocr_w", 1.0)
+            name_w = weight_config.get("name_w", 0.4)
+            thresh_mode = weight_config.get("thresh_mode", "auto")
+            thresh_val = weight_config.get("thresh_val", 0.15)
 
-            # 從對照表拿 CLIP 分數，沒在 Top 1000 裡的就當作 0 分
-            clip_score = clip_score_map.get(original_idx, 0.0)
+            raw_results = []
+            max_score = 0.0
 
-            has_ocr = use_ocr and (query_lower in item["ocr_text"])
-            has_name = query_lower in item["filename"].lower()
+            for original_idx in candidate_set:
+                item = current_data[original_idx]
 
-            ocr_bonus = 0.0
-            name_bonus = 0.0
+                # 從對照表拿 CLIP 分數，沒在 Top 1000 裡的就當作 0 分
+                clip_score = clip_score_map.get(original_idx, 0.0)
 
-            #  修復: 只要有文字命中，或者視覺分數及格，就給予加分！
-            if clip_score >= 0.08 or has_ocr or has_name:
+                has_ocr = use_ocr and (query_lower in item["ocr_text"])
+                has_name = query_lower in item["filename"].lower()
+
+                ocr_bonus = 0.0
+                name_bonus = 0.0
+
+                #  修復: 只要有文字命中，或者視覺分數及格，就給予加分！
+                if clip_score >= 0.08 or has_ocr or has_name:
+                    if mode == "add":
+                        ocr_bonus = (ocr_w / 2.0) if has_ocr else 0.0
+                        name_bonus = (name_w / 2.0) if has_name else 0.0
+                    else:
+                        ocr_bonus = (0.5 * ocr_w) if has_ocr else 0.0
+                        name_bonus = (0.5 * name_w) if has_name else 0.0
+
                 if mode == "add":
-                    ocr_bonus = (ocr_w / 2.0) if has_ocr else 0.0
-                    name_bonus = (name_w / 2.0) if has_name else 0.0
+                    final_score = clip_score + ocr_bonus + name_bonus
                 else:
-                    ocr_bonus = (0.5 * ocr_w) if has_ocr else 0.0
-                    name_bonus = (0.5 * name_w) if has_name else 0.0
+                    final_score = (clip_score * clip_w) + ocr_bonus + name_bonus
 
-            if mode == "add":
-                final_score = clip_score + ocr_bonus + name_bonus
+                if final_score > max_score:
+                    max_score = final_score
+
+                raw_results.append({
+                    "score": final_score, "clip_score": clip_score, "ocr_bonus": ocr_bonus, "name_bonus": name_bonus,
+                    "is_ocr_match": has_ocr, "path": item["path"], "filename": item["filename"],
+                    "mtime": item.get("mtime", 0),
+                    "width": item.get("width", 0),
+                    "height": item.get("height", 0)
+                })
+
+            if thresh_mode == "auto":
+                actual_thresh = max_score * 0.5
             else:
-                final_score = (clip_score * clip_w) + ocr_bonus + name_bonus
+                actual_thresh = thresh_val
 
-            if final_score > max_score:
-                max_score = final_score
-
-            raw_results.append({
-                "score": final_score, "clip_score": clip_score, "ocr_bonus": ocr_bonus, "name_bonus": name_bonus,
-                "is_ocr_match": has_ocr, "path": item["path"], "filename": item["filename"],
-                "mtime": item.get("mtime", 0),
-                "width": item.get("width", 0),
-                "height": item.get("height", 0)
-            })
-
-        if thresh_mode == "auto":
-            actual_thresh = max_score * 0.5
-        else:
-            actual_thresh = thresh_val
-
-        results = [r for r in raw_results if r["score"] >= actual_thresh]
-        results.sort(key=lambda x: x["score"], reverse=True)
-        return self._merge_pinned(results[:top_k])
+            results = [r for r in raw_results if r["score"] >= actual_thresh]
+            results.sort(key=lambda x: x["score"], reverse=True)
+            return self._merge_pinned(results[:top_k])
 
     #  [修改] 新增 folder_path 參數 (上一階段已加)，並導入「O(1) 快取命中」邏輯
     def search_image(self, image_path, top_k=50, folder_path=None):
-        current_embeddings = self.stored_embeddings
-        current_data = self.data_store
-
-        # 防呆檢查：確保 FAISS 引擎已經啟動
-        if not self.is_ready or current_embeddings is None or not hasattr(self, 'faiss_index'):
+        # 防呆檢查：確保模型已經就緒
+        if not self.is_ready:
             return []
 
         try:
@@ -584,19 +710,27 @@ class ImageSearchEngine:
 
             # ==========================================
             #  [效能封頂] 疑問 1 解決方案：記憶體 O(1) 特徵直接提取
+            #  [並行安全] path_map 與 stored_embeddings 必須成對讀取，持鎖取快照
             # ==========================================
-            # 1. 嘗試在字典中瞬間尋找這張圖片
-            target_idx = None
-            norm_target_path = os.path.normpath(image_path)
+            with self.data_lock:
+                current_embeddings = self.stored_embeddings
+                if current_embeddings is None:
+                    return []
 
-            if hasattr(self, 'path_map') and norm_target_path in self.path_map:
-                target_idx = self.path_map[norm_target_path]
+                # 1. 嘗試在字典中瞬間尋找這張圖片
+                target_idx = None
+                norm_target_path = os.path.normpath(image_path)
 
-            if target_idx is not None:
-                # 2. 如果找到了！直接從記憶體把算好的向量抽出來 (0 毫秒)
-                query_vector = np.expand_dims(current_embeddings[target_idx], axis=0)
-            else:
+                if hasattr(self, 'path_map') and norm_target_path in self.path_map:
+                    target_idx = self.path_map[norm_target_path]
+
+                if target_idx is not None:
+                    # 2. 如果找到了！直接從記憶體把算好的向量抽出來 (0 毫秒)
+                    query_vector = np.expand_dims(current_embeddings[target_idx], axis=0)
+
+            if query_vector is None:
                 # 3. 如果找不到 (例如未來支援拖入外部圖片)，才啟動 ONNX 消耗算力
+                #    [並行安全] 推論很慢，刻意放在鎖外，不擋住背景重載
                 #print(f"[Engine] 以圖搜圖：外部圖片，啟動 GPU 推論...")
                 image = Image.open(image_path).convert('RGB')
                 processed_image = np.expand_dims(self.preprocess(image), axis=0)
@@ -609,40 +743,47 @@ class ImageSearchEngine:
 
             # ==========================================
             #  發動 FAISS 以圖搜圖 (超額抓取與範圍過濾)
+            #  [並行安全] 索引查詢與 current_data[idx] 取值必須是同一份快照
             # ==========================================
-            # 為了確保「範圍過濾」後還有足夠的圖片，我們先跟 FAISS 要一大把
-            fetch_limit = min(max(2000, top_k), len(current_data))
-            top_scores_matrix, top_indices_matrix = self.faiss_index.search(query_vector, fetch_limit)
+            with self.data_lock:
+                current_data = self.data_store
+                faiss_index = getattr(self, 'faiss_index', None)
+                if faiss_index is None:
+                    return []
 
-            top_scores = top_scores_matrix[0]
-            top_indices = top_indices_matrix[0]
+                # 為了確保「範圍過濾」後還有足夠的圖片，我們先跟 FAISS 要一大把
+                fetch_limit = min(max(2000, top_k), len(current_data))
+                top_scores_matrix, top_indices_matrix = faiss_index.search(query_vector, fetch_limit)
 
-            # 準備過濾條件
-            norm_target = os.path.normpath(folder_path) if (folder_path and folder_path != "ALL") else None
+                top_scores = top_scores_matrix[0]
+                top_indices = top_indices_matrix[0]
 
-            results = []
-            for i in range(fetch_limit):
-                idx = top_indices[i]
-                item = current_data[idx]
+                # 準備過濾條件
+                norm_target = os.path.normpath(folder_path) if (folder_path and folder_path != "ALL") else None
 
-                # 如果有指定資料夾，且圖片不在該資料夾內，直接丟棄！
-                if norm_target and not item["norm_path"].startswith(norm_target):
-                    continue
+                results = []
+                for i in range(fetch_limit):
+                    idx = top_indices[i]
+                    item = current_data[idx]
 
-                score = top_scores[i]
-                results.append({
-                    "score": float(score), "clip_score": float(score), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
-                    "path": item["path"], "filename": item["filename"],
-                    "mtime": item.get("mtime", 0),
-                    "width": item.get("width", 0),
-                    "height": item.get("height", 0)
-                })
+                    # 如果有指定資料夾，且圖片不在該資料夾內，直接丟棄！
+                    if norm_target and not item["norm_path"].startswith(norm_target):
+                        continue
 
-                # 收集滿目標數量就可以提早收工
-                if len(results) >= top_k:
-                    break
+                    score = top_scores[i]
+                    results.append({
+                        "score": float(score), "clip_score": float(score), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
+                        "path": item["path"], "filename": item["filename"],
+                        "mtime": item.get("mtime", 0),
+                        "width": item.get("width", 0),
+                        "height": item.get("height", 0)
+                    })
 
-            return self._merge_pinned(results)
+                    # 收集滿目標數量就可以提早收工
+                    if len(results) >= top_k:
+                        break
+
+                return self._merge_pinned(results)
         except Exception as e:
             print(f"[Error] Image search failed: {e}"); return []
 
@@ -686,9 +827,14 @@ class ImageSearchEngine:
             if feat.vector is not None: return feat.vector # 命中預熱快取！(0毫秒)
             if feat.type == 'image':
                 norm_target_path = os.path.normpath(feat.data)
-                if hasattr(self, 'path_map') and norm_target_path in self.path_map:
-                    feat.vector = self.stored_embeddings[self.path_map[norm_target_path]]
-                    return feat.vector
+                # [並行安全] path_map 與 stored_embeddings 成對讀取，短暫持鎖即可
+                with self.data_lock:
+                    embeddings_snapshot = self.stored_embeddings
+                    if embeddings_snapshot is not None and hasattr(self, 'path_map') \
+                            and norm_target_path in self.path_map:
+                        feat.vector = embeddings_snapshot[self.path_map[norm_target_path]]
+                        return feat.vector
+                # 外部圖片：ONNX 推論很慢，刻意在鎖外執行
                 try:
                     image = Image.open(feat.data).convert('RGB')
                     processed = np.expand_dims(self.preprocess(image), axis=0)
@@ -705,34 +851,42 @@ class ImageSearchEngine:
         neg_vecs = [v for f in neg_features if (v := get_vec(f)) is not None]
         if not pos_vecs and not neg_vecs: return []
 
-        dim = self.stored_embeddings.shape[1]
-        v_pos = np.mean(pos_vecs, axis=0) if pos_vecs else np.zeros(dim, dtype=np.float32)
-        v_neg = np.mean(neg_vecs, axis=0) if neg_vecs else np.zeros(dim, dtype=np.float32)
+        # [並行安全] 向量運算成本極低，連同 FAISS 查詢與取值一起持鎖，
+        # 保證 stored_embeddings / faiss_index / data_store 是同一世代
+        with self.data_lock:
+            current_embeddings = self.stored_embeddings
+            current_data = self.data_store
+            faiss_index = getattr(self, 'faiss_index', None)
+            if current_embeddings is None or faiss_index is None: return []
 
-        query_vector = v_pos - (0.6 * v_neg)
-        if not pos_vecs and neg_vecs: query_vector = -v_neg
+            dim = current_embeddings.shape[1]
+            v_pos = np.mean(pos_vecs, axis=0) if pos_vecs else np.zeros(dim, dtype=np.float32)
+            v_neg = np.mean(neg_vecs, axis=0) if neg_vecs else np.zeros(dim, dtype=np.float32)
 
-        query_vector = np.expand_dims(query_vector, axis=0)
-        query_vector = query_vector / np.linalg.norm(query_vector, axis=-1, keepdims=True)
-        query_vector = query_vector.astype(np.float32)
+            query_vector = v_pos - (0.6 * v_neg)
+            if not pos_vecs and neg_vecs: query_vector = -v_neg
 
-        fetch_limit = min(max(2000, top_k), len(self.data_store))
-        top_scores, top_indices = self.faiss_index.search(query_vector, fetch_limit)
+            query_vector = np.expand_dims(query_vector, axis=0)
+            query_vector = query_vector / np.linalg.norm(query_vector, axis=-1, keepdims=True)
+            query_vector = query_vector.astype(np.float32)
 
-        norm_folder = os.path.normpath(folder_path) if (folder_path and folder_path != "ALL") else None
-        results = []
-        for i in range(fetch_limit):
-            idx = top_indices[0][i]
-            item = self.data_store[idx]
-            if norm_folder and not item["norm_path"].startswith(norm_folder): continue
+            fetch_limit = min(max(2000, top_k), len(current_data))
+            top_scores, top_indices = faiss_index.search(query_vector, fetch_limit)
 
-            results.append({
-                "score": float(top_scores[0][i]), "clip_score": float(top_scores[0][i]), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
-                "path": item["path"], "filename": item["filename"], "mtime": item.get("mtime", 0),
-                "width": item.get("width", 0), "height": item.get("height", 0)
-            })
-            if len(results) >= top_k: break
-        return self._merge_pinned(results)
+            norm_folder = os.path.normpath(folder_path) if (folder_path and folder_path != "ALL") else None
+            results = []
+            for i in range(fetch_limit):
+                idx = top_indices[0][i]
+                item = current_data[idx]
+                if norm_folder and not item["norm_path"].startswith(norm_folder): continue
+
+                results.append({
+                    "score": float(top_scores[0][i]), "clip_score": float(top_scores[0][i]), "ocr_bonus": 0.0, "name_bonus": 0.0, "is_ocr_match": False,
+                    "path": item["path"], "filename": item["filename"], "mtime": item.get("mtime", 0),
+                    "width": item.get("width", 0), "height": item.get("height", 0)
+                })
+                if len(results) >= top_k: break
+            return self._merge_pinned(results)
 
     # ==========================================
     #  虛擬資料夾 (Collections) 管理 API

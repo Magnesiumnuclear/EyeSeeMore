@@ -67,6 +67,14 @@ class SearchResultsModel(QAbstractListModel):
             worker.is_cancelled = True
         self._active_workers.clear()
 
+        # 舊結果的待更新列號必須一併作廢：否則舊清單第 300 列的縮圖回報
+        # 會對只剩 100 列的新 Model 發出越界的 dataChanged (整個 viewport 空轉重繪)
+        self.update_timer.stop()
+        self._pending_updates.clear()
+        # 購物車裡的舊路徑同樣丟棄；_batch_timer_active 不動，
+        # 因為已排程的 singleShot 仍會觸發並自行歸零，重設反而會排到第二顆計時器
+        self._pending_batch_requests.clear()
+
         self.all_items = []
         self.path_to_row = {}
 
@@ -109,6 +117,16 @@ class SearchResultsModel(QAbstractListModel):
         漏斗卡片永遠緊跟在所有釘選圖之後，不參與一般排序邏輯。"""
         self.layoutAboutToBeChanged.emit()
 
+        # 洗牌前先記下每個 persistent index 當時指向的「項目本身」。
+        # rowCount 沒變，Qt 不會自己搬動這些索引 —— 若不重新對應，
+        # 選取／currentIndex 會黏在舊列號上（指到另一張圖），
+        # 導致 Inspector 顯示 A、高亮卻是 B，拖曳匯出更會抓到錯的檔案。
+        old_indexes = self.persistentIndexList()
+        anchored_items = []
+        for idx in old_indexes:
+            row = idx.row()
+            anchored_items.append(self.all_items[row] if 0 <= row < len(self.all_items) else None)
+
         # 抽出漏斗卡片（只有 0 或 1 張）
         funnel_items = [it for it in self.all_items if getattr(it, 'is_funnel_card', False)]
         other_items  = [it for it in self.all_items if not getattr(it, 'is_funnel_card', False)]
@@ -123,6 +141,18 @@ class SearchResultsModel(QAbstractListModel):
 
         self.all_items = other_items
         self.path_to_row = {item.path: i for i, item in enumerate(self.all_items)}
+
+        # 直接沿用剛重建的 path_to_row 查新列號（漏斗卡片有固定虛擬路徑，一樣查得到）；
+        # 查不到的項目一律換成無效索引，讓 Qt 自行丟棄該筆選取
+        new_indexes = []
+        for idx, item in zip(old_indexes, anchored_items):
+            new_row = self.path_to_row.get(item.path) if item is not None else None
+            if new_row is None:
+                new_indexes.append(QModelIndex())
+            else:
+                new_indexes.append(self.index(new_row, idx.column()))
+        self.changePersistentIndexList(old_indexes, new_indexes)
+
         self.layoutChanged.emit()
 
     def rowCount(self, parent=QModelIndex()):

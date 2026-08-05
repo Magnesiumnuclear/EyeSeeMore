@@ -116,16 +116,38 @@ class IndexingLifecycleHandler(QObject):
     def on_indexing_finished(self) -> None:
         """IndexerWorker.all_finished 訊號的接收端。
 
+        all_finished 是唯一的收尾路徑（成功 / 取消 / 失敗都會走到），因此
+        狀態文字必須依 Worker 的 last_result 分流，取消或失敗的一輪不能被
+        當成「索引完成」回報。
+
         執行順序：
-          1. 取出 ETA mode 1 的總耗時（必須在 reset 前完成）
-          2. 發送對應的完成狀態文字
+          1. 讀取 Worker 本輪結果並取出 ETA mode 1 的總耗時（須在 reset 前）
+          2. 發送對應的完成狀態文字（成功 / 無變更 / 取消 / 錯誤）
           3. 重置 EtaProgressController 所有內部狀態
           4. 通知進度條收尾（progress_completed）
           5. 關閉工作列進度條
           6. 觸發背景資料庫雙緩衝重載
+             （取消與錯誤的一輪同樣要重載：部分結果已經 commit 進資料庫）
         """
+        # Worker 在 emit 前寫入的本輪結果；Worker 尚未注入時保守視為 success
+        result = getattr(self.indexer_worker, "last_result", "success")
+        error_msg = getattr(self.indexer_worker, "last_error", None)
+
         # 在 reset 前先取得 mode 1 所需的總耗時
-        if self.eta_ctrl.mode == 1:
+        if result == "error":
+            detail = f"：{error_msg}" if error_msg else ""
+            self.scan_status_changed.emit(f"索引發生錯誤{detail}")
+        elif result == "cancelled":
+            if self.eta_ctrl.mode == 1:
+                total_sec = int(self.eta_ctrl.total_elapsed())
+                _m, _s = divmod(total_sec, 60)
+                self.scan_status_changed.emit(f"掃描已取消!已耗時:{_m:02d} 分 {_s:02d} 秒")
+            else:
+                self.scan_status_changed.emit("Scan Cancelled.")
+        elif result == "no_changes":
+            # 沒有進入索引階段（ETA session 未啟動），總耗時無意義故不顯示
+            self.scan_status_changed.emit("No new images found.")
+        elif self.eta_ctrl.mode == 1:
             total_sec = int(self.eta_ctrl.total_elapsed())
             _m, _s = divmod(total_sec, 60)
             self.scan_status_changed.emit(f"索引完成!總耗時:{_m:02d} 分 {_s:02d} 秒")
@@ -140,8 +162,12 @@ class IndexingLifecycleHandler(QObject):
         # TBPF_NOPROGRESS = 0
         self.taskbar_state_changed.emit(0)
 
-        # 觸發雙緩衝背景載入
-        self.trigger_background_db_reload()
+        # 觸發雙緩衝背景載入。
+        # 只有正常完成才播報 "Synchronizing..."：error / cancelled / no_changes
+        # 這三種情形上面剛發出的終局訊息（錯誤原因、已取消、沒有新圖）
+        # 會立刻被同步提示蓋掉，而 on_db_reloaded 不再發任何狀態文字，
+        # 使用者就再也看不到那則訊息了。
+        self.trigger_background_db_reload(announce=(result == "success"))
 
     # ------------------------------------------------------------------
     #  掃描控制 API（由 WinScanCtrlFilter / Jump List / 系統選單驅動）
@@ -199,21 +225,33 @@ class IndexingLifecycleHandler(QObject):
     # ------------------------------------------------------------------
     #  雙緩衝資料庫重載
     # ------------------------------------------------------------------
-    def trigger_background_db_reload(self) -> None:
+    def trigger_background_db_reload(self, announce: bool = True) -> None:
         """[方案 B：雙緩衝核心] 在背景執行緒讀取資料庫，UI 與搜尋不中斷。
 
         若 engine 尚未注入則靜默返回。背景執行緒結束時透過內部訊號
         _db_reloaded 跨執行緒切回主執行緒處理 UI 更新。
+
+        Args:
+            announce: 是否發送 "Synchronizing..." 狀態文字。索引失敗後由
+                     on_indexing_finished 傳 False，避免剛發出的錯誤訊息
+                     立刻被同步提示蓋掉。
         """
         if not self.engine:
             return
-        self.scan_status_changed.emit("Synchronizing database in background...")
+        if announce:
+            self.scan_status_changed.emit("Synchronizing database in background...")
 
         def bg_reload():
             print("[Engine] Reloading engine data in background (Double Buffering)...")
-            self.engine.load_data_from_db()  # 此處內部已實作 Atomic Swap
+            # load_data_from_db 會先在區域變數把資料與 FAISS 索引建好（重建刻意
+            # 留在鎖外，避免凍住 UI），再於 engine.data_lock（RLock）保護下一次
+            # 換掉 data_store / stored_embeddings / faiss_index / path_map；
+            # 搜尋端讀取時取同一把鎖，所以不會讀到換到一半的組合。
+            # 注意：這只保證這四份狀態彼此一致，不是整個重載流程的原子性。
+            self.engine.load_data_from_db()
 
-            # [關鍵] 發送空訊號讓主執行緒接手，徹底杜絕跨執行緒崩潰
+            # 發送空訊號讓主執行緒接手後續 UI 刷新（Qt 佇列連線自動跨執行緒切換），
+            # 避免在背景執行緒直接碰 QWidget
             self._db_reloaded.emit()
 
         threading.Thread(target=bg_reload, daemon=True).start()

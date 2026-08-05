@@ -26,6 +26,9 @@ import json
 import os
 from typing import List
 
+# 共用 config_manager 內的原子寫檔工具（同一份實作，不另外開新模組）
+from core.config_manager import atomic_write_json
+
 
 class SearchHistoryManager:
     """搜尋歷史紀錄的獨立管理器。
@@ -55,26 +58,37 @@ class SearchHistoryManager:
     def load(self) -> None:
         """從 JSON 檔案讀取歷史紀錄到內部清單。
 
-        若檔案不存在則保持內部清單為空；若 JSON 解析失敗則重置為空 list
-        並靜默處理（與原 MainWindow.load_history 的 bare except 行為一致）。
+        若檔案不存在則保持內部清單為空；若 JSON 解析失敗、或檔案內容不是
+        預期的「字串清單」，則重置為空 list 並靜默處理
+        （與原 MainWindow.load_history 的 bare except 行為一致）。
         """
         if not os.path.exists(self._path):
             return
         try:
             with open(self._path, "r", encoding="utf-8") as f:
-                self._history = json.load(f)
+                loaded = json.load(f)
+
+            # ==========================================
+            # [修復] 型別驗證：磁碟上的 JSON 可能是 dict / 數字 / 字串
+            #        （被人為改壞或上一次寫到一半），直接吃下去會讓後續
+            #        add() / delete() 對非 list 物件操作而拋例外或寫出爛資料
+            # ==========================================
+            if not isinstance(loaded, list):
+                raise ValueError(f"歷史檔案格式錯誤：{type(loaded).__name__}，預期為 list")
+            # 逐項過濾，只留下非空字串，去掉 None / dict / 巢狀 list 等異常內容
+            self._history = [item for item in loaded if isinstance(item, str) and item]
         except Exception:
             self._history = []
 
     def save(self) -> None:
-        """將內部清單序列化為 JSON 並寫入檔案。
+        """將內部清單序列化為 JSON 並原子寫入檔案。
 
-        寫入失敗時靜默處理，不向上拋出例外（與原行為一致，
-        避免因磁碟暫時鎖死導致搜尋流程中斷）。
+        採用「同目錄暫存檔 → fsync → os.replace」的原子寫法，寫到一半被中斷
+        也不會留下半截 JSON。寫入失敗時仍靜默處理，不向上拋出例外
+        （與原行為一致，避免因磁碟暫時鎖死導致搜尋流程中斷）。
         """
         try:
-            with open(self._path, "w", encoding="utf-8") as f:
-                json.dump(self._history, f, ensure_ascii=False)
+            atomic_write_json(self._path, self._history)
         except Exception:
             pass
 

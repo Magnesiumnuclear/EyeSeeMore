@@ -79,6 +79,64 @@ class TestIndexerScan(unittest.TestCase):
         _full, _emb, ocr_only, _del, _map = self.svc.scan_for_new_files(cfg)
         self.assertEqual(len(ocr_only), 0)
 
+    def test_modified_file_invalidates_derived_data_but_keeps_row(self):
+        """原地覆蓋（mtime 變動）→ 衍生資料失效重跑，但 files 列必須保留。
+
+        刻意不刪 files 列：掃描階段就刪，之後索引一旦被取消或失敗，
+        圖片會連同 cascade 的 embeddings/ocr_results 一起從圖庫消失。
+        """
+        # c 原本向量 + OCR 齊全；把 DB 的 mtime 改成遠古時間 = 模擬檔案已被覆蓋
+        conn = _helpers.connect(self.db)
+        conn.execute("UPDATE files SET mtime = ?, width = 8, height = 8, file_size = 100"
+                     " WHERE file_path = ?", (1700000000.0, self.pc))
+        conn.commit()
+        conn.close()
+
+        cfg = [{"path": self.folder, "enabled_langs": ["ch"]}]
+        _full, emb_only, ocr_only, _del, _map = self.svc.scan_for_new_files(cfg)
+
+        emb_only = {os.path.normpath(p) for p in emb_only}
+        ocr_only = {os.path.normpath(p) for p in ocr_only}
+        # 衍生資料已失效 → 重新落入軌道 B（缺向量）與軌道 C（缺 OCR）
+        self.assertIn(self.pc, emb_only)
+        self.assertIn(self.pc, ocr_only)
+
+        conn = _helpers.connect(self.db)
+        try:
+            # files 列必須還在（圖片不可從圖庫消失）
+            row = conn.execute("SELECT id, mtime, width, file_size FROM files WHERE file_path = ?",
+                               (self.pc,)).fetchone()
+            self.assertIsNotNone(row, "變更偵測不應刪除 files 列")
+            fid, new_mtime, width, file_size = row
+            # 舊的向量與 OCR 應已清除
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM embeddings WHERE file_id = ?", (fid,)).fetchone()[0], 0)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM ocr_results WHERE file_id = ?", (fid,)).fetchone()[0], 0)
+            # mtime 已同步為磁碟值，下次掃描才不會重複判定為已變更
+            self.assertAlmostEqual(new_mtime, os.path.getmtime(self.pc), delta=1.0)
+            # 寬高/大小被清成 NULL 後，軌道 D 會在「同一次掃描內」就依實際檔案補回
+            self.assertEqual(width, 8, "軌道 D 應在同次掃描重新量到 8x8 的實際尺寸")
+            self.assertIsNotNone(file_size)
+        finally:
+            conn.close()
+
+    def test_unmodified_file_is_not_reprocessed(self):
+        """mtime 相符的圖片不可被誤判為已變更（否則每次掃描都無限重索引）。"""
+        cfg = [{"path": self.folder, "enabled_langs": ["ch"]}]
+        self.svc.scan_for_new_files(cfg)
+
+        # c 的向量與 OCR 在首次掃描後應原封不動
+        conn = _helpers.connect(self.db)
+        try:
+            fid = conn.execute("SELECT id FROM files WHERE file_path = ?", (self.pc,)).fetchone()[0]
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM embeddings WHERE file_id = ?", (fid,)).fetchone()[0], 1)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM ocr_results WHERE file_id = ?", (fid,)).fetchone()[0], 1)
+        finally:
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

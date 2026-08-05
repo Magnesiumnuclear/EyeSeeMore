@@ -316,8 +316,11 @@ class CollectionManager:
                 paths.add(os.path.normpath(os.path.abspath(p)))
 
             # 直接從 O(1) 的記憶體 data_store 中把圖片資訊抽出來！極度快速！
+            # [並行安全] 先原子快照再迭代：engine 的背景重載會整批換掉這個
+            # list（切片賦值）。直接迭代時若新資料較短，迭代器會提早結束，
+            # 收藏內容會靜默少圖。list() 複製在 GIL 下不可中斷。
             results: List[Dict[str, Any]] = []
-            for item in self._data_store:
+            for item in list(self._data_store):
                 item_path = item["path"]
                 item_path_norm = os.path.normpath(os.path.abspath(item_path))
                 if item_path in paths or item_path_norm in paths:

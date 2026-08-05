@@ -342,20 +342,37 @@ class IndexerService:
         # [Debug 日誌 1] 檢查從主程式傳遞過來的資料夾設定是否正確
         print(f"\n[Debug] 目前資料夾的 OCR 設定: {folder_ocr_map}")
 
+        # [變更偵測] 走訪磁碟時順手把每張圖的 mtime 記下來(路徑 -> mtime)。
+        # 這裡改用 os.scandir 手動遞迴而非 os.walk:目錄列舉本身就已取得 stat 資料,
+        # entry.stat() 直接讀快取等於「白拿」mtime,不必為每張已索引的圖片
+        # 在比對階段再額外做一次 os.stat。
+        disk_mtimes = {}
         for folder in folder_ocr_map.keys():
             if not os.path.exists(folder): continue
-            for root, _dirs, files in os.walk(folder):
-                for file in files:
-                    if file.lower().endswith(valid_extensions):
-                        full_path = os.path.normpath(os.path.join(root, file))
-                        disk_paths.add(full_path)
+            stack = [folder]
+            while stack:
+                current_dir = stack.pop()
+                try:
+                    with os.scandir(current_dir) as it:
+                        for entry in it:
+                            try:
+                                if entry.is_dir(follow_symlinks=False):
+                                    stack.append(entry.path)
+                                elif entry.name.lower().endswith(valid_extensions):
+                                    full_path = os.path.normpath(entry.path)
+                                    disk_paths.add(full_path)
+                                    disk_mtimes[full_path] = entry.stat().st_mtime
+                            except OSError:
+                                continue  # 單一檔案讀取失敗(權限/掃描中被移除)不影響整體
+                except OSError:
+                    continue  # 無法列舉的資料夾直接跳過
 
         conn = self.init_db()
         cursor = conn.cursor()
-        
-        # 1. 取得 DB 所有檔案
-        cursor.execute("SELECT id, file_path FROM files")
-        db_files = {os.path.normpath(row[1]): row[0] for row in cursor.fetchall()}
+
+        # 1. 取得 DB 所有檔案(一併取出 mtime,供下方變更偵測比對)
+        cursor.execute("SELECT id, file_path, mtime FROM files")
+        db_files = {os.path.normpath(row[1]): (row[0], row[2]) for row in cursor.fetchall()}
         db_paths = set(db_files.keys())
         
         # 2. 取得有 CLIP 向量的檔案
@@ -394,16 +411,67 @@ class IndexerService:
         else:
             deleted_count = 0
             
-        files_full = list(disk_paths - db_paths) # 完全新圖
+        # ==========================================
+        # 🌟 [變更偵測] 原地覆蓋的圖片(裁切/旋轉/重新匯出:路徑沒變但內容變了)
+        # ==========================================
+        # 這種圖的 CLIP 向量、OCR 文字與寬高全部過期,必須重跑。
+        # [關鍵] 不刪 files 列:若在掃描階段就刪掉舊列,接下來的索引一旦被取消
+        # 或中途失敗,這張圖會連同 cascade 的 embeddings/ocr_results 一起從圖庫
+        # 與搜尋結果中消失,等於用 mtime 比對換來資料遺失。
+        # 改為只失效「衍生資料」:刪掉 embeddings / ocr_results、把 width/height/
+        # file_size 清成 NULL,files 列本身保留 → 圖片在 UI 上永不消失。
+        # 清掉向量後該圖自然落入軌道 B、清掉 OCR 後落入軌道 C、寬高清 NULL 後
+        # 由軌道 D 補回,完全沿用既有分流,不需要新軌道。
+        # mtime 在此一併更新;就算重跑失敗也不影響重試,因為分流依據是
+        # 「有沒有向量」而不是 mtime。
+        # 容差 1 秒:mtime 是浮點數,不同檔案系統(NTFS/FAT/網路磁碟)精度也不同,
+        # 硬性相等比對會讓每次掃描都誤判成變更而無限重索引。
+        MTIME_TOLERANCE = 1.0
+        common_paths = disk_paths & db_paths
+        files_changed = []
+        for p in common_paths:
+            disk_mtime = disk_mtimes.get(p)
+            db_mtime = db_files[p][1]
+            # 任一邊拿不到 mtime(舊資料列為 NULL/檔案 stat 失敗)就不做判定,維持原行為
+            if disk_mtime is None or db_mtime is None:
+                continue
+            if abs(disk_mtime - db_mtime) > MTIME_TOLERANCE:
+                files_changed.append(p)
+
+        if files_changed:
+            BATCH = 900
+            for i in range(0, len(files_changed), BATCH):
+                batch = files_changed[i:i+BATCH]
+                ids = [db_files[p][0] for p in batch]
+                placeholders = ','.join(['?'] * len(ids))
+                # 內容已變 → 所有模型的向量與所有語系的 OCR 一律失效
+                cursor.execute(
+                    f"DELETE FROM embeddings WHERE file_id IN ({placeholders})", ids)
+                cursor.execute(
+                    f"DELETE FROM ocr_results WHERE file_id IN ({placeholders})", ids)
+                # 寬高/檔案大小清空交由軌道 D 補回,同時寫入新的 mtime
+                cursor.executemany(
+                    "UPDATE files SET mtime = ?, width = NULL, height = NULL,"
+                    " file_size = NULL WHERE id = ?",
+                    [(disk_mtimes[p], db_files[p][0]) for p in batch])
+            conn.commit()
+            # 記憶體端同步:抽掉這些 file_id 的向量/OCR 紀錄,
+            # 下方交叉比對才會把它們排進軌道 B / C 重跑
+            for p in files_changed:
+                fid = db_files[p][0]
+                db_has_emb.discard(fid)
+                ocr_history.pop(fid, None)
+
+        files_full = list(disk_paths - db_paths) # 完全新圖(DB 中不存在的路徑)
         files_emb_only = []
         files_ocr_only = []
-        
+
         # 交叉比對：找出缺 CLIP 或缺特定語系 OCR 的圖片
         # [Perf] p 來自 disk_paths∩db_paths,兩端皆已 normpath,走
         # _match_folder_langs_norm 免去每張圖重複正規化;無 OCR 需求時整段短路。
         check_ocr = bool(needed_langs)
-        for p in (disk_paths & db_paths):
-            file_id = db_files[p]
+        for p in common_paths:
+            file_id = db_files[p][0]
 
             # 檢查是否缺 CLIP
             if file_id not in db_has_emb:
@@ -417,8 +485,8 @@ class IndexerService:
                 if any(lang not in done_langs for lang in required_langs):
                     files_ocr_only.append(p)
                 
-        # [Debug 日誌 4] 最終分類結果
-        print(f"[Debug] 掃描分類結果 -> 全新圖(Full): {len(files_full)}, 缺向量(Emb): {len(files_emb_only)}, 缺OCR(Ocr): {len(files_ocr_only)}\n")
+        # [Debug 日誌 4] 最終分類結果(內容已變更的圖已失效衍生資料,併入 Emb/Ocr 軌道)
+        print(f"[Debug] 掃描分類結果 -> 全新圖(Full): {len(files_full)}, 內容已變更需重算: {len(files_changed)}, 缺向量(Emb): {len(files_emb_only)}, 缺OCR(Ocr): {len(files_ocr_only)}\n")
 
         # ==========================================
         # 🌟 軌道 D (已搬家): 在這裡確保每次掃描都會補齊缺失的尺寸資訊！
@@ -573,13 +641,10 @@ class IndexerService:
         commit_counter = 0
         
         import gc
-        
-        # [修改 1] 收集本次掃描真正需要的語系
-        needed_langs = set()
-        for path in files_full + files_ocr_only:
-            langs = self._get_folder_ocr_setting(path, folder_ocr_map)
-            needed_langs.update(langs)
-            
+
+        # [註] 本次需要哪些 OCR 語系不必預先蒐集:軌道 A 與軌道 C 都在真正要用到時
+        # 才呼叫 ensure_ocr_engine 做 Lazy Load(Phase 3-A),避免載入用不到的引擎佔 VRAM。
+
         try:
             # 載入 CLIP
             if shared_model and shared_preprocess:
@@ -594,14 +659,22 @@ class IndexerService:
             # 共享快取（來自 ModelProvider 或傳入的 shared_ocr_engines）
             ocr_engines = shared_ocr_engines if shared_ocr_engines is not None else {}
 
+            # 本次任務中「載入失敗」的語系(模型檔缺失/VRAM 不足等)。
+            # 只記在區域變數:同一次索引不再對每張圖重試昂貴的 ONNXOCR 建構，
+            # 但下次任務仍會重新嘗試(使用者補上模型檔後即可自動恢復)。
+            failed_ocr_langs = set()
+
             # 內部 Lazy Load 函式：當 OCR 引擎不存在時立即加載
             def ensure_ocr_engine(lang: str):
                 """確保特定語言的 OCR 引擎已加載，若無則即時加載"""
                 if lang not in ocr_engines:
+                    if lang in failed_ocr_langs:
+                        return False
                     try:
                         ocr_engines[lang] = ONNXOCR(lang=lang, use_gpu=self.use_gpu_ocr)
                         perf_print(f"[OCR Lazy Load] {lang} 引擎已加載")
                     except Exception as e:
+                        failed_ocr_langs.add(lang)
                         print(f"[Warning] OCR 引擎載入失敗 ({lang}): {e}")
                         return False
                 return lang in ocr_engines
@@ -804,7 +877,12 @@ class IndexerService:
 
                     # 針對缺少的語系補跑
                     for target_lang in missing_langs:
-                        if target_lang in ocr_engines:
+                        # [修正] 與軌道 A 一致:引擎沒載入就即時 Lazy Load。
+                        # 先前這裡只檢查 ocr_engines,而「只補 OCR」的掃描根本不會經過軌道 A,
+                        # 引擎因此永遠不會被載入 → 整條補算軌道靜默空轉、一列都寫不進去。
+                        # 載入失敗(模型檔缺失)就跳過該語系:不寫入 ocr_results,
+                        # 該圖下次掃描仍會被排進補算名單,不會被誤標為已完成。
+                        if ensure_ocr_engine(target_lang) and target_lang in ocr_engines:
                             ocr_text_final, ocr_data_final = "[NONE]", "[]"
 
                             # 🌟 將陣列直接餵給 OCR 引擎！

@@ -318,13 +318,30 @@ ESM_API int ESM_InstallHook(HWND hwnd, int titlebar_height, float dpr)
 
     // 2. 補回 Windows 樣式（Qt FramelessWindowHint 全部移除了）
     //    WS_THICKFRAME   — DefWindowProcW 縮放迴圈依賴此樣式
-    //    WS_CAPTION      — DWM 陰影/圓角正常運作
     //    WS_MAXIMIZEBOX  — Windows 11 Snap Layouts 需要此樣式才會顯示選單
     //    WS_MINIMIZEBOX  — 最小化按鈕 NC 追蹤（選用，保持一致性）
     //    視覺上不顯示系統框：WM_NCCALCSIZE 回傳 0 已消除所有 NC 繪製。
     LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    // [關鍵] 絕對不可補上 WS_CAPTION！
+    // 有 WS_CAPTION 時，DWM 會替視窗維護一套「標準標題列按鈕區」
+    // （DWMWA_CAPTION_BUTTON_BOUNDS，高度僅標準 44 實體 px、且最大化時
+    // 隨視窗矩形超出螢幕而偏移），Windows 11 shell 定位 Snap Layouts
+    // 彈窗時「優先採用該區、完全不詢問應用程式」——彈窗因此錯位、
+    // 遮住 TopBar 左側按鈕，且視窗/最大化兩種模式偏移量不同。
+    // 移除 WS_CAPTION 後 DWM 端按鈕區成為空矩形，shell 才會退回
+    // 以 WM_GETTITLEBARINFOEX 詢問（見上方 handler，回報自訂按鈕的
+    // 實際螢幕矩形），彈窗即精準錨定於最大化按鈕正下方。
+    // （以上機制經 2026-08-05 診斷日誌實測證實：有 WS_CAPTION 時
+    //   WM_GETTITLEBARINFOEX 從未被送達，拿掉後兩種模式皆正常收到。）
     SetWindowLongPtrW(hwnd, GWL_STYLE,
-        style | WS_THICKFRAME | WS_CAPTION | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
+        (style | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX) & ~(LONG_PTR)WS_CAPTION);
+
+    // 少了 WS_CAPTION 後改以顯式屬性要求 Win11 圓角；陰影由
+    // DwmExtendFrameIntoClientArea + WS_THICKFRAME 維持。
+    // DWMWCP_ROUND = 2；DWMWA_WINDOW_CORNER_PREFERENCE = 33
+    // （Win10 不認得此屬性會失敗，無害——Win10 亦無圓角與 Snap 彈窗）
+    DWORD corner_pref = 2;
+    DwmSetWindowAttribute(hwnd, 33, &corner_pref, sizeof(corner_pref));
 
     // 3. DWM：將 frame 延伸至整個客戶區 → 補回視窗陰影與 Win11 圓角
     //    (-1, -1, -1, -1) = 延伸至整個視窗

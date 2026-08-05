@@ -34,6 +34,9 @@ class IndexerWorker(QThread):
     # -1.0 = 暖機中（樣本不足），0.0 = 完成
     eta_updated = pyqtSignal(float)
 
+    #: 等待 MainWindow.engine 物件出現的上限秒數（只等物件建構，不等模型載入）
+    ENGINE_WAIT_TIMEOUT = 60.0
+
     # [修改 1] 加入 main_window 參數，以取得主程式的 AI 模型
     def __init__(self, config, main_window):
         super().__init__()
@@ -53,11 +56,54 @@ class IndexerWorker(QThread):
         self._paused    = False   # UI 狀態旗標（供 MainWindow 讀取）
         self._cancelled = False   # 取消旗標
 
+        # ── 本輪執行結果（公開屬性，供 IndexingLifecycleHandler 讀取）────
+        # "success" / "no_changes" / "cancelled" / "error"
+        # 一律在 all_finished.emit() 之前寫入，讓完成事件的狀態文字能誠實
+        # 反映結果，同時保持 all_finished 無參數的既有訊號簽章不變
+        self.last_result = "success"
+        self.last_error  = None   # 錯誤訊息字串（僅 last_result == "error" 時有值）
+
+    # ------------------------------------------------------------------
+    #  engine 就緒等待（有上限，非無窮 busy-wait）
+    # ------------------------------------------------------------------
+    def _wait_for_engine(self, timeout=None):
+        """等待 MainWindow.engine 物件出現後回傳它。
+
+        engine 由主程式的 load_engine 背景執行緒建立，而本 Worker 有機會搶先
+        跑完掃描階段而讀到 None；直接取用會噴 AttributeError，被 run() 的
+        broad except 吞成 "Indexing Error."，新圖就這樣被靜默略過。
+
+        這裡只等「engine 物件」建構完成（相對於模型載入極快），不等模型：
+        clip_image_session 在模型未就緒時回傳 None 是 Phase 3-A Lazy Load
+        的合法值，由 indexer 端自行處理。逾時則丟出 RuntimeError，讓錯誤
+        明確浮上 UI，而不是靜靜跳過本輪。
+        """
+        if timeout is None:
+            timeout = self.ENGINE_WAIT_TIMEOUT
+
+        engine = getattr(self.main_window, "engine", None)
+        if engine is not None:
+            return engine
+
+        self.status_update.emit("Waiting for AI engine...")
+        deadline = time.time() + timeout
+        while True:
+            if self._cancelled:
+                raise InterruptedError("Scan cancelled by user")
+            if time.time() >= deadline:
+                raise RuntimeError(f"AI 引擎尚未就緒（等待逾時 {timeout:.0f} 秒）")
+            time.sleep(0.2)
+            engine = getattr(self.main_window, "engine", None)
+            if engine is not None:
+                return engine
+
     def run(self):
         # 每次啟動時重置控制旗標
         self._cancelled = False
         self._paused    = False
         self._resume_event.set()
+        self.last_result = "success"
+        self.last_error  = None
 
         # Lazy 建立 IndexerService（首次掃描時，於本背景執行緒內付 import 成本）
         if self.service is None:
@@ -77,9 +123,20 @@ class IndexerWorker(QThread):
             files_full, files_emb_only, files_ocr_only, deleted_count, folder_ocr_map = self.service.scan_for_new_files(self.folders)
             self.scan_finished.emit(len(files_full) + len(files_emb_only) + len(files_ocr_only), deleted_count)
         except Exception as e:
-            print(f"Scan Error: {e}"); self.status_update.emit("Scan failed."); return
+            # [修正] 掃描階段失敗也必須發 all_finished：它是唯一會呼叫
+            # eta_ctrl.reset() / 關閉工作列進度條 / 觸發 DB 重載的收尾路徑，
+            # 少發一次就會讓 UI 永遠卡在 load_engine 設定的綠色不確定狀態
+            print(f"Scan Error: {e}")
+            self.last_result = "error"
+            self.last_error  = f"掃描失敗：{e}"
+            self.status_update.emit("Scan failed.")
+            self.all_finished.emit()
+            return
 
         if not files_full and not files_emb_only and not files_ocr_only:
+            # 未進入索引階段（ETA session 尚未啟動），標記為 no_changes，
+            # 避免完成事件回報無意義的「總耗時」
+            self.last_result = "no_changes"
             self.status_update.emit("No new images found."); self.all_finished.emit(); return
 
         total_tasks = len(files_full) + len(files_emb_only) + len(files_ocr_only)
@@ -172,12 +229,16 @@ class IndexerWorker(QThread):
             self.status_update.emit(final_msg)
 
         try:
+            # [修正] engine 可能還沒被 load_engine 背景執行緒建立出來（None），
+            # 先做有上限的等待再取用，避免 AttributeError 讓新圖被靜默略過
+            engine = self._wait_for_engine()
+
             #  [關鍵修復] 以前這裡是 .engine.model (因為改版變成 None 了)
             # 現在明確指定借用主程式的 clip_image_session！
-            shared_model = self.main_window.engine.clip_image_session
-            shared_preprocess = self.main_window.engine.preprocess
+            shared_model = engine.clip_image_session
+            shared_preprocess = engine.preprocess
 
-            shared_ocr_engines = self.main_window.engine.shared_ocr_engines
+            shared_ocr_engines = engine.shared_ocr_engines
 
             # [修正] 傳入雙軌參數與 mapping
             self.service.run_ai_processing(
@@ -185,14 +246,22 @@ class IndexerWorker(QThread):
                 progress_callback=callback, shared_model=shared_model, shared_preprocess=shared_preprocess,
                 shared_ocr_engines=shared_ocr_engines
             )
+            self.last_result = "success"
             self.status_update.emit("Indexing completed."); self.all_finished.emit()
         except InterruptedError:
-            # 使用者主動取消（非錯誤）
+            # 使用者主動取消（非錯誤）；部分結果已寫入資料庫，仍要走完收尾
             print("[IndexerWorker] 掃描已由使用者取消。")
+            self.last_result = "cancelled"
             self.status_update.emit("掃描已取消。")
             self.all_finished.emit()
         except Exception as e:
-            print(f"Indexing Error: {e}"); self.status_update.emit("Indexing Error.")
+            # [修正] 錯誤路徑同樣要發 all_finished，否則 ETA timer 永不停止、
+            # 工作列進度條卡在綠色、DB 也不會重載，UI 直到重開程式為止都是死的
+            print(f"Indexing Error: {e}")
+            self.last_result = "error"
+            self.last_error  = str(e)
+            self.status_update.emit("Indexing Error.")
+            self.all_finished.emit()
 
 class SearchWorker(QThread):
     batch_ready = pyqtSignal(list)

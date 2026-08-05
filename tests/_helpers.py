@@ -33,9 +33,20 @@ def make_tiny_png(path, size=(8, 8), color=(123, 200, 50)):
     Image.new("RGB", size, color).save(path, "PNG")
 
 
-def insert_file(conn, file_path, folder=None, mtime=1700000000.0, with_meta=False):
-    """插入一筆 files 記錄，回傳 file id。"""
+def insert_file(conn, file_path, folder=None, mtime=None, with_meta=False):
+    """插入一筆 files 記錄，回傳 file id。
+
+    mtime 預設取磁碟上的真實 mtime（檔案不存在時退回固定值）。
+    正式環境的 indexer 一律寫入 os.path.getmtime(path)，若這裡塞一個與磁碟
+    不符的固定值，等於偽造出「檔案已被原地覆蓋」的狀態，會被
+    scan_for_new_files 的變更偵測正確判定為已變更。
+    """
     folder = folder if folder is not None else os.path.dirname(file_path)
+    if mtime is None:
+        try:
+            mtime = os.path.getmtime(file_path)
+        except OSError:
+            mtime = 1700000000.0  # 檔案不存在（例如刪除偵測用的假路徑）
     if with_meta:
         cur = conn.execute(
             "INSERT INTO files (file_path, filename, folder_path, mtime, width, height, file_size)"
